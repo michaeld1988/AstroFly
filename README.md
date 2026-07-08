@@ -6,12 +6,19 @@ the viewer feel like they are traveling through space toward the nebula or
 galaxy.
 
 The app runs entirely in your browser – **no installation required**,
-your images never leave your computer.
+your images never leave your computer (all processing happens locally,
+nothing is uploaded).
 
-## Getting started
+## ✨ Try it online
 
-Open `index.html` in your browser (Chrome or Edge recommended – they also
-support MP4 export; Firefox exports WebM).
+**https://michaeld1988.github.io/AstroFly/**
+
+Chrome or Edge recommended – they also support MP4 export; Firefox exports WebM.
+
+## Run locally
+
+Download the repository and open `index.html` in your browser – that's it,
+no build step required.
 
 ## Usage
 
