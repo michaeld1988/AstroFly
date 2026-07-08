@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AstroFlug – 3D-Kamerafahrt durch Astrofotos</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <aside id="panel">
+    <h1>🌌 AstroFlug</h1>
+    <p class="sub">3D-Kamerafahrt aus Starless-Bild + Sternmaske</p>
+
+    <section>
+      <h2>1 · Bilder laden <span class="hint">(TIFF, PNG, JPG)</span></h2>
+      <div class="filerow">
+        <label class="filebtn" id="dropStarless">
+          <input type="file" id="fileStarless" accept=".tif,.tiff,.png,.jpg,.jpeg,image/tiff,image/png,image/jpeg">
+          <span class="filelabel">Starless-Bild</span>
+          <span class="filename" id="nameStarless">– keine Datei –</span>
+        </label>
+        <label class="filebtn" id="dropStars">
+          <input type="file" id="fileStars" accept=".tif,.tiff,.png,.jpg,.jpeg,image/tiff,image/png,image/jpeg">
+          <span class="filelabel">Sternmaske</span>
+          <span class="filename" id="nameStars">– keine Datei –</span>
+        </label>
+      </div>
+      <div id="loadStatus"></div>
+    </section>
+
+    <section>
+      <h2>2 · Tiefenkarte</h2>
+      <div class="depthrow">
+        <canvas id="depthPreview" width="160" height="107"></canvas>
+        <div class="depthctrl">
+          <label class="slider">
+            <span>Glättung <output id="outSmooth">18</output></span>
+            <input type="range" id="ctlSmooth" min="2" max="60" step="1" value="18">
+          </label>
+          <label class="check">
+            <input type="checkbox" id="ctlInvert">
+            <span>Tiefe umkehren (dunkel = nah)</span>
+          </label>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>3 · Kamera &amp; Animation</h2>
+      <label class="slider">
+        <span>Zoom (Start-Ausschnitt) <output id="outZoom">1.4×</output></span>
+        <input type="range" id="ctlZoom" min="1" max="4" step="0.05" value="1.4">
+      </label>
+      <label class="slider">
+        <span>Geschwindigkeit <output id="outSpeed">40</output></span>
+        <input type="range" id="ctlSpeed" min="0" max="100" step="1" value="40">
+      </label>
+      <label class="slider">
+        <span>Beschleunigen &amp; Abbremsen <output id="outEase">60</output></span>
+        <input type="range" id="ctlEase" min="0" max="100" step="1" value="60">
+      </label>
+      <label class="slider">
+        <span>3D-Effekt <output id="outParallax">60</output></span>
+        <input type="range" id="ctlParallax" min="0" max="100" step="1" value="60">
+      </label>
+      <label class="slider">
+        <span>Räumlichkeit (Tiefenumfang) <output id="outDepthBoost">33</output></span>
+        <input type="range" id="ctlDepthBoost" min="0" max="100" step="1" value="33">
+      </label>
+      <label class="slider">
+        <span>Rotation <output id="outRotation">2,0 °/s</output></span>
+        <input type="range" id="ctlRotation" min="-15" max="15" step="0.5" value="2">
+      </label>
+      <label class="slider">
+        <span>Ausschnitt drehen <output id="outOrient">0°</output></span>
+        <input type="range" id="ctlOrient" min="0" max="360" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span>Kippen horizontal <output id="outTiltX">0</output></span>
+        <input type="range" id="ctlTiltX" min="-100" max="100" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span>Kippen vertikal <output id="outTiltY">0</output></span>
+        <input type="range" id="ctlTiltY" min="-100" max="100" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span>Schwenk-Animation (Stärke) <output id="outSwayAmp">0</output></span>
+        <input type="range" id="ctlSwayAmp" min="0" max="100" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span>Schwenk-Tempo <output id="outSwayTempo">40</output></span>
+        <input type="range" id="ctlSwayTempo" min="0" max="100" step="1" value="40">
+      </label>
+      <label class="slider">
+        <span>Dauer <output id="outDuration">20 s</output></span>
+        <input type="range" id="ctlDuration" min="5" max="60" step="1" value="20">
+      </label>
+      <label class="check">
+        <input type="checkbox" id="ctlLoop">
+        <span>Loop-Modus (hin &amp; zurück, nahtlos)</span>
+      </label>
+      <p class="tip">🎯 <b>Zoomziel:</b> In die Vorschau klicken, um zu bestimmen,
+      wohin die Kamera fliegt. Doppelklick = zurück zur Mitte.
+      <span id="targetInfo">Ziel: Bildmitte</span></p>
+    </section>
+
+    <section>
+      <h2>4 · Sterne</h2>
+      <label class="slider">
+        <span>Ebenen-Streuung <output id="outSpread">70</output></span>
+        <input type="range" id="ctlSpread" min="0" max="100" step="1" value="70">
+      </label>
+      <label class="slider">
+        <span>Abstand zum Nebel <output id="outStarDist">55</output></span>
+        <input type="range" id="ctlStarDist" min="0" max="100" step="1" value="55">
+      </label>
+      <label class="slider">
+        <span>Funkeln <output id="outTwinkle">25</output></span>
+        <input type="range" id="ctlTwinkle" min="0" max="100" step="1" value="25">
+      </label>
+      <label class="slider">
+        <span>Größe <output id="outStarSize">100 %</output></span>
+        <input type="range" id="ctlStarSize" min="20" max="300" step="5" value="100">
+      </label>
+      <label class="slider">
+        <span>Helligkeit <output id="outStarBright">100 %</output></span>
+        <input type="range" id="ctlStarBright" min="0" max="300" step="5" value="100">
+      </label>
+      <label class="slider">
+        <span>Sättigung (Sterne) <output id="outStarSat">100 %</output></span>
+        <input type="range" id="ctlStarSat" min="0" max="200" step="5" value="100">
+      </label>
+      <button id="btnShuffle" class="secondary">🎲 Ebenen neu mischen</button>
+    </section>
+
+    <section>
+      <h2>5 · Effekte &amp; Look</h2>
+      <label class="selfull">
+        <span>🎬 Preset</span>
+        <select id="ctlPreset">
+          <option value="" selected>– eigener Look –</option>
+          <option value="kino">Kino</option>
+          <option value="deepspace">Deep Space</option>
+          <option value="glow">Traumglühen</option>
+          <option value="mono">Monochrom</option>
+          <option value="hyper">Hyperraum</option>
+          <option value="neutral">Neutral (alles aus)</option>
+        </select>
+      </label>
+      <label class="slider">
+        <span>Bloom <output id="outBloom">40</output></span>
+        <input type="range" id="ctlBloom" min="0" max="100" step="1" value="40">
+      </label>
+      <label class="slider">
+        <span>Bewegungsunschärfe <output id="outMblur">25</output></span>
+        <input type="range" id="ctlMblur" min="0" max="100" step="1" value="25">
+      </label>
+      <label class="slider">
+        <span>Warp <output id="outWarp">0</output></span>
+        <input type="range" id="ctlWarp" min="0" max="100" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span>Vignette <output id="outVignette">20</output></span>
+        <input type="range" id="ctlVignette" min="0" max="100" step="1" value="20">
+      </label>
+      <label class="slider">
+        <span>Belichtung <output id="outExposure">0</output></span>
+        <input type="range" id="ctlExposure" min="-100" max="100" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span>Kontrast <output id="outContrast">0</output></span>
+        <input type="range" id="ctlContrast" min="-100" max="100" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span>Sättigung <output id="outSaturation">0</output></span>
+        <input type="range" id="ctlSaturation" min="-100" max="100" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span>Klarheit <output id="outClarity">0</output></span>
+        <input type="range" id="ctlClarity" min="-100" max="100" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span>Schärfe <output id="outSharpen">0</output></span>
+        <input type="range" id="ctlSharpen" min="0" max="100" step="1" value="0">
+      </label>
+    </section>
+
+    <section>
+      <h2>6 · Format</h2>
+      <div id="aspectBtns" class="btnrow">
+        <button data-aspect="1:1">1:1</button>
+        <button data-aspect="16:9" class="active">16:9</button>
+        <button data-aspect="21:9">21:9</button>
+        <button data-aspect="4:3">4:3</button>
+        <button data-aspect="9:16">9:16</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>7 · Export</h2>
+      <div class="exportrow">
+        <select id="ctlRes">
+          <option value="1080" selected>Full HD (1080)</option>
+          <option value="720">HD (720)</option>
+          <option value="2160">4K (2160)</option>
+        </select>
+        <button id="btnExport" class="primary" disabled>⬇ Video exportieren</button>
+      </div>
+      <div id="exportStatus"></div>
+      <div class="progress" id="exportProgressWrap" hidden><div id="exportProgress"></div></div>
+    </section>
+  </aside>
+
+  <main id="stage">
+    <div id="canvasWrap">
+      <canvas id="glcanvas"></canvas>
+      <div id="targetMarker" hidden>🎯</div>
+      <div id="placeholder">
+        <div>🔭</div>
+        <p>Lade ein <b>Starless-Bild</b> und eine <b>Sternmaske</b>,<br>um den Flug durchs Weltall zu starten.</p>
+        <p class="small">Du kannst Dateien auch direkt hierher ziehen<br>(1. Datei = Starless, 2. Datei = Sternmaske).</p>
+      </div>
+    </div>
+    <div id="transport">
+      <button id="btnPlay" title="Wiedergabe/Pause">⏸</button>
+      <button id="btnRestart" title="Von vorn">⏮</button>
+      <div id="timeline"><div id="timelineFill"></div></div>
+      <span id="timecode">0,0 s</span>
+    </div>
+  </main>
+
+</div>
+
+<script src="vendor/pako.min.js"></script>
+<script src="vendor/mp4-muxer.js"></script>
+<script src="vendor/webm-muxer.js"></script>
+<script src="vendor/UTIF.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
