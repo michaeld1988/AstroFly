@@ -76,7 +76,7 @@ const gl = canvas.getContext("webgl2", {
   preserveDrawingBuffer: true, // nötig für captureStream in manchen Browsern
 });
 if (!gl) {
-  alert("WebGL2 is not supported by this browser.");
+  alert(t("webgl2"));
   throw new Error("no webgl2");
 }
 
@@ -412,7 +412,7 @@ async function decodeFile(file) {
   if (name.endsWith(".tif") || name.endsWith(".tiff")) {
     const buf = await file.arrayBuffer();
     const ifds = UTIF.decode(buf);
-    if (!ifds.length) throw new Error("Could not read TIFF file");
+    if (!ifds.length) throw new Error(t("tiffError"));
     let best = ifds[0];
     for (const ifd of ifds) {
       UTIF.decodeImage(buf, ifd);
@@ -983,6 +983,22 @@ $("aspectBtns").addEventListener("click", (e) => {
   fitCanvas();
 });
 
+// Zoomziel-Anzeige (sprachabhängig, wird bei Sprachwechsel aktualisiert)
+function updateTargetInfo() {
+  const el = $("targetInfo");
+  if (!state.starless || (state.target.x === 0 && state.target.y === 0)) {
+    el.setAttribute("data-i18n", "targetCenter");
+    el.textContent = t("targetCenter");
+  } else {
+    el.removeAttribute("data-i18n");
+    const imgAspect = state.starless.width / state.starless.height;
+    el.textContent = t("targetAt",
+      (state.target.x / imgAspect * 100 + 50).toFixed(0),
+      (50 - state.target.y * 100).toFixed(0));
+  }
+}
+I18N.onChange.push(updateTargetInfo);
+
 // Zoomziel per Klick in die Vorschau
 canvas.addEventListener("click", (e) => {
   if (!state.starless || state.exporting) return;
@@ -1002,8 +1018,7 @@ canvas.addEventListener("click", (e) => {
   const qy = cam.cy + ry / (cover * cam.zoom);
   state.target.x = Math.min(imgAspect * 0.475, Math.max(-imgAspect * 0.475, qx));
   state.target.y = Math.min(0.475, Math.max(-0.475, qy));
-  $("targetInfo").textContent =
-    `Target: ${(state.target.x / imgAspect * 100 + 50).toFixed(0)} % / ${(50 - state.target.y * 100).toFixed(0) } %`;
+  updateTargetInfo();
 
   // Marker kurz einblenden
   const marker = $("targetMarker");
@@ -1017,7 +1032,7 @@ canvas.addEventListener("click", (e) => {
 canvas.addEventListener("dblclick", () => {
   state.target.x = 0;
   state.target.y = 0;
-  $("targetInfo").textContent = "Target: image center";
+  updateTargetInfo();
 });
 
 // Transport
@@ -1049,11 +1064,12 @@ $("timeline").addEventListener("click", (e) => {
 async function loadFile(which, file) {
   const status = $("loadStatus");
   status.classList.remove("error");
-  status.textContent = `Loading ${file.name} …`;
+  status.textContent = t("loading", file.name);
   try {
     const img = await decodeFile(file);
     if (which === "starless") {
       state.starless = img;
+      $("nameStarless").removeAttribute("data-i18n");
       $("nameStarless").textContent = `${file.name} (${img.width}×${img.height})`;
       $("dropStarless").classList.add("loaded");
       if (texColor) gl.deleteTexture(texColor);
@@ -1061,21 +1077,22 @@ async function loadFile(which, file) {
       buildDepthMap();
     } else {
       state.stars = img;
+      $("nameStars").removeAttribute("data-i18n");
       $("nameStars").textContent = `${file.name} (${img.width}×${img.height})`;
       $("dropStars").classList.add("loaded");
       buildStarBuffer();
-      status.textContent = `${state.starCount} stars detected.`;
+      status.textContent = t("starsDetected", state.starCount);
     }
     if (state.starless) {
       $("placeholder").style.display = "none";
       $("btnExport").disabled = false;
       state.t0 = performance.now();
-      if (which === "starless") status.textContent = "Starless image loaded.";
+      if (which === "starless") status.textContent = t("starlessLoaded");
     }
   } catch (err) {
     console.error(err);
     status.classList.add("error");
-    status.textContent = `Failed to load ${file.name}: ${err.message}`;
+    status.textContent = t("loadFailed", file.name, err.message);
   }
 }
 
@@ -1197,7 +1214,7 @@ async function exportOffline(w, h, fps) {
   beginExport(w, h);
   state.offlineExport = true;
   const status = $("exportStatus");
-  status.textContent = `Rendering ${w}×${h} · ${state.duration} s (offline mode) …`;
+  status.textContent = t("renderingOffline", w, h, state.duration);
 
   const muxer = container === "mp4"
     ? new Mp4Muxer.Muxer({
@@ -1238,17 +1255,17 @@ async function exportOffline(w, h, fps) {
         await new Promise((r) => setTimeout(r));
       }
     }
-    status.textContent = "Finalizing video …";
+    status.textContent = t("finalizing");
     await encoder.flush();
     muxer.finalize();
     const blob = new Blob([muxer.target.buffer], { type: "video/" + container });
     const name = exportFilename(container);
     saveBlob(blob, name);
-    endExport(`Done: ${name} (${(blob.size / 1e6).toFixed(1)} MB, 30 fps)`);
+    endExport(t("doneFps", name, (blob.size / 1e6).toFixed(1)));
   } catch (err) {
     console.error(err);
     try { encoder.close(); } catch { /* bereits geschlossen */ }
-    endExport(`Export failed: ${err.message}`);
+    endExport(t("exportFailed", err.message));
   }
   return true;
 }
@@ -1258,14 +1275,14 @@ function exportRealtime(w, h, fps) {
   const status = $("exportStatus");
   const mime = pickMime();
   if (!mime || typeof MediaRecorder === "undefined") {
-    status.textContent = "This browser does not support video export.";
+    status.textContent = t("noExportSupport");
     return;
   }
 
   beginExport(w, h);
   state.playing = true;
   state.t0 = performance.now();
-  status.textContent = `Rendering ${w}×${h} · ${state.duration} s in real time …`;
+  status.textContent = t("renderingRealtime", w, h, state.duration);
 
   const stream = canvas.captureStream(fps);
   const rec = new MediaRecorder(stream, {
@@ -1279,7 +1296,7 @@ function exportRealtime(w, h, fps) {
     const blob = new Blob(chunks, { type: mime.split(";")[0] });
     const name = exportFilename(ext);
     saveBlob(blob, name);
-    endExport(`Done: ${name} (${(blob.size / 1e6).toFixed(1)} MB)`);
+    endExport(t("done", name, (blob.size / 1e6).toFixed(1)));
   };
 
   rec.start(250);

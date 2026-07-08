@@ -15,6 +15,10 @@ nothing is uploaded).
 
 Chrome or Edge recommended – they also support MP4 export; Firefox exports WebM.
 
+The interface is available in **English and German** – switch with the
+EN/DE toggle at the top left (your choice is remembered; the app follows
+your browser language on first visit).
+
 ## Run locally
 
 Download the repository and open `index.html` in your browser – that's it,

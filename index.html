@@ -10,185 +10,191 @@
 <div id="app">
 
   <aside id="panel">
-    <h1>🌌 AstroFly</h1>
-    <p class="sub">3D camera flight from starless image + star mask</p>
+    <div class="headrow">
+      <h1>🌌 AstroFly</h1>
+      <div class="langrow">
+        <button id="langEn" class="active">EN</button>
+        <button id="langDe">DE</button>
+      </div>
+    </div>
+    <p class="sub" data-i18n="subtitle">3D camera flight from starless image + star mask</p>
 
     <section>
-      <h2>1 · Load images <span class="hint">(TIFF, PNG, JPG)</span></h2>
+      <h2><span data-i18n="sec1">1 · Load images</span> <span class="hint">(TIFF, PNG, JPG)</span></h2>
       <div class="filerow">
         <label class="filebtn" id="dropStarless">
           <input type="file" id="fileStarless" accept=".tif,.tiff,.png,.jpg,.jpeg,image/tiff,image/png,image/jpeg">
-          <span class="filelabel">Starless image</span>
-          <span class="filename" id="nameStarless">– no file –</span>
+          <span class="filelabel" data-i18n="starlessLabel">Starless image</span>
+          <span class="filename" id="nameStarless" data-i18n="noFile">– no file –</span>
         </label>
         <label class="filebtn" id="dropStars">
           <input type="file" id="fileStars" accept=".tif,.tiff,.png,.jpg,.jpeg,image/tiff,image/png,image/jpeg">
-          <span class="filelabel">Star mask</span>
-          <span class="filename" id="nameStars">– no file –</span>
+          <span class="filelabel" data-i18n="starmaskLabel">Star mask</span>
+          <span class="filename" id="nameStars" data-i18n="noFile">– no file –</span>
         </label>
       </div>
       <div id="loadStatus"></div>
     </section>
 
     <section>
-      <h2>2 · Depth map</h2>
+      <h2 data-i18n="sec2">2 · Depth map</h2>
       <div class="depthrow">
         <canvas id="depthPreview" width="160" height="107"></canvas>
         <div class="depthctrl">
           <label class="slider">
-            <span>Smoothing <output id="outSmooth">18</output></span>
+            <span><span data-i18n="smoothing">Smoothing</span> <output id="outSmooth">18</output></span>
             <input type="range" id="ctlSmooth" min="2" max="60" step="1" value="18">
           </label>
           <label class="check">
             <input type="checkbox" id="ctlInvert">
-            <span>Invert depth (dark = near)</span>
+            <span data-i18n="invertDepth">Invert depth (dark = near)</span>
           </label>
         </div>
       </div>
     </section>
 
     <section>
-      <h2>3 · Camera &amp; animation</h2>
+      <h2 data-i18n="sec3">3 · Camera &amp; animation</h2>
       <label class="slider">
-        <span>Zoom (start framing) <output id="outZoom">1.4×</output></span>
+        <span><span data-i18n="zoom">Zoom (start framing)</span> <output id="outZoom">1.4×</output></span>
         <input type="range" id="ctlZoom" min="1" max="4" step="0.05" value="1.4">
       </label>
       <label class="slider">
-        <span>Speed <output id="outSpeed">40</output></span>
+        <span><span data-i18n="speed">Speed</span> <output id="outSpeed">40</output></span>
         <input type="range" id="ctlSpeed" min="0" max="100" step="1" value="40">
       </label>
       <label class="slider">
-        <span>Ease in &amp; out <output id="outEase">60</output></span>
+        <span><span data-i18n="ease">Ease in &amp; out</span> <output id="outEase">60</output></span>
         <input type="range" id="ctlEase" min="0" max="100" step="1" value="60">
       </label>
       <label class="slider">
-        <span>3D effect <output id="outParallax">60</output></span>
+        <span><span data-i18n="parallax">3D effect</span> <output id="outParallax">60</output></span>
         <input type="range" id="ctlParallax" min="0" max="100" step="1" value="60">
       </label>
       <label class="slider">
-        <span>Depth range <output id="outDepthBoost">33</output></span>
+        <span><span data-i18n="depthRange">Depth range</span> <output id="outDepthBoost">33</output></span>
         <input type="range" id="ctlDepthBoost" min="0" max="100" step="1" value="33">
       </label>
       <label class="slider">
-        <span>Rotation <output id="outRotation">2.0 °/s</output></span>
+        <span><span data-i18n="rotation">Rotation</span> <output id="outRotation">2.0 °/s</output></span>
         <input type="range" id="ctlRotation" min="-15" max="15" step="0.5" value="2">
       </label>
       <label class="slider">
-        <span>Rotate framing <output id="outOrient">0°</output></span>
+        <span><span data-i18n="orient">Rotate framing</span> <output id="outOrient">0°</output></span>
         <input type="range" id="ctlOrient" min="0" max="360" step="1" value="0">
       </label>
       <label class="slider">
-        <span>Tilt horizontal <output id="outTiltX">0</output></span>
+        <span><span data-i18n="tiltX">Tilt horizontal</span> <output id="outTiltX">0</output></span>
         <input type="range" id="ctlTiltX" min="-100" max="100" step="1" value="0">
       </label>
       <label class="slider">
-        <span>Tilt vertical <output id="outTiltY">0</output></span>
+        <span><span data-i18n="tiltY">Tilt vertical</span> <output id="outTiltY">0</output></span>
         <input type="range" id="ctlTiltY" min="-100" max="100" step="1" value="0">
       </label>
       <label class="slider">
-        <span>Camera sway (amount) <output id="outSwayAmp">0</output></span>
+        <span><span data-i18n="swayAmp">Camera sway (amount)</span> <output id="outSwayAmp">0</output></span>
         <input type="range" id="ctlSwayAmp" min="0" max="100" step="1" value="0">
       </label>
       <label class="slider">
-        <span>Sway tempo <output id="outSwayTempo">40</output></span>
+        <span><span data-i18n="swayTempo">Sway tempo</span> <output id="outSwayTempo">40</output></span>
         <input type="range" id="ctlSwayTempo" min="0" max="100" step="1" value="40">
       </label>
       <label class="slider">
-        <span>Duration <output id="outDuration">20 s</output></span>
+        <span><span data-i18n="duration">Duration</span> <output id="outDuration">20 s</output></span>
         <input type="range" id="ctlDuration" min="5" max="60" step="1" value="20">
       </label>
       <label class="check">
         <input type="checkbox" id="ctlLoop">
-        <span>Loop mode (there &amp; back, seamless)</span>
+        <span data-i18n="loopMode">Loop mode (there &amp; back, seamless)</span>
       </label>
-      <p class="tip">🎯 <b>Zoom target:</b> Click the preview to choose where
-      the camera flies to. Double-click = back to center.
-      <span id="targetInfo">Target: image center</span></p>
+      <p class="tip"><span data-i18n-html="tip">🎯 <b>Zoom target:</b> Click the preview to choose where
+      the camera flies to. Double-click = back to center.</span>
+      <span id="targetInfo" data-i18n="targetCenter">Target: image center</span></p>
     </section>
 
     <section>
-      <h2>4 · Stars</h2>
+      <h2 data-i18n="sec4">4 · Stars</h2>
       <label class="slider">
-        <span>Layer spread <output id="outSpread">70</output></span>
+        <span><span data-i18n="spread">Layer spread</span> <output id="outSpread">70</output></span>
         <input type="range" id="ctlSpread" min="0" max="100" step="1" value="70">
       </label>
       <label class="slider">
-        <span>Distance to nebula <output id="outStarDist">55</output></span>
+        <span><span data-i18n="starDist">Distance to nebula</span> <output id="outStarDist">55</output></span>
         <input type="range" id="ctlStarDist" min="0" max="100" step="1" value="55">
       </label>
       <label class="slider">
-        <span>Twinkle <output id="outTwinkle">25</output></span>
+        <span><span data-i18n="twinkle">Twinkle</span> <output id="outTwinkle">25</output></span>
         <input type="range" id="ctlTwinkle" min="0" max="100" step="1" value="25">
       </label>
       <label class="slider">
-        <span>Size <output id="outStarSize">100 %</output></span>
+        <span><span data-i18n="starSize">Size</span> <output id="outStarSize">100 %</output></span>
         <input type="range" id="ctlStarSize" min="20" max="300" step="5" value="100">
       </label>
       <label class="slider">
-        <span>Brightness <output id="outStarBright">100 %</output></span>
+        <span><span data-i18n="starBright">Brightness</span> <output id="outStarBright">100 %</output></span>
         <input type="range" id="ctlStarBright" min="0" max="300" step="5" value="100">
       </label>
       <label class="slider">
-        <span>Saturation (stars) <output id="outStarSat">100 %</output></span>
+        <span><span data-i18n="starSat">Saturation (stars)</span> <output id="outStarSat">100 %</output></span>
         <input type="range" id="ctlStarSat" min="0" max="200" step="5" value="100">
       </label>
-      <button id="btnShuffle" class="secondary">🎲 Reshuffle layers</button>
+      <button id="btnShuffle" class="secondary" data-i18n="shuffle">🎲 Reshuffle layers</button>
     </section>
 
     <section>
-      <h2>5 · Effects &amp; look</h2>
+      <h2 data-i18n="sec5">5 · Effects &amp; look</h2>
       <label class="selfull">
-        <span>🎬 Preset</span>
+        <span data-i18n="presetLabel">🎬 Preset</span>
         <select id="ctlPreset">
-          <option value="" selected>– custom look –</option>
-          <option value="kino">Cinematic</option>
-          <option value="deepspace">Deep Space</option>
-          <option value="glow">Dreamy Glow</option>
-          <option value="mono">Monochrome</option>
-          <option value="hyper">Hyperspace</option>
-          <option value="neutral">Neutral (all off)</option>
+          <option value="" selected data-i18n="presetCustom">– custom look –</option>
+          <option value="kino" data-i18n="presetKino">Cinematic</option>
+          <option value="deepspace" data-i18n="presetDeep">Deep Space</option>
+          <option value="glow" data-i18n="presetGlow">Dreamy Glow</option>
+          <option value="mono" data-i18n="presetMono">Monochrome</option>
+          <option value="hyper" data-i18n="presetHyper">Hyperspace</option>
+          <option value="neutral" data-i18n="presetNeutral">Neutral (all off)</option>
         </select>
       </label>
       <label class="slider">
-        <span>Bloom <output id="outBloom">40</output></span>
+        <span><span data-i18n="bloom">Bloom</span> <output id="outBloom">40</output></span>
         <input type="range" id="ctlBloom" min="0" max="100" step="1" value="40">
       </label>
       <label class="slider">
-        <span>Motion blur <output id="outMblur">25</output></span>
+        <span><span data-i18n="mblur">Motion blur</span> <output id="outMblur">25</output></span>
         <input type="range" id="ctlMblur" min="0" max="100" step="1" value="25">
       </label>
       <label class="slider">
-        <span>Warp <output id="outWarp">0</output></span>
+        <span><span data-i18n="warp">Warp</span> <output id="outWarp">0</output></span>
         <input type="range" id="ctlWarp" min="0" max="100" step="1" value="0">
       </label>
       <label class="slider">
-        <span>Vignette <output id="outVignette">20</output></span>
+        <span><span data-i18n="vignette">Vignette</span> <output id="outVignette">20</output></span>
         <input type="range" id="ctlVignette" min="0" max="100" step="1" value="20">
       </label>
       <label class="slider">
-        <span>Exposure <output id="outExposure">0</output></span>
+        <span><span data-i18n="exposure">Exposure</span> <output id="outExposure">0</output></span>
         <input type="range" id="ctlExposure" min="-100" max="100" step="1" value="0">
       </label>
       <label class="slider">
-        <span>Contrast <output id="outContrast">0</output></span>
+        <span><span data-i18n="contrast">Contrast</span> <output id="outContrast">0</output></span>
         <input type="range" id="ctlContrast" min="-100" max="100" step="1" value="0">
       </label>
       <label class="slider">
-        <span>Saturation <output id="outSaturation">0</output></span>
+        <span><span data-i18n="saturation">Saturation</span> <output id="outSaturation">0</output></span>
         <input type="range" id="ctlSaturation" min="-100" max="100" step="1" value="0">
       </label>
       <label class="slider">
-        <span>Clarity <output id="outClarity">0</output></span>
+        <span><span data-i18n="clarity">Clarity</span> <output id="outClarity">0</output></span>
         <input type="range" id="ctlClarity" min="-100" max="100" step="1" value="0">
       </label>
       <label class="slider">
-        <span>Sharpness <output id="outSharpen">0</output></span>
+        <span><span data-i18n="sharpen">Sharpness</span> <output id="outSharpen">0</output></span>
         <input type="range" id="ctlSharpen" min="0" max="100" step="1" value="0">
       </label>
     </section>
 
     <section>
-      <h2>6 · Aspect ratio</h2>
+      <h2 data-i18n="sec6">6 · Aspect ratio</h2>
       <div id="aspectBtns" class="btnrow">
         <button data-aspect="1:1">1:1</button>
         <button data-aspect="16:9" class="active">16:9</button>
@@ -199,14 +205,14 @@
     </section>
 
     <section>
-      <h2>7 · Export</h2>
+      <h2 data-i18n="sec7">7 · Export</h2>
       <div class="exportrow">
         <select id="ctlRes">
           <option value="1080" selected>Full HD (1080)</option>
           <option value="720">HD (720)</option>
           <option value="2160">4K (2160)</option>
         </select>
-        <button id="btnExport" class="primary" disabled>⬇ Export video</button>
+        <button id="btnExport" class="primary" disabled data-i18n="exportBtn">⬇ Export video</button>
       </div>
       <div id="exportStatus"></div>
       <div class="progress" id="exportProgressWrap" hidden><div id="exportProgress"></div></div>
@@ -219,13 +225,13 @@
       <div id="targetMarker" hidden>🎯</div>
       <div id="placeholder">
         <div>🔭</div>
-        <p>Load a <b>starless image</b> and a <b>star mask</b><br>to start your flight through space.</p>
-        <p class="small">You can also drag &amp; drop files here<br>(1st file = starless, 2nd file = star mask).</p>
+        <p data-i18n-html="placeholder1">Load a <b>starless image</b> and a <b>star mask</b><br>to start your flight through space.</p>
+        <p class="small" data-i18n-html="placeholder2">You can also drag &amp; drop files here<br>(1st file = starless, 2nd file = star mask).</p>
       </div>
     </div>
     <div id="transport">
-      <button id="btnPlay" title="Play/Pause">⏸</button>
-      <button id="btnRestart" title="Restart">⏮</button>
+      <button id="btnPlay" title="Play/Pause" data-i18n-title="playTitle">⏸</button>
+      <button id="btnRestart" title="Restart" data-i18n-title="restartTitle">⏮</button>
       <div id="timeline"><div id="timelineFill"></div></div>
       <span id="timecode">0.0 s</span>
     </div>
@@ -237,6 +243,7 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
+<script src="i18n.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
