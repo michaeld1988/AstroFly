@@ -35,6 +35,19 @@ body {
 }
 
 #panel h1 { font-size: 20px; letter-spacing: 0.5px; }
+.headrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.langrow { display: flex; gap: 4px; }
+.langrow button {
+  background: var(--panel2); color: var(--muted);
+  border: 1px solid var(--border); border-radius: 5px;
+  padding: 3px 8px; cursor: pointer; font-size: 11.5px; font-weight: 600;
+}
+.langrow button:hover { border-color: var(--accent); }
+.langrow button.active {
+  color: var(--text);
+  background: linear-gradient(135deg, #2a3b66, #3b2a66);
+  border-color: var(--accent);
+}
 #panel .sub { color: var(--muted); font-size: 12px; margin: 4px 0 14px; }
 
 section {
