@@ -28,6 +28,17 @@ no build step required.
 
 1. **Load images** – select a starless image and a star mask as TIFF, PNG or
    JPG, or drag & drop them (16-bit TIFF is supported).
+
+   **✨ AI upscaler (3×, optional):** enhances real detail in the starless
+   image before the flight – great for smaller images that would look soft
+   at deep zoom. It uses a small, **non-generative** super-resolution
+   network (deterministic sub-pixel CNN): it only reconstructs detail that
+   is actually in the image and never invents content, so your astrophoto
+   stays authentic. Runs GPU-accelerated via WebGPU where available –
+   fast on modern graphics cards such as **Nvidia RTX 2000 or newer**
+   (the app shows whether GPU acceleration is active); without a capable
+   GPU it falls back to a much slower CPU mode. Requires the online
+   version (or a local web server).
 2. **Depth map** – computed automatically from the brightness of the starless
    image: bright nebula regions appear "closer" to the camera.
    *Smoothing* softens the map, *Invert depth* flips the effect.
@@ -100,3 +111,7 @@ no build step required.
 - Video export via WebCodecs (frame-by-frame offline rendering, guaranteed
   smooth 30 fps, muxed with `mp4-muxer`/`webm-muxer`) with MediaRecorder
   (`canvas.captureStream`) as fallback.
+- AI upscaler via [ONNX Runtime Web](https://onnxruntime.ai/) (loaded lazily
+  on first use; WebGPU with WASM fallback) and the sub-pixel CNN
+  super-resolution model from the ONNX model zoo, processed in overlapping
+  224×224 tiles on the luminance channel.
