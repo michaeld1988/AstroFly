@@ -64,6 +64,7 @@ const state = {
 
   exporting: false,
   offlineExport: false,
+  upscaled: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -112,6 +113,9 @@ function loc(prog, name) {
 const u1f = (p, n, v) => gl.uniform1f(loc(p, n), v);
 const u1i = (p, n, v) => gl.uniform1i(loc(p, n), v);
 const u2f = (p, n, x, y) => gl.uniform2f(loc(p, n), x, y);
+
+// Maximale Texturkante: hochskalierte Bilder dürfen bis 8192 px nutzen
+const MAX_TEX = Math.min(8192, gl.getParameter(gl.MAX_TEXTURE_SIZE));
 
 // --- Vollbild-Vertexshader (für alle Bildschirm-Pässe) ---
 
@@ -1069,11 +1073,12 @@ async function loadFile(which, file) {
     const img = await decodeFile(file);
     if (which === "starless") {
       state.starless = img;
+      state.upscaled = false;
       $("nameStarless").removeAttribute("data-i18n");
       $("nameStarless").textContent = `${file.name} (${img.width}×${img.height})`;
       $("dropStarless").classList.add("loaded");
       if (texColor) gl.deleteTexture(texColor);
-      texColor = makeTexture(downscale(img, 4096));
+      texColor = makeTexture(downscale(img, state.upscaled ? MAX_TEX : 4096));
       buildDepthMap();
     } else {
       state.stars = img;
@@ -1088,6 +1093,7 @@ async function loadFile(which, file) {
       $("btnExport").disabled = false;
       state.t0 = performance.now();
       if (which === "starless") status.textContent = t("starlessLoaded");
+      updateUpscaleButton();
     }
   } catch (err) {
     console.error(err);
@@ -1315,4 +1321,63 @@ $("btnExport").addEventListener("click", async () => {
   const fps = 30;
   const usedOffline = await exportOffline(w, h, fps);
   if (!usedOffline) exportRealtime(w, h, fps);
+});
+
+// ---------------------------------------------------------------- KI-Upscaler
+
+function updateUpscaleButton() {
+  const maxSrc = Math.floor(MAX_TEX / Upscaler.SCALE); // Ergebnis muss in die Textur passen
+  const img = state.starless;
+  const usable = !!img && !state.upscaled && !Upscaler.running &&
+    Math.max(img.width, img.height) <= maxSrc;
+  $("btnUpscale").disabled = !usable;
+  if (img && !state.upscaled && Math.max(img.width, img.height) > maxSrc) {
+    $("loadStatus").textContent = t("upscaleTooBig");
+  }
+}
+
+Upscaler.detect().then(() => {
+  const hint = $("upscaleGpuHint");
+  const render = () => {
+    hint.textContent = Upscaler.gpu
+      ? t("upscaleHintGpu", Upscaler.gpu.desc)
+      : t("upscaleHintCpu");
+  };
+  render();
+  I18N.onChange.push(render);
+});
+
+$("btnUpscale").addEventListener("click", async () => {
+  if (!state.starless || state.upscaled || Upscaler.running) return;
+  const status = $("loadStatus");
+  status.classList.remove("error");
+  Upscaler.running = true;
+  $("btnUpscale").disabled = true;
+  status.textContent = t("upscaleLoading");
+  try {
+    const result = await Upscaler.upscale(state.starless.canvas, (p) => {
+      status.textContent = t("upscaleRunning", p);
+    });
+    state.starless = {
+      canvas: result,
+      width: result.width,
+      height: result.height,
+      name: state.starless.name + " ×3",
+    };
+    state.upscaled = true;
+    $("nameStarless").textContent =
+      `${state.starless.name} (${result.width}×${result.height})`;
+    if (texColor) gl.deleteTexture(texColor);
+    texColor = makeTexture(downscale(state.starless, MAX_TEX));
+    buildDepthMap();
+    status.textContent = t("upscaleDone", result.width, result.height);
+  } catch (err) {
+    console.error(err);
+    status.classList.add("error");
+    const offline = location.protocol === "file:";
+    status.textContent = offline ? t("upscaleNeedsHttp") : t("upscaleFailed", err.message);
+  } finally {
+    Upscaler.running = false;
+    updateUpscaleButton();
+  }
 });

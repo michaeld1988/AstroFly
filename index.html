@@ -34,6 +34,9 @@
         </label>
       </div>
       <div id="loadStatus"></div>
+      <button id="btnUpscale" class="secondary" disabled data-i18n="upscaleBtn">✨ AI upscaler (3×)</button>
+      <p class="tip" id="upscaleGpuHint"></p>
+      <p class="tip" data-i18n="upscaleNote">Non-generative: a deterministic restoration network only sharpens real image detail – nothing is invented, your astrophoto stays authentic.</p>
     </section>
 
     <section>
@@ -244,6 +247,7 @@
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
 <script src="i18n.js"></script>
+<script src="upscaler.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
