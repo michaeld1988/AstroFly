@@ -1381,3 +1381,34 @@ $("btnUpscale").addEventListener("click", async () => {
     updateUpscaleButton();
   }
 });
+
+// ---------------------------------------------------------------- Feedback
+
+const FEEDBACK_REPO = "https://github.com/michaeld1988/AstroFly";
+const FEEDBACK_MAIL = "mail@michaeldoehler.com";
+
+/** Technische Angaben für Bug-Reports (nur was der Browser ohnehin preisgibt). */
+function feedbackDiagnostics() {
+  const gpu = Upscaler.gpu ? (Upscaler.gpu.desc || "WebGPU") : "no WebGPU";
+  return [
+    "App: AstroFly (" + location.host + ")",
+    "Browser: " + navigator.userAgent,
+    "GPU: " + gpu,
+    "Language: " + I18N.lang,
+    "Screen: " + screen.width + "×" + screen.height,
+  ].join("\n");
+}
+
+$("btnFeedbackGithub").addEventListener("click", () => {
+  const body = t("feedbackBodyIntro") + "\n---\n" + feedbackDiagnostics();
+  const url = FEEDBACK_REPO + "/issues/new?title=" +
+    encodeURIComponent("[Feedback] ") + "&body=" + encodeURIComponent(body);
+  window.open(url, "_blank", "noopener");
+});
+
+$("btnFeedbackMail").addEventListener("click", () => {
+  const body = t("feedbackMailIntro") + "---\n" + feedbackDiagnostics();
+  location.href = "mailto:" + FEEDBACK_MAIL +
+    "?subject=" + encodeURIComponent("AstroFly Feedback") +
+    "&body=" + encodeURIComponent(body);
+});

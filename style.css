@@ -144,6 +144,7 @@ button.secondary {
   margin-top: 2px;
 }
 button.secondary:hover { border-color: var(--accent); }
+button.secondary + button.secondary { margin-top: 6px; }
 
 #targetMarker {
   position: absolute;
