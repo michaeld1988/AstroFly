@@ -56,7 +56,10 @@ const state = {
   contrast: 0,           // -100..100
   saturation: 0,         // -100..100
   clarity: 0,            // -100..100 (negativ = weich/Orton)
+  structure: 0,          // -100..100 (feine Details, Multi-Scale-Lokalkontrast)
   sharpen: 0,            // 0..100
+
+  viewScale: 70,         // Vorschaugröße in % der verfügbaren Fläche
 
   playing: true,
   t0: performance.now(),
@@ -277,6 +280,7 @@ out vec4 outColor;
 uniform sampler2D uScene;
 uniform sampler2D uBloom;
 uniform sampler2D uSoft;  // stark weichgezeichnete Szene (für Klarheit)
+uniform sampler2D uMed;   // mittel weichgezeichnete Szene (für Struktur)
 uniform float uViewAspect;
 uniform float uBloomStrength;
 uniform float uShutter;   // "Belichtungszeit" der Bewegungsunschärfe in s
@@ -290,6 +294,7 @@ uniform float uExposure;   // Blendenstufen
 uniform float uContrast;   // 1 = neutral
 uniform float uSaturation; // 1 = neutral
 uniform float uClarity;    // 0 = aus, negativ = weich (Orton)
+uniform float uStructure;  // feine Details, 0 = aus
 uniform float uSharpen;    // 0 = aus
 uniform vec2 uTexel;       // 1 px der Szene in UV
 
@@ -317,6 +322,11 @@ void main() {
   if (uClarity != 0.0) {
     vec3 soft = texture(uSoft, vUv).rgb;
     col += (col - soft) * uClarity;
+  }
+  // Struktur: feiner Lokalkontrast gegen mittel weichgezeichnete Szene
+  if (uStructure != 0.0) {
+    vec3 med = texture(uMed, vUv).rgb;
+    col += (col - med) * uStructure;
   }
   // Schärfe: Unsharp-Mask mit 1-Pixel-Radius
   if (uSharpen > 0.0) {
@@ -393,12 +403,13 @@ function makeFbo(w, h) {
   return { fb, tex, w, h };
 }
 
-let fbScene = null, fbBloomA = null, fbBloomB = null, fbSoftA = null, fbSoftB = null;
+let fbScene = null, fbBloomA = null, fbBloomB = null, fbSoftA = null, fbSoftB = null,
+    fbMedA = null, fbMedB = null;
 
 function ensureFbos() {
   const w = canvas.width, h = canvas.height;
   if (fbScene && fbScene.w === w && fbScene.h === h) return;
-  for (const f of [fbScene, fbBloomA, fbBloomB, fbSoftA, fbSoftB]) {
+  for (const f of [fbScene, fbBloomA, fbBloomB, fbSoftA, fbSoftB, fbMedA, fbMedB]) {
     if (f) { gl.deleteFramebuffer(f.fb); gl.deleteTexture(f.tex); }
   }
   fbScene = makeFbo(w, h);
@@ -407,6 +418,9 @@ function ensureFbos() {
   fbBloomB = makeFbo(bw, bh);
   fbSoftA = makeFbo(bw, bh);
   fbSoftB = makeFbo(bw, bh);
+  const mw = Math.max(1, w >> 1), mh = Math.max(1, h >> 1);
+  fbMedA = makeFbo(mw, mh);
+  fbMedB = makeFbo(mw, mh);
 }
 
 // ---------------------------------------------------------------- Bild-Dekodierung
@@ -492,6 +506,7 @@ function buildDepthMap() {
   c.width = w; c.height = h;
   c.getContext("2d").putImageData(new ImageData(dst, w, h), 0, 0);
   state.depthCanvas = c;
+  state.depthData = { data: dst, w, h }; // CPU-Kopie für die Klick-Zuordnung
 
   if (texDepth) gl.deleteTexture(texDepth);
   texDepth = makeTexture(c);
@@ -657,10 +672,13 @@ function camAt(loopT) {
     tiltAddY = swayA * 0.7 * Math.sin(ph * 0.8 + 1.3);
   }
 
+  // Kamerafahrt zum Zoomziel: Das Ziel wird in den ersten 40 % des Flugs
+  // zentriert; danach zoomt und rotiert die Kamera exakt um das Objekt.
+  const pan = smoothstep(Math.min(1, p / 0.4));
   return {
     zoom, angle, rate, te, tiltAddX, tiltAddY,
-    cx: state.target.x * pe,
-    cy: state.target.y * pe,
+    cx: state.target.x * pan,
+    cy: state.target.y * pan,
   };
 }
 
@@ -795,6 +813,24 @@ function render(forcedT) {
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
+  // ---- Pass 2c: mittel weichgezeichnete Szene für "Struktur" (halbe Auflösung) ----
+  const structure = (state.structure / 100) * 0.9;
+  if (structure !== 0) {
+    gl.bindVertexArray(quadVao);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.useProgram(blurProg);
+    u1i(blurProg, "uScene", 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbMedA.fb);
+    gl.viewport(0, 0, fbMedA.w, fbMedA.h);
+    gl.bindTexture(gl.TEXTURE_2D, fbScene.tex);
+    u2f(blurProg, "uDir", 1 / fbMedA.w, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbMedB.fb);
+    gl.bindTexture(gl.TEXTURE_2D, fbMedA.tex);
+    u2f(blurProg, "uDir", 0, 1 / fbMedA.h);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
   // ---- Pass 3: Composite auf den Bildschirm ----
   // Bewegungsgrößen numerisch aus der Kamerakurve ableiten
   const dt = 0.05;
@@ -819,9 +855,12 @@ function render(forcedT) {
   gl.bindTexture(gl.TEXTURE_2D, fbBloomA.tex);
   gl.activeTexture(gl.TEXTURE2);
   gl.bindTexture(gl.TEXTURE_2D, clarity !== 0 ? fbSoftB.tex : fbScene.tex);
+  gl.activeTexture(gl.TEXTURE3);
+  gl.bindTexture(gl.TEXTURE_2D, structure !== 0 ? fbMedB.tex : fbScene.tex);
   u1i(compProg, "uScene", 0);
   u1i(compProg, "uBloom", 1);
   u1i(compProg, "uSoft", 2);
+  u1i(compProg, "uMed", 3);
   u1f(compProg, "uViewAspect", viewAspect);
   u1f(compProg, "uBloomStrength", bloomStrength);
   u1f(compProg, "uShutter", (state.mblur / 100) * 1.5);
@@ -835,6 +874,7 @@ function render(forcedT) {
   u1f(compProg, "uContrast", 1 + (state.contrast / 100) * 0.6);
   u1f(compProg, "uSaturation", 1 + state.saturation / 100);
   u1f(compProg, "uClarity", clarity);
+  u1f(compProg, "uStructure", structure);
   u1f(compProg, "uSharpen", (state.sharpen / 100) * 1.2);
   u2f(compProg, "uTexel", 1 / fbScene.w, 1 / fbScene.h);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -856,8 +896,9 @@ requestAnimationFrame(frame);
 function fitCanvas() {
   if (state.exporting) return;
   const wrap = $("canvasWrap");
-  const availW = wrap.clientWidth - 36;
-  const availH = wrap.clientHeight - 36;
+  const scaleView = state.viewScale / 100;
+  const availW = (wrap.clientWidth - 36) * scaleView;
+  const availH = (wrap.clientHeight - 36) * scaleView;
   let w = availW, h = w / state.aspect;
   if (h > availH) { h = availH; w = h * state.aspect; }
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -909,6 +950,7 @@ bindSlider("ctlExposure", "outExposure", "exposure", asInt);
 bindSlider("ctlContrast", "outContrast", "contrast", asInt);
 bindSlider("ctlSaturation", "outSaturation", "saturation", asInt);
 bindSlider("ctlClarity", "outClarity", "clarity", asInt);
+bindSlider("ctlStructure", "outStructure", "structure", asInt);
 bindSlider("ctlSharpen", "outSharpen", "sharpen", asInt);
 
 $("ctlLoop").addEventListener("change", () => {
@@ -922,22 +964,22 @@ $("ctlLoop").addEventListener("change", () => {
 const PRESET_SLIDERS = {
   bloom: "ctlBloom", mblur: "ctlMblur", warp: "ctlWarp", vignette: "ctlVignette",
   exposure: "ctlExposure", contrast: "ctlContrast", saturation: "ctlSaturation",
-  clarity: "ctlClarity", sharpen: "ctlSharpen",
+  clarity: "ctlClarity", structure: "ctlStructure", sharpen: "ctlSharpen",
 };
 
 const PRESETS = {
   // alles neutral / aus
-  neutral:   { bloom: 0,  mblur: 0,  warp: 0,  vignette: 0,  exposure: 0,   contrast: 0,  saturation: 0,    clarity: 0,   sharpen: 0 },
+  neutral:   { bloom: 0,  mblur: 0,  warp: 0,  vignette: 0,  exposure: 0,   contrast: 0,  saturation: 0,    clarity: 0,   structure: 0,  sharpen: 0 },
   // klassischer Kino-Look: sanfter Glow, Filmkorn-freier Kontrast, Vignette
-  kino:      { bloom: 35, mblur: 35, warp: 0,  vignette: 35, exposure: 5,   contrast: 18, saturation: 8,    clarity: 15,  sharpen: 10 },
+  kino:      { bloom: 35, mblur: 35, warp: 0,  vignette: 35, exposure: 5,   contrast: 18, saturation: 8,    clarity: 15,  structure: 10, sharpen: 10 },
   // dunkel, entsättigt, hoher Kontrast – bedrohlich-episch
-  deepspace: { bloom: 25, mblur: 20, warp: 0,  vignette: 50, exposure: -12, contrast: 28, saturation: -18,  clarity: 25,  sharpen: 10 },
+  deepspace: { bloom: 25, mblur: 20, warp: 0,  vignette: 50, exposure: -12, contrast: 28, saturation: -18,  clarity: 25,  structure: 20, sharpen: 10 },
   // träumerischer Orton-Glow, weiche Nebel, kräftige Farben
-  glow:      { bloom: 75, mblur: 30, warp: 0,  vignette: 25, exposure: 8,   contrast: -8, saturation: 15,   clarity: -35, sharpen: 0 },
+  glow:      { bloom: 75, mblur: 30, warp: 0,  vignette: 25, exposure: 8,   contrast: -8, saturation: 15,   clarity: -35, structure: -10, sharpen: 0 },
   // dramatisches Schwarzweiß
-  mono:      { bloom: 30, mblur: 25, warp: 0,  vignette: 45, exposure: 0,   contrast: 30, saturation: -100, clarity: 35,  sharpen: 15 },
+  mono:      { bloom: 30, mblur: 25, warp: 0,  vignette: 45, exposure: 0,   contrast: 30, saturation: -100, clarity: 35,  structure: 25, sharpen: 15 },
   // Hyperraum: Warp + starke Bewegungsunschärfe
-  hyper:     { bloom: 55, mblur: 65, warp: 70, vignette: 30, exposure: 5,   contrast: 12, saturation: 10,   clarity: 10,  sharpen: 0 },
+  hyper:     { bloom: 55, mblur: 65, warp: 70, vignette: 30, exposure: 5,   contrast: 12, saturation: 10,   clarity: 10,  structure: 5,  sharpen: 0 },
 };
 
 let applyingPreset = false;
@@ -1018,8 +1060,19 @@ canvas.addEventListener("click", (e) => {
   const ry = -s * px + c * py;
   const imgAspect = state.starless.width / state.starless.height;
   const cover = Math.max(state.aspect / imgAspect, 1) * 1.02;
-  const qx = cam.cx + rx / (cover * cam.zoom);
-  const qy = cam.cy + ry / (cover * cam.zoom);
+  // Fixpunkt-Iteration wie im Shader: die Tiefe des angeklickten Objekts
+  // bestimmt seine effektive Zoomrate, sonst trifft der Klick daneben
+  const parallax = state.parallax / 100;
+  const depthRange = 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
+  let qx = cam.cx + rx / (cover * cam.zoom);
+  let qy = cam.cy + ry / (cover * cam.zoom);
+  for (let i = 0; i < 3; i++) {
+    const d = depthAtPlane(qx, qy, imgAspect);
+    const exD = 1 + parallax * (d - 0.45) * depthRange;
+    const sc = cover * Math.pow(cam.zoom, exD);
+    qx = cam.cx + rx / sc;
+    qy = cam.cy + ry / sc;
+  }
   state.target.x = Math.min(imgAspect * 0.475, Math.max(-imgAspect * 0.475, qx));
   state.target.y = Math.min(0.475, Math.max(-0.475, qy));
   updateTargetInfo();
@@ -1412,3 +1465,30 @@ $("btnFeedbackMail").addEventListener("click", () => {
     "?subject=" + encodeURIComponent("AstroFly Feedback") +
     "&body=" + encodeURIComponent(body);
 });
+
+// ---------------------------------------------------------------- Hilfen
+
+/** Tiefe (0..1) an einem Punkt der Bildebene, aus der CPU-Kopie der Tiefenkarte. */
+function depthAtPlane(qx, qy, imgAspect) {
+  const dd = state.depthData;
+  if (!dd) return 0.45;
+  const u = Math.min(1, Math.max(0, qx / imgAspect + 0.5));
+  const v = Math.min(1, Math.max(0, qy + 0.5)); // Ebene ist y-up
+  const col = Math.round(u * (dd.w - 1));
+  const row = Math.round((1 - v) * (dd.h - 1));
+  return dd.data[(row * dd.w + col) * 4] / 255;
+}
+
+// Vorschaugröße (wird gespeichert)
+{
+  const saved = parseInt(localStorage.getItem("astrofly-viewscale"), 10);
+  if (saved >= 40 && saved <= 100) state.viewScale = saved;
+  const el = $("ctlViewSize");
+  el.value = state.viewScale;
+  el.addEventListener("input", () => {
+    state.viewScale = parseInt(el.value, 10);
+    localStorage.setItem("astrofly-viewscale", el.value);
+    fitCanvas();
+  });
+  fitCanvas();
+}

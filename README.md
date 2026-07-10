@@ -57,9 +57,13 @@ no build step required.
    | Duration | Length of the video (5–60 s) |
    | Loop mode | Camera flies in and seamlessly back out – perfect for endless loops on social media |
 
-   **Zoom target:** simply **click** the preview – the camera gently flies
-   toward that point over the course of the clip. Double-click resets the
-   target to the image center.
+   **Zoom target:** simply **click** the preview – the camera centers that
+   point during the first part of the flight and then zooms (and rotates)
+   right into it. The click is depth-aware, so it lands exactly on the
+   object you aimed at. Double-click resets the target to the image center.
+
+   **Preview size:** the 🔍 slider below the preview scales the viewport
+   (40–100 %); your choice is remembered.
 4. **Stars**
    | Control | Effect |
    |---|---|
@@ -82,6 +86,7 @@ no build step required.
    | Contrast | Global contrast |
    | Saturation | Color intensity of the whole image |
    | Clarity | Local contrast (negative = soft Orton glow) |
+   | Structure | Fine-detail enhancement (multi-scale local contrast) – brings out more real detail at native resolution, no AI involved |
    | Sharpness | Fine detail sharpening |
 6. **Aspect ratio** – 1:1, 16:9, 21:9, 4:3 or 9:16 (portrait, e.g. for reels).
 7. **Export** – choose a resolution and click **"Export video"**.

@@ -191,6 +191,10 @@
         <input type="range" id="ctlClarity" min="-100" max="100" step="1" value="0">
       </label>
       <label class="slider">
+        <span><span data-i18n="structure">Structure (fine detail)</span> <output id="outStructure">0</output></span>
+        <input type="range" id="ctlStructure" min="-100" max="100" step="1" value="0">
+      </label>
+      <label class="slider">
         <span><span data-i18n="sharpen">Sharpness</span> <output id="outSharpen">0</output></span>
         <input type="range" id="ctlSharpen" min="0" max="100" step="1" value="0">
       </label>
@@ -244,6 +248,7 @@
       <button id="btnRestart" title="Restart" data-i18n-title="restartTitle">⏮</button>
       <div id="timeline"><div id="timelineFill"></div></div>
       <span id="timecode">0.0 s</span>
+      <span class="viewsize" title="Preview size" data-i18n-title="viewSize">🔍<input type="range" id="ctlViewSize" min="40" max="100" step="5" value="70"></span>
     </div>
   </main>
 

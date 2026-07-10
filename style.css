@@ -240,3 +240,5 @@ button.primary:not(:disabled):hover { filter: brightness(1.12); }
 }
 #timelineFill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), var(--accent2)); }
 #timecode { color: var(--muted); font-size: 12px; min-width: 48px; text-align: right; font-variant-numeric: tabular-nums; }
+.viewsize { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 13px; }
+.viewsize input { width: 90px; }
