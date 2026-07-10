@@ -87,6 +87,10 @@ no build step required.
 7. **Export** – choose a resolution and click **"Export video"**.
    The video is rendered and saved automatically as a file
    (MP4 in Chrome/Edge, otherwise WebM).
+8. **Feedback** – found a bug or have an idea? Use the feedback buttons to
+   open a pre-filled [GitHub issue](https://github.com/michaeld1988/AstroFly/issues)
+   or an email draft. Technical details (browser, GPU) are included
+   automatically; nothing is ever sent without your action.
 
 ## How the 3D effect works
 
