@@ -17,6 +17,7 @@
 const state = {
   starless: null,        // { canvas, width, height, name }
   stars: null,
+  starsOriginal: null,   // unbearbeitete Sternmaske (für Streckung an/aus)
   depthCanvas: null,
   starCount: 0,
 
@@ -42,6 +43,9 @@ const state = {
 
   spread: 70,            // Stern-Ebenen-Streuung 0..100
   starDist: 55,          // Stern-Grundtiefe (Abstand zum Nebel) 0..100
+  starLayers: 0,         // Anzahl diskreter Tiefen-Ebenen (0 = kontinuierlich)
+  starPar: 100,          // Stern-Parallaxe in % (Bewegung relativ zum Nebel)
+  maskStretched: false,  // Sternmaske ist bereits gestreckt -> keine Auto-Streckung
   twinkle: 25,           // 0..100
   starSize: 100,         // % Sterngröße
   starBright: 100,       // % Sternhelligkeit
@@ -189,6 +193,8 @@ uniform float uTime;
 uniform float uSeed;      // Zufalls-Seed für die Ebenen-Verteilung
 uniform float uStarBase;  // Grundtiefe (Abstand zum Nebel), 0 fern .. 1 nah
 uniform float uSpread;    // Streuung der Ebenen 0..1
+uniform float uLayers;    // Anzahl diskreter Ebenen (0 = kontinuierlich)
+uniform float uStarPar;   // Parallax-Multiplikator für Sterne
 uniform float uTwinkle;   // Funkel-Stärke 0..1
 uniform float uWarp;      // 0..1: Sterne rasen zusätzlich an der Kamera vorbei
 uniform float uDepthRange;
@@ -203,11 +209,17 @@ out float vAlpha;
 void main() {
   // Reproduzierbare Zufalls-Tiefe pro Stern; "Neu mischen" ändert den Seed
   float h = fract(sin(aPos.x * 127.1 + aPos.y * 311.7 + uSeed * 17.0) * 43758.5453);
-  float depth = clamp(uStarBase + (h - 0.5) * uSpread + aBright * 0.12, 0.02, 1.0);
+  // Optional in diskrete Ebenen einrasten (gleichmäßig verteilt)
+  float brightShift = aBright * 0.12;
+  if (uLayers > 0.5) {
+    h = (floor(h * uLayers) + 0.5) / uLayers;
+    brightShift = 0.0;
+  }
+  float depth = clamp(uStarBase + (h - 0.5) * uSpread + brightShift, 0.02, 1.0);
 
   // Sterne parallaxieren stärker als der Nebel (Faktor ~1.76 relativ zur
   // Räumlichkeit); Warp lässt sie zusätzlich beschleunigt vorbeiziehen
-  float ex = 1.0 + uParallax * (depth - 0.45) * uDepthRange * 1.76 + uWarp * (0.4 + depth);
+  float ex = 1.0 + uParallax * (depth - 0.45) * uDepthRange * 1.76 * uStarPar + uWarp * (0.4 + depth);
   float scale = uCover * pow(uZoom, ex);
   vec2 pr = (aPos - uCenter - uTilt * (depth - 0.45)) * scale;
   float c = cos(uAngle), s = sin(uAngle);
@@ -757,6 +769,8 @@ function render(forcedT) {
     u1f(starProg, "uSeed", state.seed);
     u1f(starProg, "uStarBase", state.starDist / 100);
     u1f(starProg, "uSpread", (state.spread / 100) * 0.9);
+    u1f(starProg, "uLayers", state.starLayers);
+    u1f(starProg, "uStarPar", state.starPar / 100);
     u1f(starProg, "uTwinkle", state.twinkle / 100);
     u1f(starProg, "uWarp", warp);
     u1f(starProg, "uDepthRange", depthRange);
@@ -942,6 +956,8 @@ bindSlider("ctlTwinkle", "outTwinkle", "twinkle", asInt);
 bindSlider("ctlStarSize", "outStarSize", "starSize", asPct);
 bindSlider("ctlStarBright", "outStarBright", "starBright", asPct);
 bindSlider("ctlStarSat", "outStarSat", "starSat", asPct);
+bindSlider("ctlLayers", "outLayers", "starLayers", (v) => v === 0 ? "∞" : String(v));
+bindSlider("ctlStarPar", "outStarPar", "starPar", asPct);
 bindSlider("ctlBloom", "outBloom", "bloom", asInt);
 bindSlider("ctlMblur", "outMblur", "mblur", asInt);
 bindSlider("ctlWarp", "outWarp", "warp", asInt);
@@ -1134,12 +1150,11 @@ async function loadFile(which, file) {
       texColor = makeTexture(downscale(img, state.upscaled ? MAX_TEX : 4096));
       buildDepthMap();
     } else {
-      state.stars = img;
+      state.starsOriginal = img;
       $("nameStars").removeAttribute("data-i18n");
       $("nameStars").textContent = `${file.name} (${img.width}×${img.height})`;
       $("dropStars").classList.add("loaded");
-      buildStarBuffer();
-      status.textContent = t("starsDetected", state.starCount);
+      processStarMask();
     }
     if (state.starless) {
       $("placeholder").style.display = "none";
@@ -1492,3 +1507,81 @@ function depthAtPlane(qx, qy, imgAspect) {
   });
   fitCanvas();
 }
+
+// ---------------------------------------------------------------- Sternmasken-Streckung
+
+/**
+ * Iterative, farberhaltende Asinh-Streckung für lineare Sternmasken.
+ * Pro Durchgang wird die Luminanz moderat gestreckt (asinh) und RGB
+ * proportional skaliert, sodass die Sternfarben exakt erhalten bleiben.
+ * Gestoppt wird, sobald das 99,9-Perzentil der Luminanz das Ziel erreicht –
+ * bereits gestreckte Masken bleiben dadurch praktisch unverändert.
+ */
+function stretchStarMask(srcCanvas) {
+  const w = srcCanvas.width, h = srcCanvas.height;
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const cx = c.getContext("2d", { willReadFrequently: true });
+  cx.drawImage(srcCanvas, 0, 0);
+  const id = cx.getImageData(0, 0, w, h);
+  const d = id.data;
+  const n = w * h;
+
+  const K = 10;                    // moderate Stärke pro Durchgang
+  const denom = Math.asinh(K);
+  const TARGET = 0.3;              // Ziel: 99,9-Perzentil der Luminanz
+  const MAX_PASSES = 12;
+
+  let passes = 0;
+  while (passes < MAX_PASSES) {
+    const hist = new Uint32Array(256);
+    for (let j = 0; j < d.length; j += 4) {
+      hist[(d[j] * 77 + d[j + 1] * 150 + d[j + 2] * 29) >> 8]++;
+    }
+    let cum = 0, p999 = 1;
+    const cut = n * 0.999;
+    for (let v = 0; v < 256; v++) {
+      cum += hist[v];
+      if (cum >= cut) { p999 = v / 255; break; }
+    }
+    if (p999 >= TARGET) break;
+
+    for (let j = 0; j < d.length; j += 4) {
+      const L = (0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2]) / 255;
+      if (L <= 0) continue;
+      const scale = Math.asinh(K * L) / denom / L;
+      d[j]     = Math.min(255, d[j] * scale);
+      d[j + 1] = Math.min(255, d[j + 1] * scale);
+      d[j + 2] = Math.min(255, d[j + 2] * scale);
+    }
+    passes++;
+  }
+  if (passes > 0) cx.putImageData(id, 0, 0);
+  return { canvas: c, passes };
+}
+
+/** Sternmaske (neu) verarbeiten: optional strecken, dann Sterne extrahieren. */
+function processStarMask() {
+  const orig = state.starsOriginal;
+  if (!orig) return;
+  const status = $("loadStatus");
+  // Auf Arbeitsgröße verkleinern (dort findet auch die Sternerkennung statt)
+  const work = downscale(orig, 3000);
+  let passes = 0;
+  let canvas = work;
+  if (!state.maskStretched) {
+    const res = stretchStarMask(work);
+    canvas = res.canvas;
+    passes = res.passes;
+  }
+  state.stars = { canvas, width: canvas.width, height: canvas.height, name: orig.name };
+  buildStarBuffer();
+  status.classList.remove("error");
+  status.textContent = t("starsDetected", state.starCount) +
+    (passes > 0 ? " " + t("stretchInfo", passes) : "");
+}
+
+$("ctlMaskStretched").addEventListener("change", () => {
+  state.maskStretched = $("ctlMaskStretched").checked;
+  if (state.starsOriginal) processStarMask();
+});
