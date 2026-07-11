@@ -29,6 +29,16 @@ no build step required.
 1. **Load images** – select a starless image and a star mask as TIFF, PNG or
    JPG, or drag & drop them (16-bit TIFF is supported).
 
+   **Linear star masks are stretched automatically:** if your star mask
+   comes straight from stacking (linear, not yet stretched in Siril or
+   PixInsight), AstroFly applies an iterative, color-preserving asinh
+   stretch – moderate strength per pass, stopping automatically once the
+   histogram target is reached, so bright stars don't blow out and star
+   colors stay exactly as they are (RGB is scaled proportionally to the
+   luminance ratio). Already-stretched masks are detected by the same
+   criterion and pass through nearly unchanged; you can also tick
+   *"Star mask is already stretched"* to skip the stretch entirely.
+
    **✨ AI upscaler (3×, optional):** enhances real detail in the starless
    image before the flight – great for smaller images that would look soft
    at deep zoom. It uses a small, **non-generative** super-resolution
@@ -69,6 +79,8 @@ no build step required.
    |---|---|
    | Layer spread | How strongly the stars are randomly distributed across depth layers |
    | Distance to nebula | Base depth of the stars relative to the starless image (far ↔ near) |
+   | Depth layers (count) | Snap stars onto a set number of discrete depth layers (∞ = continuous random depths) |
+   | Star parallax | How strongly the stars move relative to the nebula zoom (up to 300 %) |
    | Twinkle | Strength of the star twinkle |
    | Size / Brightness / Saturation | Adjust the appearance of the stars (20–300 % / 0–300 % / 0–200 %) |
    | 🎲 Reshuffle layers | Rolls a new random distribution of the star layers |
