@@ -24,6 +24,9 @@ your browser language on first visit).
 Download the repository and open `index.html` in your browser – that's it,
 no build step required.
 
+All panel sections are collapsible – click a heading to open or close it
+(the state is remembered).
+
 ## Usage
 
 1. **Load images** – select a starless image and a star mask as TIFF, PNG or
@@ -37,7 +40,8 @@ no build step required.
    colors stay exactly as they are (RGB is scaled proportionally to the
    luminance ratio). Already-stretched masks are detected by the same
    criterion and pass through nearly unchanged; you can also tick
-   *"Star mask is already stretched"* to skip the stretch entirely.
+   *"Star mask is already stretched"* to skip the stretch entirely, and the
+   *stretch intensity* slider controls how far the stretch goes.
 
    **✨ AI upscaler (3×, optional):** enhances real detail in the starless
    image before the flight – great for smaller images that would look soft
@@ -57,14 +61,15 @@ no build step required.
    |---|---|
    | Zoom | Start framing (initial magnification) |
    | Speed | How fast the camera flies into the image |
-   | Ease in & out | Smooth acceleration and deceleration of the flight |
+   | Acceleration | Ease in & out, accelerate only, decelerate only, or linear (constant speed) – plus a strength slider |
    | 3D effect | Strength of the parallax (depth impression) |
    | Depth range | How much near and far regions differ in flight speed |
    | Rotation | Camera roll during the flight (°/s) |
    | Rotate framing | Static rotation of the crop (0–360°) |
    | Tilt horizontal/vertical | Tilts the camera – near regions shift relative to far ones (tilt parallax) |
-   | Camera sway | Animated tilt: slow, elliptical camera movement (amount + tempo) |
+   | Camera sway | Animated tilt with adjustable direction (0–360°), tempo and a randomness slider (0 = clean directional rocking, 100 = organic wobble) |
    | Duration | Length of the video (5–60 s) |
+   | Fade in/out | Black-to-image and image-to-black fade, adjustable 0–3 s (0 = off) |
    | Loop mode | Camera flies in and seamlessly back out – perfect for endless loops on social media |
 
    **Zoom target:** simply **click** the preview – the camera centers that

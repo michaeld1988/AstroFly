@@ -37,6 +37,10 @@
         <input type="checkbox" id="ctlMaskStretched">
         <span data-i18n="maskStretched">Star mask is already stretched (skip auto-stretch)</span>
       </label>
+      <label class="slider">
+        <span><span data-i18n="stretchAmount">Stretch intensity</span> <output id="outStretch">50</output></span>
+        <input type="range" id="ctlStretch" min="0" max="100" step="1" value="50">
+      </label>
       <div id="loadStatus"></div>
       <button id="btnUpscale" class="secondary" disabled data-i18n="upscaleBtn">✨ AI upscaler (3×)</button>
       <p class="tip" id="upscaleGpuHint"></p>
@@ -70,8 +74,17 @@
         <span><span data-i18n="speed">Speed</span> <output id="outSpeed">40</output></span>
         <input type="range" id="ctlSpeed" min="0" max="100" step="1" value="40">
       </label>
+      <label class="selfull">
+        <span data-i18n="easeMode">Acceleration</span>
+        <select id="ctlEaseMode">
+          <option value="inout" selected data-i18n="easeInout">Ease in &amp; out</option>
+          <option value="in" data-i18n="easeIn">Accelerate only</option>
+          <option value="out" data-i18n="easeOut">Decelerate only</option>
+          <option value="linear" data-i18n="easeLinear">Linear (constant speed)</option>
+        </select>
+      </label>
       <label class="slider">
-        <span><span data-i18n="ease">Ease in &amp; out</span> <output id="outEase">60</output></span>
+        <span><span data-i18n="ease">Ease strength</span> <output id="outEase">60</output></span>
         <input type="range" id="ctlEase" min="0" max="100" step="1" value="60">
       </label>
       <label class="slider">
@@ -107,8 +120,20 @@
         <input type="range" id="ctlSwayTempo" min="0" max="100" step="1" value="40">
       </label>
       <label class="slider">
+        <span><span data-i18n="swayDir">Sway direction</span> <output id="outSwayDir">0°</output></span>
+        <input type="range" id="ctlSwayDir" min="0" max="360" step="5" value="0">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="swayRandom">Sway randomness</span> <output id="outSwayRandom">0</output></span>
+        <input type="range" id="ctlSwayRandom" min="0" max="100" step="1" value="0">
+      </label>
+      <label class="slider">
         <span><span data-i18n="duration">Duration</span> <output id="outDuration">20 s</output></span>
         <input type="range" id="ctlDuration" min="5" max="60" step="1" value="20">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="fade">Fade in/out (0 = off)</span> <output id="outFade">0.8 s</output></span>
+        <input type="range" id="ctlFade" min="0" max="30" step="1" value="8">
       </label>
       <label class="check">
         <input type="checkbox" id="ctlLoop">
@@ -171,20 +196,20 @@
         </select>
       </label>
       <label class="slider">
-        <span><span data-i18n="bloom">Bloom</span> <output id="outBloom">40</output></span>
-        <input type="range" id="ctlBloom" min="0" max="100" step="1" value="40">
+        <span><span data-i18n="bloom">Bloom</span> <output id="outBloom">0</output></span>
+        <input type="range" id="ctlBloom" min="0" max="100" step="1" value="0">
       </label>
       <label class="slider">
-        <span><span data-i18n="mblur">Motion blur</span> <output id="outMblur">25</output></span>
-        <input type="range" id="ctlMblur" min="0" max="100" step="1" value="25">
+        <span><span data-i18n="mblur">Motion blur</span> <output id="outMblur">0</output></span>
+        <input type="range" id="ctlMblur" min="0" max="100" step="1" value="0">
       </label>
       <label class="slider">
         <span><span data-i18n="warp">Warp</span> <output id="outWarp">0</output></span>
         <input type="range" id="ctlWarp" min="0" max="100" step="1" value="0">
       </label>
       <label class="slider">
-        <span><span data-i18n="vignette">Vignette</span> <output id="outVignette">20</output></span>
-        <input type="range" id="ctlVignette" min="0" max="100" step="1" value="20">
+        <span><span data-i18n="vignette">Vignette</span> <output id="outVignette">0</output></span>
+        <input type="range" id="ctlVignette" min="0" max="100" step="1" value="0">
       </label>
       <label class="slider">
         <span><span data-i18n="exposure">Exposure</span> <output id="outExposure">0</output></span>
