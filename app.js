@@ -27,6 +27,7 @@ const state = {
   zoomBase: 1.4,
   speed: 40,             // 0..100
   ease: 60,              // Beschleunigen/Abbremsen 0..100
+  easeMode: "inout",     // inout | in | out | linear
   parallax: 60,          // 0..100
   depthBoost: 33,        // Räumlichkeit/Tiefenumfang 0..100
   rotationSpeed: 2,      // °/s
@@ -35,6 +36,9 @@ const state = {
   tiltY: 0,
   swayAmp: 0,            // Schwenk-Animation Stärke 0..100
   swayTempo: 40,         // Schwenk-Tempo 0..100
+  swayDir: 0,            // Schwenk-Richtung in Grad
+  swayRandom: 0,         // 0 = gerichtet, 100 = zufälliges Wackeln
+  fade: 8,               // Ein-/Ausblenden in Zehntelsekunden (0 = aus)
   duration: 20,          // s
   loopMode: false,       // hin & zurück, nahtlos
   smooth: 18,
@@ -46,16 +50,17 @@ const state = {
   starLayers: 0,         // Anzahl diskreter Tiefen-Ebenen (0 = kontinuierlich)
   starPar: 100,          // Stern-Parallaxe in % (Bewegung relativ zum Nebel)
   maskStretched: false,  // Sternmaske ist bereits gestreckt -> keine Auto-Streckung
+  stretchAmount: 50,     // Intensität der Auto-Streckung 0..100
   twinkle: 25,           // 0..100
   starSize: 100,         // % Sterngröße
   starBright: 100,       // % Sternhelligkeit
   starSat: 100,          // % Sternsättigung
   seed: 1,               // Zufalls-Seed für Stern-Ebenen
 
-  bloom: 40,             // 0..100
-  mblur: 25,             // 0..100
+  bloom: 0,              // 0..100
+  mblur: 0,              // 0..100
   warp: 0,               // 0..100
-  vignette: 20,          // 0..100
+  vignette: 0,           // 0..100
   exposure: 0,           // -100..100 (Blendenstufen ±2)
   contrast: 0,           // -100..100
   saturation: 0,         // -100..100
@@ -665,8 +670,15 @@ function camAt(loopT) {
   const D = state.duration;
   const u = Math.min(1, Math.max(0, loopT / D));
   const p = state.loopMode ? 1 - Math.abs(1 - 2 * u) : u;
+  let curve;
+  switch (state.easeMode) {
+    case "linear": curve = p; break;
+    case "in":     curve = p * p; break;
+    case "out":    curve = 1 - (1 - p) * (1 - p); break;
+    default:       curve = smoothstep(p); // sanft beschleunigen & abbremsen
+  }
   const e = state.ease / 100;
-  const pe = p + (smoothstep(p) - p) * e;
+  const pe = p + (curve - p) * e;
   const te = pe * D * (state.loopMode ? 0.5 : 1);
 
   const rate = (state.speed / 100) * 0.09;
@@ -680,8 +692,15 @@ function camAt(loopT) {
   if (swayA > 0) {
     const period = 16 - (state.swayTempo / 100) * 12; // 16 s .. 4 s
     const ph = te * 2 * Math.PI / period;
-    tiltAddX = swayA * Math.sin(ph);
-    tiltAddY = swayA * 0.7 * Math.sin(ph * 0.8 + 1.3);
+    // Gerichtetes Pendeln entlang der eingestellten Richtung ...
+    const dir = state.swayDir * Math.PI / 180;
+    const lin = Math.sin(ph);
+    // ... gemischt mit dem zufälligen elliptischen Wackeln
+    const rnd = state.swayRandom / 100;
+    const ellX = Math.sin(ph);
+    const ellY = 0.7 * Math.sin(ph * 0.8 + 1.3);
+    tiltAddX = swayA * ((1 - rnd) * Math.cos(dir) * lin + rnd * ellX);
+    tiltAddY = swayA * ((1 - rnd) * Math.sin(dir) * lin + rnd * ellY);
   }
 
   // Kamerafahrt zum Zoomziel: Das Ziel wird in den ersten 40 % des Flugs
@@ -698,9 +717,10 @@ function animParams(t) {
   const loopT = state.exporting ? t : t % state.duration;
   const cam = camAt(loopT);
   let fade = 1;
-  if (!state.loopMode) {
-    const fadeIn = Math.min(1, loopT / 0.8);
-    const fadeOut = Math.min(1, Math.max(0, (state.duration - loopT) / 0.8));
+  const fadeDur = state.fade / 10;
+  if (!state.loopMode && fadeDur > 0) {
+    const fadeIn = Math.min(1, loopT / fadeDur);
+    const fadeOut = Math.min(1, Math.max(0, (state.duration - loopT) / fadeDur));
     fade = Math.min(fadeIn, fadeOut);
   }
   return { loopT, cam, fade };
@@ -958,6 +978,23 @@ bindSlider("ctlStarBright", "outStarBright", "starBright", asPct);
 bindSlider("ctlStarSat", "outStarSat", "starSat", asPct);
 bindSlider("ctlLayers", "outLayers", "starLayers", (v) => v === 0 ? "∞" : String(v));
 bindSlider("ctlStarPar", "outStarPar", "starPar", asPct);
+bindSlider("ctlSwayDir", "outSwayDir", "swayDir", (v) => v + "°");
+bindSlider("ctlSwayRandom", "outSwayRandom", "swayRandom", asInt);
+bindSlider("ctlFade", "outFade", "fade", (v) => (v / 10).toFixed(1) + " s");
+
+$("ctlEaseMode").addEventListener("change", () => {
+  state.easeMode = $("ctlEaseMode").value;
+});
+
+let stretchTimer = null;
+$("ctlStretch").addEventListener("input", () => {
+  state.stretchAmount = parseInt($("ctlStretch").value, 10);
+  $("outStretch").textContent = state.stretchAmount;
+  clearTimeout(stretchTimer);
+  stretchTimer = setTimeout(() => {
+    if (state.starsOriginal && !state.maskStretched) processStarMask();
+  }, 400);
+});
 bindSlider("ctlBloom", "outBloom", "bloom", asInt);
 bindSlider("ctlMblur", "outMblur", "mblur", asInt);
 bindSlider("ctlWarp", "outWarp", "warp", asInt);
@@ -1529,8 +1566,9 @@ function stretchStarMask(srcCanvas) {
 
   const K = 10;                    // moderate Stärke pro Durchgang
   const denom = Math.asinh(K);
-  const TARGET = 0.3;              // Ziel: 99,9-Perzentil der Luminanz
-  const MAX_PASSES = 12;
+  // Ziel-Perzentil aus der eingestellten Intensität (0..100 -> 0.12..0.6)
+  const TARGET = 0.12 + 0.0048 * state.stretchAmount;
+  const MAX_PASSES = 14;
 
   let passes = 0;
   while (passes < MAX_PASSES) {
@@ -1585,3 +1623,24 @@ $("ctlMaskStretched").addEventListener("change", () => {
   state.maskStretched = $("ctlMaskStretched").checked;
   if (state.starsOriginal) processStarMask();
 });
+
+// ---------------------------------------------------------------- Panel-Menüs
+
+// Sektionen einklappbar machen (Zustand wird gespeichert)
+for (const [i, sec] of document.querySelectorAll("#panel section").entries()) {
+  const h2 = sec.querySelector("h2");
+  if (!h2) continue;
+  const body = document.createElement("div");
+  body.className = "secbody";
+  while (h2.nextSibling) body.appendChild(h2.nextSibling);
+  sec.appendChild(body);
+  const key = "astrofly-sec-" + i;
+  const saved = localStorage.getItem(key);
+  const defaultOpen = i === 0 || i === 2; // Bilder laden + Kamera offen
+  const open = saved === null ? defaultOpen : saved === "1";
+  sec.classList.toggle("collapsed", !open);
+  h2.addEventListener("click", () => {
+    const collapsed = sec.classList.toggle("collapsed");
+    localStorage.setItem(key, collapsed ? "0" : "1");
+  });
+}

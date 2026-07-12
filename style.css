@@ -55,7 +55,11 @@ section {
   padding: 14px 0;
 }
 
-h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--accent); margin-bottom: 10px; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--accent); margin-bottom: 10px; cursor: pointer; user-select: none; }
+h2::before { content: "▾ "; color: var(--muted); font-size: 10px; }
+section.collapsed h2 { margin-bottom: 0; }
+section.collapsed h2::before { content: "▸ "; }
+section.collapsed .secbody { display: none; }
 h2 .hint { color: var(--muted); text-transform: none; letter-spacing: 0; font-weight: normal; }
 
 /* file buttons */
