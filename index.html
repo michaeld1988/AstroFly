@@ -66,6 +66,22 @@
 
     <section>
       <h2 data-i18n="sec3">3 · Camera &amp; animation</h2>
+      <label class="selfull">
+        <span data-i18n="flightMode">Flight mode</span>
+        <select id="ctlFlightMode">
+          <option value="zoom" selected data-i18n="flightZoom">Toward the nebula (zoom in)</option>
+          <option value="lateral" data-i18n="flightLateral">Lateral drift (glide across)</option>
+        </select>
+      </label>
+      <div id="driftRow" hidden>
+        <label class="slider">
+          <span><span data-i18n="driftDir">Flight direction</span> <output id="outDriftDir">90°</output></span>
+          <input type="range" id="ctlDriftDir" min="0" max="360" step="5" value="90">
+        </label>
+        <p class="tip" data-i18n="lateralHint">The camera glides across the image at constant zoom –
+        near regions and stars drift past faster (parallax). Speed sets the travel distance,
+        a click sets the path center. Increase zoom for a longer travel range.</p>
+      </div>
       <label class="slider">
         <span><span data-i18n="zoom">Zoom (start framing)</span> <output id="outZoom">1.4×</output></span>
         <input type="range" id="ctlZoom" min="1" max="4" step="0.05" value="1.4">
@@ -178,6 +194,12 @@
         <span><span data-i18n="starSat">Saturation (stars)</span> <output id="outStarSat">100 %</output></span>
         <input type="range" id="ctlStarSat" min="0" max="200" step="5" value="100">
       </label>
+      <label class="slider">
+        <span><span data-i18n="genStars">Generated stars (extra)</span> <output id="outGenStars">0</output></span>
+        <input type="range" id="ctlGenStars" min="0" max="3000" step="50" value="0">
+      </label>
+      <p class="tip" data-i18n="genStarsHint">Adds synthetic stars with realistic brightness and
+      star colors – ideal for lateral flights or sparse star masks. 🎲 rolls a new arrangement.</p>
       <button id="btnShuffle" class="secondary" data-i18n="shuffle">🎲 Reshuffle layers</button>
     </section>
 

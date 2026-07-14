@@ -24,8 +24,10 @@ const state = {
   aspect: 16 / 9,
   aspectName: "16:9",
 
+  flightMode: "zoom",    // "zoom" = auf den Nebel zu, "lateral" = seitlicher Flug
+  driftDir: 90,          // Flugrichtung beim seitlichen Flug in Grad
   zoomBase: 1.4,
-  speed: 40,             // 0..100
+  speed: 40,             // 0..100 (beim seitlichen Flug: Fahrstrecke)
   ease: 60,              // Beschleunigen/Abbremsen 0..100
   easeMode: "inout",     // inout | in | out | linear
   parallax: 60,          // 0..100
@@ -48,6 +50,7 @@ const state = {
   spread: 70,            // Stern-Ebenen-Streuung 0..100
   starDist: 55,          // Stern-Grundtiefe (Abstand zum Nebel) 0..100
   starLayers: 0,         // Anzahl diskreter Tiefen-Ebenen (0 = kontinuierlich)
+  genStars: 0,           // Anzahl zusätzlich generierter (synthetischer) Sterne
   starPar: 100,          // Stern-Parallaxe in % (Bewegung relativ zum Nebel)
   maskStretched: false,  // Sternmaske ist bereits gestreckt -> keine Auto-Streckung
   stretchAmount: 50,     // Intensität der Auto-Streckung 0..100
@@ -568,7 +571,7 @@ function clampi(v, n) { return v < 0 ? 0 : (v >= n ? n - 1 : v); }
  * Die Tiefen-Ebene wird erst im Vertexshader aus Seed/Streuung/Abstand bestimmt.
  */
 function buildStarBuffer() {
-  if (!state.stars) return;
+  if (!state.stars) { state.maskStarFloats = null; state.maskStarCount = 0; uploadStars(); return; }
   const src = downscale(state.stars, 3000);
   const w = src.width, h = src.height;
   const data = src.getContext("2d").getImageData(0, 0, w, h).data;
@@ -636,12 +639,77 @@ function buildStarBuffer() {
     buf[o++] = 0.35 + 0.65 * st.b / norm;
   }
 
-  state.starCount = list.length;
+  state.maskStarCount = list.length;
+  state.maskStarFloats = buf;
+  uploadStars();
+}
+
+// ---------------------------------------------------------------- Stern-Generator
+
+/** Deterministischer Zufallsgenerator (für reproduzierbare Sternfelder). */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Erzeugt synthetische Sterne: Helligkeit nach Potenzgesetz (viele schwache,
+ * wenige helle), Farben entlang der Sternsequenz (blau-weiß bis rötlich),
+ * Positionen mit Rand über das Bild hinaus, damit beim seitlichen Flug und
+ * bei starker Parallaxe neue Sterne ins Bild nachrücken. Der 🎲-Button
+ * (Seed) würfelt eine neue Anordnung.
+ */
+function generateStars() {
+  const n = state.genStars;
+  if (n <= 0) return new Float32Array(0);
+  const imgAspect = state.starless
+    ? state.starless.width / state.starless.height
+    : (state.stars ? state.stars.width / state.stars.height : 16 / 9);
+  const rnd = mulberry32(Math.floor(state.seed * 65536) + 7);
+  const M = 1.3; // 30 % Rand jenseits der Bildkanten
+  const buf = new Float32Array(n * 7);
+  let o = 0;
+  for (let i = 0; i < n; i++) {
+    const x = (rnd() - 0.5) * imgAspect * M;
+    const y = (rnd() - 0.5) * M;
+    const bright = Math.pow(rnd(), 3.2) * 0.9 + 0.03;
+    const radiusPx = 0.8 + bright * 3.2 + rnd() * 0.9;
+    const pick = rnd();
+    let r, g, b;
+    if (pick < 0.22)      { r = 0.72; g = 0.80; b = 1.00; } // blau-weiß
+    else if (pick < 0.55) { r = 0.95; g = 0.95; b = 1.00; } // weiß
+    else if (pick < 0.78) { r = 1.00; g = 0.93; b = 0.80; } // gelblich-weiß
+    else if (pick < 0.93) { r = 1.00; g = 0.82; b = 0.62; } // orange
+    else                  { r = 1.00; g = 0.66; b = 0.48; } // rötlich
+    buf[o++] = x;
+    buf[o++] = y;
+    buf[o++] = bright;
+    buf[o++] = radiusPx / 1500; // Radius in Ebenen-Einheiten (nominale Höhe)
+    buf[o++] = r;
+    buf[o++] = g;
+    buf[o++] = b;
+  }
+  return buf;
+}
+
+/** Masken-Sterne + generierte Sterne in den GPU-Puffer laden. */
+function uploadStars() {
+  const mask = state.maskStarFloats || new Float32Array(0);
+  const gen = generateStars();
+  const buf = new Float32Array(mask.length + gen.length);
+  buf.set(mask, 0);
+  buf.set(gen, mask.length);
+  state.starCount = buf.length / 7;
+  if (!state.starCount) return;
 
   gl.bindVertexArray(starVao);
   gl.bindBuffer(gl.ARRAY_BUFFER, starBuf);
   gl.bufferData(gl.ARRAY_BUFFER, buf, gl.STATIC_DRAW);
-  const stride = FLOATS * 4;
+  const stride = 7 * 4;
   gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, stride, 0);
   gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 1, gl.FLOAT, false, stride, 8);
   gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 1, gl.FLOAT, false, stride, 12);
@@ -682,8 +750,41 @@ function camAt(loopT) {
   const te = pe * D * (state.loopMode ? 0.5 : 1);
 
   const rate = (state.speed / 100) * 0.09;
-  const zoom = state.zoomBase * Math.exp(rate * te);
   const angle = (state.orientation + state.rotationSpeed * te) * Math.PI / 180;
+
+  // Flugmodus: entweder in den Nebel zoomen oder seitlich übers Bild gleiten
+  let zoom, cx, cy, driftTX = 0, driftTY = 0;
+  if (state.flightMode === "lateral") {
+    // Konstanter Zoom; die Kamera fährt entlang der eingestellten Richtung
+    // durch das Ziel (Klickpunkt). Die Strecke ist so begrenzt, dass der
+    // Bildausschnitt nicht über den Rand hinausläuft.
+    zoom = state.zoomBase;
+    const viewAspect = state.aspect;
+    const imgAspect = state.starless
+      ? state.starless.width / state.starless.height : 16 / 9;
+    const cover = Math.max(viewAspect / imgAspect, 1) * 1.02;
+    const sc = cover * zoom;
+    const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.92;
+    const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.92;
+    const tx = Math.min(freeX, Math.max(-freeX, state.target.x));
+    const ty = Math.min(freeY, Math.max(-freeY, state.target.y));
+    const dir = state.driftDir * Math.PI / 180;
+    const ux = Math.cos(dir), uy = Math.sin(dir);
+    let half = Infinity;
+    if (Math.abs(ux) > 1e-6) half = Math.min(half, (freeX - Math.abs(tx)) / Math.abs(ux));
+    if (Math.abs(uy) > 1e-6) half = Math.min(half, (freeY - Math.abs(ty)) / Math.abs(uy));
+    if (!isFinite(half)) half = 0;
+    half *= state.speed / 100;
+    const off = (pe - 0.5) * 2 * half;
+    cx = tx + off * ux;
+    cy = ty + off * uy;
+    // Fahrt-Parallaxe: wirkt wie ein animiertes Kippen – nahe Bereiche und
+    // nahe Sterne ziehen schneller vorbei als ferne (Skalierung im Renderer)
+    driftTX = off * ux;
+    driftTY = off * uy;
+  } else {
+    zoom = state.zoomBase * Math.exp(rate * te);
+  }
 
   // Schwenk-Animation: langsame elliptische Kippbewegung (Funktion von te,
   // dadurch im Loop-Modus automatisch nahtlos)
@@ -703,14 +804,15 @@ function camAt(loopT) {
     tiltAddY = swayA * ((1 - rnd) * Math.sin(dir) * lin + rnd * ellY);
   }
 
-  // Kamerafahrt zum Zoomziel: Das Ziel wird in den ersten 40 % des Flugs
-  // zentriert; danach zoomt und rotiert die Kamera exakt um das Objekt.
-  const pan = smoothstep(Math.min(1, p / 0.4));
-  return {
-    zoom, angle, rate, te, tiltAddX, tiltAddY,
-    cx: state.target.x * pan,
-    cy: state.target.y * pan,
-  };
+  // Kamerafahrt zum Zoomziel (nur Zoom-Modus): Das Ziel wird in den ersten
+  // 40 % des Flugs zentriert; danach zoomt und rotiert die Kamera exakt um
+  // das Objekt. Beim seitlichen Flug ist die Bahn bereits oben bestimmt.
+  if (state.flightMode !== "lateral") {
+    const pan = smoothstep(Math.min(1, p / 0.4));
+    cx = state.target.x * pan;
+    cy = state.target.y * pan;
+  }
+  return { zoom, angle, rate, te, tiltAddX, tiltAddY, cx, cy, driftTX, driftTY };
 }
 
 function animParams(t) {
@@ -748,6 +850,14 @@ function render(forcedT) {
   const depthRange = 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
   const tiltX = (state.tiltX / 100) * 0.08 + cam.tiltAddX;
   const tiltY = (state.tiltY / 100) * 0.08 + cam.tiltAddY;
+  // Seitlicher Flug: die Fahrt-Parallaxe nutzt den Kipp-Mechanismus
+  // (tiefenabhängige Verschiebung); Sterne reagieren wie beim Zoom stärker
+  const drK = parallax * depthRange;
+  const drKStar = drK * 1.76 * (state.starPar / 100);
+  const bgTiltX = tiltX + cam.driftTX * drK;
+  const bgTiltY = tiltY + cam.driftTY * drK;
+  const starTiltX = tiltX + cam.driftTX * drKStar;
+  const starTiltY = tiltY + cam.driftTY * drKStar;
 
   // ---- Pass 1: Szene in FBO ----
   gl.bindFramebuffer(gl.FRAMEBUFFER, fbScene.fb);
@@ -770,7 +880,7 @@ function render(forcedT) {
   u1f(bgProg, "uAngle", cam.angle);
   u1f(bgProg, "uCover", cover);
   u2f(bgProg, "uCenter", cam.cx, cam.cy);
-  u2f(bgProg, "uTilt", tiltX, tiltY);
+  u2f(bgProg, "uTilt", bgTiltX, bgTiltY);
   u1f(bgProg, "uDepthRange", depthRange);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
@@ -798,7 +908,7 @@ function render(forcedT) {
     u1f(starProg, "uStarBright", state.starBright / 100);
     u1f(starProg, "uStarSat", state.starSat / 100);
     u2f(starProg, "uCenter", cam.cx, cam.cy);
-    u2f(starProg, "uTilt", tiltX, tiltY);
+    u2f(starProg, "uTilt", starTiltX, starTiltY);
     gl.drawArrays(gl.POINTS, 0, state.starCount);
     gl.disable(gl.BLEND);
   }
@@ -981,9 +1091,25 @@ bindSlider("ctlStarPar", "outStarPar", "starPar", asPct);
 bindSlider("ctlSwayDir", "outSwayDir", "swayDir", (v) => v + "°");
 bindSlider("ctlSwayRandom", "outSwayRandom", "swayRandom", asInt);
 bindSlider("ctlFade", "outFade", "fade", (v) => (v / 10).toFixed(1) + " s");
+bindSlider("ctlDriftDir", "outDriftDir", "driftDir", (v) => v + "°");
 
 $("ctlEaseMode").addEventListener("change", () => {
   state.easeMode = $("ctlEaseMode").value;
+});
+
+$("ctlFlightMode").addEventListener("change", () => {
+  state.flightMode = $("ctlFlightMode").value;
+  $("driftRow").hidden = state.flightMode !== "lateral";
+  state.t0 = performance.now();
+  state.pausedAt = 0;
+});
+
+let genTimer = null;
+$("ctlGenStars").addEventListener("input", () => {
+  state.genStars = parseInt($("ctlGenStars").value, 10);
+  $("outGenStars").textContent = String(state.genStars);
+  clearTimeout(genTimer);
+  genTimer = setTimeout(uploadStars, 120);
 });
 
 let stretchTimer = null;
@@ -1068,6 +1194,7 @@ $("ctlInvert").addEventListener("change", () => {
 
 $("btnShuffle").addEventListener("click", () => {
   state.seed = Math.random() * 1000;
+  if (state.genStars > 0) uploadStars(); // generierte Sterne neu würfeln
 });
 
 // Format
@@ -1186,6 +1313,8 @@ async function loadFile(which, file) {
       if (texColor) gl.deleteTexture(texColor);
       texColor = makeTexture(downscale(img, state.upscaled ? MAX_TEX : 4096));
       buildDepthMap();
+      // generierte Sterne nutzen das Seitenverhältnis des Starless-Bildes
+      if (state.genStars > 0) uploadStars();
     } else {
       state.starsOriginal = img;
       $("nameStars").removeAttribute("data-i18n");
@@ -1615,7 +1744,7 @@ function processStarMask() {
   state.stars = { canvas, width: canvas.width, height: canvas.height, name: orig.name };
   buildStarBuffer();
   status.classList.remove("error");
-  status.textContent = t("starsDetected", state.starCount) +
+  status.textContent = t("starsDetected", state.maskStarCount) +
     (passes > 0 ? " " + t("stretchInfo", passes) : "");
 }
 
