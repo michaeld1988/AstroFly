@@ -59,8 +59,10 @@ All panel sections are collapsible – click a heading to open or close it
 3. **Camera & animation**
    | Control | Effect |
    |---|---|
-   | Zoom | Start framing (initial magnification) |
-   | Speed | How fast the camera flies into the image |
+   | Flight mode | **Toward the nebula** (classic zoom flight) or **lateral drift** – the camera glides across the image at constant zoom while near regions and stars pass by faster (parallax), like a slow sideways space flight |
+   | Flight direction | Direction of the lateral drift (0–360°); a click on the preview sets the center of the path |
+   | Zoom | Start framing (initial magnification) – in lateral mode, more zoom also allows a longer travel range |
+   | Speed | How fast the camera flies into the image (lateral mode: how far it travels) |
    | Acceleration | Ease in & out, accelerate only, decelerate only, or linear (constant speed) – plus a strength slider |
    | 3D effect | Strength of the parallax (depth impression) |
    | Depth range | How much near and far regions differ in flight speed |
@@ -88,7 +90,8 @@ All panel sections are collapsible – click a heading to open or close it
    | Star parallax | How strongly the stars move relative to the nebula zoom (up to 300 %) |
    | Twinkle | Strength of the star twinkle |
    | Size / Brightness / Saturation | Adjust the appearance of the stars (20–300 % / 0–300 % / 0–200 %) |
-   | 🎲 Reshuffle layers | Rolls a new random distribution of the star layers |
+   | Generated stars | Adds up to 3000 synthetic stars with a realistic brightness distribution (many faint, few bright) and natural star colors – ideal for lateral flights or sparse star masks; also works without a star mask |
+   | 🎲 Reshuffle layers | Rolls a new random distribution of the star layers (and of the generated stars) |
 5. **Effects & look**
    **Presets:** Cinematic, Deep Space, Dreamy Glow, Monochrome, Hyperspace
    and Neutral – each sets all look controls to a matched cinematic style;
