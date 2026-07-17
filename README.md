@@ -87,7 +87,7 @@ All panel sections are collapsible – click a heading to open or close it
    | Layer spread | How strongly the stars are randomly distributed across depth layers |
    | Distance to nebula | Base depth of the stars relative to the starless image (far ↔ near) |
    | Depth layers (count) | Snap stars onto a set number of discrete depth layers (∞ = continuous random depths) |
-   | Star parallax | How strongly the stars move relative to the nebula zoom (up to 300 %) |
+   | Star parallax | How strongly the stars move relative to the nebula zoom (up to 400 %) |
    | Twinkle | Strength of the star twinkle |
    | Size / Brightness / Saturation | Adjust the appearance of the stars (20–300 % / 0–300 % / 0–200 %) |
    | Generated stars | Adds up to 3000 synthetic stars with a realistic brightness distribution (many faint, few bright) and natural star colors – ideal for lateral flights or sparse star masks; also works without a star mask |
@@ -111,7 +111,9 @@ All panel sections are collapsible – click a heading to open or close it
 6. **Aspect ratio** – 1:1, 16:9, 21:9, 4:3 or 9:16 (portrait, e.g. for reels).
 7. **Export** – choose a resolution and click **"Export video"**.
    The video is rendered and saved automatically as a file
-   (MP4 in Chrome/Edge, otherwise WebM).
+   (MP4 in Chrome/Edge, otherwise WebM). The file name is derived from
+   your starless image (with "starless" stripped) and can be overridden
+   in the file-name field.
 8. **Feedback** – found a bug or have an idea? Use the feedback buttons to
    open a pre-filled [GitHub issue](https://github.com/michaeld1988/AstroFly/issues)
    or an email draft. Technical details (browser, GPU) are included
