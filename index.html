@@ -176,7 +176,7 @@
       </label>
       <label class="slider">
         <span><span data-i18n="starPar">Star parallax</span> <output id="outStarPar">100 %</output></span>
-        <input type="range" id="ctlStarPar" min="0" max="300" step="5" value="100">
+        <input type="range" id="ctlStarPar" min="0" max="400" step="5" value="100">
       </label>
       <label class="slider">
         <span><span data-i18n="twinkle">Twinkle</span> <output id="outTwinkle">25</output></span>
@@ -272,6 +272,10 @@
 
     <section>
       <h2 data-i18n="sec7">7 · Export</h2>
+      <label class="namerow">
+        <span data-i18n="fileName">File name</span>
+        <input type="text" id="ctlFilename" placeholder="astrofly" spellcheck="false" autocomplete="off">
+      </label>
       <div class="exportrow">
         <select id="ctlRes">
           <option value="1080" selected>Full HD (1080)</option>

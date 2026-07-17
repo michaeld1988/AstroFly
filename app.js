@@ -225,9 +225,11 @@ void main() {
   }
   float depth = clamp(uStarBase + (h - 0.5) * uSpread + brightShift, 0.02, 1.0);
 
-  // Sterne parallaxieren stärker als der Nebel (Faktor ~1.76 relativ zur
-  // Räumlichkeit); Warp lässt sie zusätzlich beschleunigt vorbeiziehen
-  float ex = 1.0 + uParallax * (depth - 0.45) * uDepthRange * 1.76 * uStarPar + uWarp * (0.4 + depth);
+  // Sterne parallaxieren deutlich stärker als der Nebel (Faktor ~2.6 relativ
+  // zur Räumlichkeit); Warp lässt sie zusätzlich beschleunigt vorbeiziehen
+  float ex = 1.0 + uParallax * (depth - 0.45) * uDepthRange * 2.6 * uStarPar + uWarp * (0.4 + depth);
+  // Ferne Sterne nie rückwärts fliegen lassen (Exponent bliebe sonst negativ)
+  ex = max(ex, 0.12);
   float scale = uCover * pow(uZoom, ex);
   vec2 pr = (aPos - uCenter - uTilt * (depth - 0.45)) * scale;
   float c = cos(uAngle), s = sin(uAngle);
@@ -853,7 +855,7 @@ function render(forcedT) {
   // Seitlicher Flug: die Fahrt-Parallaxe nutzt den Kipp-Mechanismus
   // (tiefenabhängige Verschiebung); Sterne reagieren wie beim Zoom stärker
   const drK = parallax * depthRange;
-  const drKStar = drK * 1.76 * (state.starPar / 100);
+  const drKStar = drK * 2.6 * (state.starPar / 100);
   const bgTiltX = tiltX + cam.driftTX * drK;
   const bgTiltY = tiltY + cam.driftTY * drK;
   const starTiltX = tiltX + cam.driftTX * drKStar;
@@ -898,7 +900,7 @@ function render(forcedT) {
     u1f(starProg, "uTime", cam.te); // effektive Flugzeit: im Loop-Modus nahtlos
     u1f(starProg, "uSeed", state.seed);
     u1f(starProg, "uStarBase", state.starDist / 100);
-    u1f(starProg, "uSpread", (state.spread / 100) * 0.9);
+    u1f(starProg, "uSpread", (state.spread / 100) * 1.15);
     u1f(starProg, "uLayers", state.starLayers);
     u1f(starProg, "uStarPar", state.starPar / 100);
     u1f(starProg, "uTwinkle", state.twinkle / 100);
@@ -1315,6 +1317,8 @@ async function loadFile(which, file) {
       buildDepthMap();
       // generierte Sterne nutzen das Seitenverhältnis des Starless-Bildes
       if (state.genStars > 0) uploadStars();
+      // Export-Dateiname vom Bildnamen ableiten (bleibt überschreibbar)
+      $("ctlFilename").placeholder = deriveExportName();
     } else {
       state.starsOriginal = img;
       $("nameStars").removeAttribute("data-i18n");
@@ -1414,8 +1418,19 @@ function endExport(message) {
   $("exportStatus").textContent = message;
 }
 
+/** Basisnamen aus dem Starless-Dateinamen ableiten ("orion_starless.tif" -> "orion"). */
+function deriveExportName() {
+  const n = (state.starless && state.starless.name) || "";
+  let base = n.replace(/\.[a-z0-9]+(\s*×3)?$/i, "");
+  base = base.replace(/star_?less|sternlos/gi, "");
+  base = base.replace(/[-_ .]{2,}/g, "_").replace(/^[-_ .]+|[-_ .]+$/g, "");
+  return base || "astrofly";
+}
+
 function exportFilename(ext) {
-  return `astrofly_${state.aspectName.replace(":", "x")}_${state.duration}s.${ext}`;
+  const custom = $("ctlFilename").value.trim().replace(/[\\/:*?"<>|]/g, "");
+  const base = custom || deriveExportName();
+  return `${base}_${state.aspectName.replace(":", "x")}_${state.duration}s.${ext}`;
 }
 
 /**
