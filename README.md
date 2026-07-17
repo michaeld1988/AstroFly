@@ -15,6 +15,14 @@ nothing is uploaded).
 
 Chrome or Edge recommended – they also support MP4 export; Firefox exports WebM.
 
+**No images at hand?** Click **"✨ Try it with a demo image"** – it loads a
+bundled Orion Nebula (starless + star mask, photographed by Michael Döhler)
+so you can experience the 3D flight in seconds, even on your phone.
+
+The layout is **mobile-friendly**: on narrow screens the preview sits on
+top and the control panel scrolls below it. For serious work (16-bit TIFFs,
+4K export) a desktop browser is still recommended.
+
 The interface is available in **English and German** – switch with the
 EN/DE toggle at the top left (your choice is remembered; the app follows
 your browser language on first visit).
@@ -30,7 +38,9 @@ All panel sections are collapsible – click a heading to open or close it
 ## Usage
 
 1. **Load images** – select a starless image and a star mask as TIFF, PNG or
-   JPG, or drag & drop them (16-bit TIFF is supported).
+   JPG, or drag & drop them (16-bit TIFF is supported). Or click the
+   **demo button** to load the bundled Orion Nebula example
+   (`demo/`, © Michael Döhler).
 
    **Linear star masks are stretched automatically:** if your star mask
    comes straight from stacking (linear, not yet stretched in Siril or

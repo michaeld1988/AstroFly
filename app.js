@@ -1040,7 +1040,9 @@ requestAnimationFrame(frame);
 function fitCanvas() {
   if (state.exporting) return;
   const wrap = $("canvasWrap");
-  const scaleView = state.viewScale / 100;
+  // Mobil (schmale Bildschirme) nutzt die Vorschau immer die volle Fläche
+  const mobile = window.innerWidth <= 820;
+  const scaleView = (mobile ? 100 : state.viewScale) / 100;
   const availW = (wrap.clientWidth - 36) * scaleView;
   const availH = (wrap.clientHeight - 36) * scaleView;
   let w = availW, h = w / state.aspect;
@@ -1335,6 +1337,34 @@ async function loadFile(which, file) {
     status.textContent = t("loadFailed", file.name, err.message);
   }
 }
+
+// Demo-Bilder (Orionnebel, aufgenommen von Michael Döhler) aus dem Repo laden –
+// so kann jeder die App sofort ausprobieren, auch ohne eigene Dateien
+$("btnDemo").addEventListener("click", async () => {
+  const status = $("loadStatus");
+  status.classList.remove("error");
+  status.textContent = t("demoLoading");
+  $("btnDemo").disabled = true;
+  try {
+    const fetchImg = async (url, name) => {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return new File([await r.blob()], name, { type: "image/jpeg" });
+    };
+    const starless = await fetchImg("demo/orion_starless.jpg", "orion_demo.jpg");
+    const stars = await fetchImg("demo/orion_starmask.jpg", "orion_demo_starmask.jpg");
+    await loadFile("starless", starless);
+    await loadFile("stars", stars);
+    status.textContent = t("demoLoaded", state.starCount);
+  } catch (err) {
+    console.error(err);
+    status.classList.add("error");
+    status.textContent = location.protocol === "file:"
+      ? t("demoNeedsHttp") : t("demoFailed", err.message);
+  } finally {
+    $("btnDemo").disabled = false;
+  }
+});
 
 $("fileStarless").addEventListener("change", (e) => {
   if (e.target.files[0]) loadFile("starless", e.target.files[0]);
