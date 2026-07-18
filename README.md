@@ -78,16 +78,18 @@ All panel sections are collapsible – click a heading to open or close it
    | Depth range | How much near and far regions differ in flight speed |
    | Rotation | Camera roll during the flight (°/s) |
    | Rotate framing | Static rotation of the crop (0–360°) |
+   | Shift framing horizontal/vertical | Moves the visible crop within the image – e.g. when your object sits outside the default center crop; automatically clamped to the image edges, so no black borders can appear |
    | Tilt horizontal/vertical | Tilts the camera – near regions shift relative to far ones (tilt parallax) |
    | Camera sway | Animated tilt with adjustable direction (0–360°), tempo and a randomness slider (0 = clean directional rocking, 100 = organic wobble) |
    | Duration | Length of the video (5–60 s) |
    | Fade in/out | Black-to-image and image-to-black fade, adjustable 0–3 s (0 = off) |
    | Loop mode | Camera flies in and seamlessly back out – perfect for endless loops on social media |
 
-   **Zoom target:** simply **click** the preview – the camera centers that
-   point during the first part of the flight and then zooms (and rotates)
-   right into it. The click is depth-aware, so it lands exactly on the
-   object you aimed at. Double-click resets the target to the image center.
+   **Zoom target:** simply **click** the preview – the camera pans slowly
+   toward that point over the whole flight while zooming in (following the
+   chosen acceleration curve, seamless in loop mode). The click is
+   depth-aware, so it lands exactly on the object you aimed at.
+   Double-click resets the target to the image center.
 
    **Preview size:** the 🔍 slider below the preview scales the viewport
    (40–100 %); your choice is remembered.
@@ -97,15 +99,16 @@ All panel sections are collapsible – click a heading to open or close it
    | Layer spread | How strongly the stars are randomly distributed across depth layers |
    | Distance to nebula | Base depth of the stars relative to the starless image (far ↔ near) |
    | Depth layers (count) | Snap stars onto a set number of discrete depth layers (∞ = continuous random depths) |
-   | Star parallax | How strongly the stars move relative to the nebula zoom (up to 400 %) |
+   | Star parallax | How strongly the stars move relative to the nebula zoom (up to 600 %) |
    | Twinkle | Strength of the star twinkle |
    | Size / Brightness / Saturation | Adjust the appearance of the stars (20–300 % / 0–300 % / 0–200 %) |
    | Generated stars | Adds up to 3000 synthetic stars with a realistic brightness distribution (many faint, few bright) and natural star colors – ideal for lateral flights or sparse star masks; also works without a star mask |
    | 🎲 Reshuffle layers | Rolls a new random distribution of the star layers (and of the generated stars) |
 5. **Effects & look**
-   **Presets:** Cinematic, Deep Space, Dreamy Glow, Monochrome, Hyperspace
-   and Neutral – each sets all look controls to a matched cinematic style;
-   every control remains individually adjustable afterwards.
+   **Presets:** Neutral (default, all off), Cinematic, Deep Space,
+   Dreamy Glow, Monochrome and Hyperspace – each sets all look controls to
+   a matched cinematic style; every control remains individually adjustable
+   afterwards.
    | Control | Effect |
    |---|---|
    | Bloom | Glow around bright stars and nebula cores |
