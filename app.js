@@ -32,8 +32,10 @@ const state = {
   easeMode: "inout",     // inout | in | out | linear
   parallax: 60,          // 0..100
   depthBoost: 33,        // Räumlichkeit/Tiefenumfang 0..100
-  rotationSpeed: 2,      // °/s
+  rotationSpeed: 0,      // °/s
   orientation: 0,        // °
+  frameX: 0,             // Ausschnitt-Verschiebung -100..100 (an Bildkante geklemmt)
+  frameY: 0,
   tiltX: 0,              // -100..100
   tiltY: 0,
   swayAmp: 0,            // Schwenk-Animation Stärke 0..100
@@ -768,8 +770,8 @@ function camAt(loopT) {
     const sc = cover * zoom;
     const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.92;
     const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.92;
-    const tx = Math.min(freeX, Math.max(-freeX, state.target.x));
-    const ty = Math.min(freeY, Math.max(-freeY, state.target.y));
+    const tx = Math.min(freeX, Math.max(-freeX, state.target.x + (state.frameX / 100) * freeX));
+    const ty = Math.min(freeY, Math.max(-freeY, state.target.y + (state.frameY / 100) * freeY));
     const dir = state.driftDir * Math.PI / 180;
     const ux = Math.cos(dir), uy = Math.sin(dir);
     let half = Infinity;
@@ -806,13 +808,23 @@ function camAt(loopT) {
     tiltAddY = swayA * ((1 - rnd) * Math.sin(dir) * lin + rnd * ellY);
   }
 
-  // Kamerafahrt zum Zoomziel (nur Zoom-Modus): Das Ziel wird in den ersten
-  // 40 % des Flugs zentriert; danach zoomt und rotiert die Kamera exakt um
-  // das Objekt. Beim seitlichen Flug ist die Bahn bereits oben bestimmt.
+  // Kamerafahrt zum Zoomziel (nur Zoom-Modus): Die Kamera schwenkt über die
+  // gesamte Flugdauer langsam zum Ziel (folgt der Beschleunigungskurve, im
+  // Loop-Modus nahtlos hin & zurück). Startpunkt ist der per Regler
+  // verschiebbare Ausschnitt; beides wird an die Bildkanten geklemmt, damit
+  // nie über den Bildrand hinaus geschwenkt wird.
   if (state.flightMode !== "lateral") {
-    const pan = smoothstep(Math.min(1, p / 0.4));
-    cx = state.target.x * pan;
-    cy = state.target.y * pan;
+    const viewAspect = state.aspect;
+    const imgAspect = state.starless
+      ? state.starless.width / state.starless.height : 16 / 9;
+    const cover = Math.max(viewAspect / imgAspect, 1) * 1.02;
+    const sc = cover * zoom;
+    const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.98;
+    const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.98;
+    const fx = (state.frameX / 100) * freeX;
+    const fy = (state.frameY / 100) * freeY;
+    cx = Math.min(freeX, Math.max(-freeX, fx + (state.target.x - fx) * pe));
+    cy = Math.min(freeY, Math.max(-freeY, fy + (state.target.y - fy) * pe));
   }
   return { zoom, angle, rate, te, tiltAddX, tiltAddY, cx, cy, driftTX, driftTY };
 }
@@ -1079,6 +1091,8 @@ bindSlider("ctlParallax", "outParallax", "parallax", asInt);
 bindSlider("ctlDepthBoost", "outDepthBoost", "depthBoost", asInt);
 bindSlider("ctlRotation", "outRotation", "rotationSpeed", (v) => v.toFixed(1) + " °/s");
 bindSlider("ctlOrient", "outOrient", "orientation", (v) => v + "°");
+bindSlider("ctlFrameX", "outFrameX", "frameX", asInt);
+bindSlider("ctlFrameY", "outFrameY", "frameY", asInt);
 bindSlider("ctlTiltX", "outTiltX", "tiltX", asInt);
 bindSlider("ctlTiltY", "outTiltY", "tiltY", asInt);
 bindSlider("ctlSwayAmp", "outSwayAmp", "swayAmp", asInt);
@@ -1165,24 +1179,15 @@ const PRESETS = {
   hyper:     { bloom: 55, mblur: 65, warp: 70, vignette: 30, exposure: 5,   contrast: 12, saturation: 10,   clarity: 10,  structure: 5,  sharpen: 0 },
 };
 
-let applyingPreset = false;
 $("ctlPreset").addEventListener("change", () => {
   const preset = PRESETS[$("ctlPreset").value];
   if (!preset) return;
-  applyingPreset = true;
   for (const [key, id] of Object.entries(PRESET_SLIDERS)) {
     const el = $(id);
     el.value = preset[key];
     el.dispatchEvent(new Event("input"));
   }
-  applyingPreset = false;
 });
-// Manuelles Verstellen eines Look-Reglers => Preset-Auswahl auf "eigener Look"
-for (const id of Object.values(PRESET_SLIDERS)) {
-  $(id).addEventListener("input", () => {
-    if (!applyingPreset) $("ctlPreset").value = "";
-  });
-}
 
 let smoothTimer = null;
 $("ctlSmooth").addEventListener("input", () => {

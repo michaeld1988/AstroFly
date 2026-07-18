@@ -113,12 +113,20 @@
         <input type="range" id="ctlDepthBoost" min="0" max="100" step="1" value="33">
       </label>
       <label class="slider">
-        <span><span data-i18n="rotation">Rotation</span> <output id="outRotation">2.0 °/s</output></span>
-        <input type="range" id="ctlRotation" min="-15" max="15" step="0.5" value="2">
+        <span><span data-i18n="rotation">Rotation</span> <output id="outRotation">0.0 °/s</output></span>
+        <input type="range" id="ctlRotation" min="-15" max="15" step="0.5" value="0">
       </label>
       <label class="slider">
         <span><span data-i18n="orient">Rotate framing</span> <output id="outOrient">0°</output></span>
         <input type="range" id="ctlOrient" min="0" max="360" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="frameX">Shift framing horizontal</span> <output id="outFrameX">0</output></span>
+        <input type="range" id="ctlFrameX" min="-100" max="100" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="frameY">Shift framing vertical</span> <output id="outFrameY">0</output></span>
+        <input type="range" id="ctlFrameY" min="-100" max="100" step="1" value="0">
       </label>
       <label class="slider">
         <span><span data-i18n="tiltX">Tilt horizontal</span> <output id="outTiltX">0</output></span>
@@ -177,7 +185,7 @@
       </label>
       <label class="slider">
         <span><span data-i18n="starPar">Star parallax</span> <output id="outStarPar">100 %</output></span>
-        <input type="range" id="ctlStarPar" min="0" max="400" step="5" value="100">
+        <input type="range" id="ctlStarPar" min="0" max="600" step="5" value="100">
       </label>
       <label class="slider">
         <span><span data-i18n="twinkle">Twinkle</span> <output id="outTwinkle">25</output></span>
@@ -209,13 +217,12 @@
       <label class="selfull">
         <span data-i18n="presetLabel">🎬 Preset</span>
         <select id="ctlPreset">
-          <option value="" selected data-i18n="presetCustom">– custom look –</option>
+          <option value="neutral" selected data-i18n="presetNeutral">Neutral (all off)</option>
           <option value="kino" data-i18n="presetKino">Cinematic</option>
           <option value="deepspace" data-i18n="presetDeep">Deep Space</option>
           <option value="glow" data-i18n="presetGlow">Dreamy Glow</option>
           <option value="mono" data-i18n="presetMono">Monochrome</option>
           <option value="hyper" data-i18n="presetHyper">Hyperspace</option>
-          <option value="neutral" data-i18n="presetNeutral">Neutral (all off)</option>
         </select>
       </label>
       <label class="slider">
