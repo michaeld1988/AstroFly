@@ -1670,6 +1670,7 @@ $("btnUpscale").addEventListener("click", async () => {
 
 const FEEDBACK_REPO = "https://github.com/michaeld1988/AstroFly";
 const FEEDBACK_MAIL = "mail@michaeldoehler.com";
+const INSTAGRAM_URL = "https://www.instagram.com/astrofly_app/";
 
 /** Technische Angaben für Bug-Reports (nur was der Browser ohnehin preisgibt). */
 function feedbackDiagnostics() {
@@ -1688,6 +1689,10 @@ $("btnFeedbackGithub").addEventListener("click", () => {
   const url = FEEDBACK_REPO + "/issues/new?title=" +
     encodeURIComponent("[Feedback] ") + "&body=" + encodeURIComponent(body);
   window.open(url, "_blank", "noopener");
+});
+
+$("btnInstagram").addEventListener("click", () => {
+  window.open(INSTAGRAM_URL, "_blank", "noopener");
 });
 
 $("btnFeedbackMail").addEventListener("click", () => {

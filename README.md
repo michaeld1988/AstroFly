@@ -13,6 +13,8 @@ nothing is uploaded).
 
 **https://michaeld1988.github.io/AstroFly/**
 
+Example flights & updates: [@astrofly_app on Instagram](https://www.instagram.com/astrofly_app/)
+
 Chrome or Edge recommended – they also support MP4 export; Firefox exports WebM.
 
 **No images at hand?** Click **"✨ Try it with a demo image"** – it loads a
@@ -131,6 +133,8 @@ All panel sections are collapsible – click a heading to open or close it
    open a pre-filled [GitHub issue](https://github.com/michaeld1988/AstroFly/issues)
    or an email draft. Technical details (browser, GPU) are included
    automatically; nothing is ever sent without your action.
+   Example flights and updates are posted on
+   [Instagram (@astrofly_app)](https://www.instagram.com/astrofly_app/).
 
 ## How the 3D effect works
 
