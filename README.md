@@ -15,7 +15,9 @@ nothing is uploaded).
 
 Example flights & updates: [@astrofly_app on Instagram](https://www.instagram.com/astrofly_app/)
 
-Chrome or Edge recommended – they also support MP4 export; Firefox exports WebM.
+Chrome or Edge recommended – they support the fastest, frame-perfect MP4
+export. Safari exports MP4 via a compatibility mode (realtime recording);
+Firefox exports WebM (not accepted by Instagram/TikTok).
 
 **No images at hand?** Click **"✨ Try it with a demo image"** – it loads a
 bundled Orion Nebula (starless + star mask, photographed by Michael Döhler)
