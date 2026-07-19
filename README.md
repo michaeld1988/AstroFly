@@ -125,7 +125,7 @@ All panel sections are collapsible – click a heading to open or close it
    | Clarity | Local contrast (negative = soft Orton glow) |
    | Structure | Fine-detail enhancement (multi-scale local contrast) – brings out more real detail at native resolution, no AI involved |
    | Sharpness | Fine detail sharpening |
-6. **Aspect ratio** – 1:1, 16:9, 21:9, 4:3 or 9:16 (portrait, e.g. for reels).
+6. **Aspect ratio** – 1:1, 16:9, 21:9, 4:3, 5:4 or 9:16 (portrait, e.g. for reels).
 7. **Export** – choose a resolution and click **"Export video"**.
    The video is rendered and saved automatically as a file
    (MP4 in Chrome/Edge, otherwise WebM). The file name is derived from
