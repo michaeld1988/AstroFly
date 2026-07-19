@@ -1413,6 +1413,7 @@ function exportDims() {
 }
 
 function pickMime() {
+  if (typeof MediaRecorder === "undefined") return "";
   const candidates = [
     "video/mp4;codecs=avc1",
     "video/mp4",
@@ -1474,8 +1475,15 @@ function exportFilename(ext) {
  * dann flüssig (30 fps), wenn der Rechner nicht in Echtzeit rendern kann.
  * Gibt false zurück, wenn WebCodecs/H.264 nicht verfügbar ist.
  */
+// Safari/WebKit: Der WebCodecs-Export erzeugt dort MP4s mit fehlerhaften
+// Metadaten (Schnitt-Apps wie Instagram Edits zeigen nur ein Standbild) und
+// kann die Seite sogar zum Absturz bringen. Safari nimmt deshalb immer den
+// bewährten MediaRecorder-Weg – der liefert dort saubere H.264-MP4s.
+const IS_SAFARI = /apple/i.test(navigator.vendor || "") &&
+  !/crios|fxios|chrome|edg/i.test(navigator.userAgent);
+
 async function exportOffline(w, h, fps) {
-  if (typeof VideoEncoder === "undefined") return false;
+  if (typeof VideoEncoder === "undefined" || IS_SAFARI) return false;
 
   // Codec-Kandidaten: H.264 in MP4 (Chrome/Edge), sonst VP9/VP8 in WebM
   const bitrate = Math.min(50_000_000, Math.round(w * h * fps * 0.12));
@@ -1606,6 +1614,36 @@ $("btnExport").addEventListener("click", async () => {
   const usedOffline = await exportOffline(w, h, fps);
   if (!usedOffline) exportRealtime(w, h, fps);
 });
+
+// Browser-Hinweis im Export-Panel: Safari nutzt den Kompatibilitätsmodus,
+// reine WebM-Browser (z. B. Firefox) bekommen eine MP4-Warnung
+(async () => {
+  const hint = $("exportBrowserHint");
+  if (IS_SAFARI) {
+    hint.setAttribute("data-i18n", "safariExport");
+    hint.textContent = t("safariExport");
+    hint.hidden = false;
+    return;
+  }
+  let mp4 = false;
+  if (typeof VideoEncoder !== "undefined" && typeof Mp4Muxer !== "undefined") {
+    try {
+      const s = await VideoEncoder.isConfigSupported({
+        codec: "avc1.640028", width: 1920, height: 1080, framerate: 30, bitrate: 8_000_000,
+      });
+      mp4 = !!s.supported;
+    } catch { /* bleibt false */ }
+  }
+  if (!mp4 && typeof MediaRecorder !== "undefined") {
+    mp4 = MediaRecorder.isTypeSupported("video/mp4;codecs=avc1") ||
+      MediaRecorder.isTypeSupported("video/mp4");
+  }
+  if (!mp4) {
+    hint.setAttribute("data-i18n", "webmExport");
+    hint.textContent = t("webmExport");
+    hint.hidden = false;
+  }
+})();
 
 // ---------------------------------------------------------------- KI-Upscaler
 
