@@ -26,10 +26,10 @@ const state = {
 
   flightMode: "zoom",    // "zoom" = auf den Nebel zu, "lateral" = seitlicher Flug
   driftDir: 90,          // Flugrichtung beim seitlichen Flug in Grad
-  zoomBase: 1.4,
+  zoomBase: 1,
   speed: 40,             // 0..100 (beim seitlichen Flug: Fahrstrecke)
   ease: 60,              // Beschleunigen/Abbremsen 0..100
-  easeMode: "inout",     // inout | in | out | linear
+  easeMode: "linear",    // inout | in | out | linear
   parallax: 60,          // 0..100
   depthBoost: 33,        // Räumlichkeit/Tiefenumfang 0..100
   rotationSpeed: 0,      // °/s
@@ -52,7 +52,7 @@ const state = {
   swayTempo: 40,         // Schwenk-Tempo 0..100
   swayDir: 0,            // Schwenk-Richtung in Grad
   swayRandom: 0,         // 0 = gerichtet, 100 = zufälliges Wackeln
-  fade: 8,               // Ein-/Ausblenden in Zehntelsekunden (0 = aus)
+  fade: 0,               // Ein-/Ausblenden in Zehntelsekunden (0 = aus)
   duration: 20,          // s
   loopMode: false,       // hin & zurück, nahtlos
   smooth: 18,
@@ -1978,7 +1978,7 @@ for (const [i, sec] of document.querySelectorAll("#panel section").entries()) {
   body.className = "secbody";
   while (h2.nextSibling) body.appendChild(h2.nextSibling);
   sec.appendChild(body);
-  const key = "astrofly-sec-" + i;
+  const key = "astrofly-sec-" + (h2.dataset.i18n || i);
   const saved = localStorage.getItem(key);
   const defaultOpen = i === 0 || i === 2; // Bilder laden + Kamera offen
   const open = saved === null ? defaultOpen : saved === "1";

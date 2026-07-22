@@ -81,8 +81,8 @@
         a click sets the path center. Increase zoom for a longer travel range.</p>
       </div>
       <label class="slider">
-        <span><span data-i18n="zoom">Zoom (start framing)</span> <output id="outZoom">1.4×</output></span>
-        <input type="range" id="ctlZoom" min="1" max="4" step="0.05" value="1.4">
+        <span><span data-i18n="zoom">Zoom (start framing)</span> <output id="outZoom">1.00×</output></span>
+        <input type="range" id="ctlZoom" min="1" max="4" step="0.05" value="1">
       </label>
       <label class="slider">
         <span><span data-i18n="speed">Speed</span> <output id="outSpeed">40</output></span>
@@ -91,10 +91,10 @@
       <label class="selfull">
         <span data-i18n="easeMode">Acceleration</span>
         <select id="ctlEaseMode">
-          <option value="inout" selected data-i18n="easeInout">Ease in &amp; out</option>
+          <option value="inout" data-i18n="easeInout">Ease in &amp; out</option>
           <option value="in" data-i18n="easeIn">Accelerate only</option>
           <option value="out" data-i18n="easeOut">Decelerate only</option>
-          <option value="linear" data-i18n="easeLinear">Linear (constant speed)</option>
+          <option value="linear" selected data-i18n="easeLinear">Linear (constant speed)</option>
         </select>
       </label>
       <label class="slider">
@@ -154,13 +154,22 @@
         <input type="range" id="ctlDuration" min="5" max="60" step="1" value="20">
       </label>
       <label class="slider">
-        <span><span data-i18n="fade">Fade in/out (0 = off)</span> <output id="outFade">0.8 s</output></span>
-        <input type="range" id="ctlFade" min="0" max="30" step="1" value="8">
+        <span><span data-i18n="fade">Fade in/out (0 = off)</span> <output id="outFade">0.0 s</output></span>
+        <input type="range" id="ctlFade" min="0" max="30" step="1" value="0">
       </label>
       <label class="check">
         <input type="checkbox" id="ctlLoop">
         <span data-i18n="loopMode">Loop mode (there &amp; back, seamless)</span>
       </label>
+      <p class="tip"><span data-i18n-html="tip">🎯 <b>Zoom target:</b> Click the preview to choose where
+      the camera flies to. Double-click = back to center.</span>
+      <span id="targetInfo" data-i18n="targetCenter">Target: image center</span></p>
+    </section>
+
+    <section>
+      <h2 data-i18n="secExp">🧪 Experimental</h2>
+      <p class="tip" data-i18n="expHint">⚠️ Features in this section are experimental and may
+      still produce visible artifacts. Use them at your own discretion – feedback is welcome!</p>
       <p class="tip" data-i18n="spinHint">🌀 Galaxy spin: rotates only the region around the spin
       center – with a soft falloff at the edge, so the rest of the image stays untouched.
       Foreground stars do not rotate.</p>
@@ -197,9 +206,6 @@
         <span><span data-i18n="spinMaskSmooth">Brightness mask smoothing</span> <output id="outSpinMaskSmooth">6</output></span>
         <input type="range" id="ctlSpinMaskSmooth" min="2" max="60" step="1" value="6">
       </label>
-      <p class="tip"><span data-i18n-html="tip">🎯 <b>Zoom target:</b> Click the preview to choose where
-      the camera flies to. Double-click = back to center.</span>
-      <span id="targetInfo" data-i18n="targetCenter">Target: image center</span></p>
     </section>
 
     <section>
