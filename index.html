@@ -165,6 +165,10 @@
       center – with a soft falloff at the edge, so the rest of the image stays untouched.
       Foreground stars do not rotate.</p>
       <button id="btnSpinCenter" class="secondary" data-i18n="spinCenterBtn">🌀 Set spin center (then click the preview)</button>
+      <label class="check">
+        <input type="checkbox" id="ctlSpinShow">
+        <span data-i18n="spinShow">Show spin region (red mask overlay)</span>
+      </label>
       <label class="slider">
         <span><span data-i18n="spinSpeed">Galaxy spin (°/s at core)</span> <output id="outSpinSpeed">0.0 °/s</output></span>
         <input type="range" id="ctlSpinSpeed" min="-20" max="20" step="0.5" value="0">

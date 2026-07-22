@@ -43,6 +43,7 @@ const state = {
   spinTilt: 0,           // Ellipsen-Winkel in Grad
   spinCenter: { x: 0, y: 0 }, // Rotationszentrum in Ebenen-Einheiten
   spinPick: false,       // nächster Klick setzt das Rotationszentrum
+  spinShow: false,       // Rotationsbereich als rote Maske einblenden
   tiltX: 0,              // -100..100
   tiltY: 0,
   swayAmp: 0,            // Schwenk-Animation Stärke 0..100
@@ -175,9 +176,19 @@ uniform float uSpinAngle;   // aktueller Drehwinkel im Kern (rad)
 uniform float uSpinRadius;  // Wirkradius in Ebenen-Einheiten
 uniform float uSpinDiff;    // 0 = starre Rotation, 1 = innen deutlich schneller
 uniform vec3 uSpinEll;      // Ellipse: (cos Neigung, sin Neigung, Stauchung)
+uniform float uSpinShow;    // 1 = Rotationsbereich als rote Maske einblenden
 
 vec2 imgUv(vec2 q) {
   return vec2(q.x / uImgAspect, q.y) + 0.5;
+}
+
+// Radius eines Ebenen-Punkts im (elliptischen) Spin-Raum, 1 = Maskenrand
+float spinR(vec2 q) {
+  vec2 d = q - uSpinCenter;
+  float c = uSpinEll.x, s = uSpinEll.y;
+  vec2 e = mat2(c, -s, s, c) * d;
+  e.y /= uSpinEll.z;
+  return length(e) / uSpinRadius;
 }
 
 // Galaxien-Rotation: dreht die Bildabtastung nur innerhalb des Wirkradius um
@@ -210,15 +221,27 @@ void main() {
   // Parallax: nahe Bereiche (hohe Tiefe) zoomen überproportional;
   // Kippen verschiebt sie zusätzlich seitlich. Tiefe ist erst nach dem
   // Sampeln bekannt -> Fixpunkt-Iteration.
-  vec2 uv = imgUv(spinWarp(uCenter + pr / (uCover * uZoom)));
+  vec2 q = uCenter + pr / (uCover * uZoom);
+  vec2 uv = imgUv(spinWarp(q));
   for (int i = 0; i < 3; i++) {
     float d = texture(uDepth, uv).r;
     float ex = 1.0 + uParallax * (d - 0.45) * uDepthRange;
     float scale = uCover * pow(uZoom, ex);
-    uv = imgUv(spinWarp(uCenter + pr / scale + uTilt * (d - 0.45)));
+    q = uCenter + pr / scale + uTilt * (d - 0.45);
+    uv = imgUv(spinWarp(q));
   }
 
-  outColor = vec4(texture(uColor, uv).rgb, 1.0);
+  vec3 col = texture(uColor, uv).rgb;
+  // Masken-Vorschau: rote Einfärbung entspricht exakt der Drehstärke
+  // (gleiche Falloff-Kurve), plus dünner Ring am Maskenrand
+  if (uSpinShow > 0.5) {
+    float r = spinR(q);
+    float w = smoothstep(1.0, 0.55, r);
+    col = mix(col, vec3(1.0, 0.15, 0.1), w * 0.4);
+    float ring = smoothstep(0.05, 0.0, abs(r - 1.0));
+    col = mix(col, vec3(1.0, 0.35, 0.25), ring * 0.85);
+  }
+  outColor = vec4(col, 1.0);
 }`;
 
 // --- Pass 1b: Sterne (Punkt-Sprites mit individueller Tiefe) ---
@@ -959,6 +982,8 @@ function render(forcedT) {
   u1f(bgProg, "uSpinDiff", state.spinDiff / 100);
   const spinTiltRad = state.spinTilt * Math.PI / 180;
   u3f(bgProg, "uSpinEll", Math.cos(spinTiltRad), Math.sin(spinTiltRad), 1 - (state.spinFlat / 100) * 0.7);
+  // Masken-Vorschau nie im Export; im "Zentrum setzen"-Modus automatisch an
+  u1f(bgProg, "uSpinShow", (state.spinShow || state.spinPick) && !state.exporting ? 1 : 0);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
   // "Nur Sterne"-Unschärfe: Sterne in eine eigene Ebene rendern
@@ -1241,6 +1266,10 @@ $("ctlMblurStars").addEventListener("change", () => {
 });
 
 // Rotationszentrum der Galaxie: nächster Klick in die Vorschau setzt es
+$("ctlSpinShow").addEventListener("change", () => {
+  state.spinShow = $("ctlSpinShow").checked;
+});
+
 $("btnSpinCenter").addEventListener("click", () => {
   state.spinPick = !state.spinPick;
   $("btnSpinCenter").classList.toggle("active", state.spinPick);
