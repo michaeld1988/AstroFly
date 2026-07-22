@@ -78,7 +78,7 @@ All panel sections are collapsible – click a heading to open or close it
    | Duration | Length of the video (5–60 s) |
    | Fade in/out | Black-to-image and image-to-black fade, adjustable 0–3 s (0 = off) |
    | Loop mode | Camera flies in and seamlessly back out – perfect for endless loops on social media |
-   | Galaxy spin | Rotates only the region around a click-set spin center (radius, soft edge falloff) – with adjustable differential rotation (inner faster, like a real galaxy) and an ellipse option for inclined galaxies; foreground stars do not rotate |
+   | Galaxy spin | Rotates only the region around a click-set spin center (radius, soft edge falloff) – with adjustable differential rotation (inner faster, like a real galaxy) and an ellipse option for inclined galaxies; foreground stars do not rotate. A red mask overlay (Photoshop-style, auto-shown while picking the center, never exported) visualizes exactly where and how strongly the spin acts |
 
    **Zoom target:** simply **click** the preview – the camera pans slowly
    toward that point over the whole flight while zooming in (following the
