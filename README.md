@@ -13,7 +13,7 @@ nothing is uploaded).
 
 **https://michaeld1988.github.io/AstroFly/**
 
-Example flights & updates: [@astrofly_app on Instagram](https://www.instagram.com/astrofly_app/)
+Example flights & updates: [@astrofly_app on Instagram](https://www.instagram.com/astrofly_app/) · Tutorials: [AstroFly on YouTube](https://www.youtube.com/@AstroFly_App)
 
 Chrome or Edge recommended – they support the fastest, frame-perfect MP4
 export. Safari exports MP4 via a compatibility mode (realtime recording);
@@ -128,7 +128,8 @@ All panel sections are collapsible – click a heading to open or close it
    or an email draft. Technical details (browser, GPU) are included
    automatically; nothing is ever sent without your action.
    Example flights and updates are posted on
-   [Instagram (@astrofly_app)](https://www.instagram.com/astrofly_app/).
+   [Instagram (@astrofly_app)](https://www.instagram.com/astrofly_app/), video
+   tutorials on [YouTube (@AstroFly_App)](https://www.youtube.com/@AstroFly_App).
 
 ## How the 3D effect works
 
