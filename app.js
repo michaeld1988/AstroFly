@@ -46,7 +46,6 @@ const state = {
   spinShow: false,       // Rotationsbereich als rote Maske einblenden
   spinMaskAmt: 0,        // Helligkeitsmaske einbeziehen 0..100 (0 = nur Kreis/Ellipse)
   spinMaskSmooth: 6,     // eigene Glättung der Spin-Helligkeitsmaske
-  spinMaxDeflect: 3,     // Verzerrungs-Limit in Grad (max. Auslenkung im Kern)
   tiltX: 0,              // -100..100
   tiltY: 0,
   swayAmp: 0,            // Schwenk-Animation Stärke 0..100
@@ -175,9 +174,7 @@ uniform vec2 uCenter;       // Kameraziel in Bildebenen-Einheiten
 uniform vec2 uTilt;         // Kipp-Parallaxe in Bildebenen-Einheiten
 uniform float uDepthRange;  // Räumlichkeit: Spreizung der Tiefen-Zoomraten
 uniform vec2 uSpinCenter;   // Galaxien-Rotation: Zentrum (Ebenen-Einheiten)
-uniform float uSpinA;       // Drehwinkel Phase A im Kern (rad, begrenzt)
-uniform float uSpinB;       // Drehwinkel Phase B im Kern (rad, begrenzt)
-uniform float uSpinW;       // Überblendung der Phasen (0 = A, 1 = B)
+uniform float uSpinAngle;   // aktueller Drehwinkel im Kern (rad)
 uniform float uSpinRadius;  // Wirkradius in Ebenen-Einheiten
 uniform float uSpinDiff;    // 0 = starre Rotation, 1 = innen deutlich schneller
 uniform vec3 uSpinEll;      // Ellipse: (cos Neigung, sin Neigung, Stauchung)
@@ -209,12 +206,8 @@ float spinR(vec2 q) {
 // das gesetzte Zentrum. Zum Rand hin läuft die Drehung weich auf null aus
 // (keine sichtbare Kante); der Differenzial-Anteil lässt den Kern schneller
 // rotieren als die Außenbereiche – wie bei einer echten Galaxie.
-// Der Winkel akkumuliert dabei NICHT über die Zeit: Zwei phasenversetzte
-// Drehungen mit kleiner Auslenkung werden fortlaufend überblendet
-// (Flowmap-Technik) – die Bewegung läuft endlos, die Verzerrung bleibt
-// aber dauerhaft unter dem eingestellten Limit.
-vec2 spinWarp(vec2 q, float baseAngle) {
-  if (baseAngle == 0.0) return q;
+vec2 spinWarp(vec2 q) {
+  if (uSpinAngle == 0.0) return q;
   vec2 d = q - uSpinCenter;
   float c = uSpinEll.x, s = uSpinEll.y;
   vec2 e = mat2(c, -s, s, c) * d;   // in die Achsenlage der Ellipse drehen
@@ -223,7 +216,7 @@ vec2 spinWarp(vec2 q, float baseAngle) {
   if (r >= 1.0) return q;
   float fall = smoothstep(1.0, 0.55, r);
   float diffW = mix(1.0, 0.25 / (0.25 + 0.75 * r), uSpinDiff);
-  float a = baseAngle * fall * diffW * spinMaskW(q);
+  float a = uSpinAngle * fall * diffW * spinMaskW(q);
   float ca = cos(a), sa = sin(a);
   e = mat2(ca, -sa, sa, ca) * e;
   e.y *= uSpinEll.z;                // zurück in die Bildlage
@@ -240,24 +233,16 @@ void main() {
   // Kippen verschiebt sie zusätzlich seitlich. Tiefe ist erst nach dem
   // Sampeln bekannt -> Fixpunkt-Iteration.
   vec2 q = uCenter + pr / (uCover * uZoom);
-  vec2 uv = imgUv(q);
+  vec2 uv = imgUv(spinWarp(q));
   for (int i = 0; i < 3; i++) {
     float d = texture(uDepth, uv).r;
     float ex = 1.0 + uParallax * (d - 0.45) * uDepthRange;
     float scale = uCover * pow(uZoom, ex);
     q = uCenter + pr / scale + uTilt * (d - 0.45);
-    uv = imgUv(q);
+    uv = imgUv(spinWarp(q));
   }
 
-  vec3 col;
-  if (uSpinA == 0.0 && uSpinB == 0.0) {
-    col = texture(uColor, uv).rgb;
-  } else {
-    // Zwei kleine, phasenversetzte Drehungen überblenden (endlos, begrenzt)
-    vec3 colA = texture(uColor, imgUv(spinWarp(q, uSpinA))).rgb;
-    vec3 colB = texture(uColor, imgUv(spinWarp(q, uSpinB))).rgb;
-    col = mix(colA, colB, uSpinW);
-  }
+  vec3 col = texture(uColor, uv).rgb;
   // Masken-Vorschau: rote Einfärbung entspricht exakt der Drehstärke
   // (gleiche Falloff-Kurve), plus dünner Ring am Maskenrand
   if (uSpinShow > 0.5) {
@@ -1023,22 +1008,8 @@ function render(forcedT) {
   u2f(bgProg, "uCenter", cam.cx, cam.cy);
   u2f(bgProg, "uTilt", bgTiltX, bgTiltY);
   u1f(bgProg, "uDepthRange", depthRange);
-  // Galaxien-Rotation als Zwei-Phasen-Flow: Bewegung läuft endlos, die
-  // Verzerrung bleibt aber dauerhaft unter dem Verzerrungs-Limit
-  let spinA = 0, spinB = 0, spinW = 0;
-  if (state.spinSpeed !== 0) {
-    const rateRad = state.spinSpeed * Math.PI / 180;
-    const maxDef = Math.max(0.5, state.spinMaxDeflect) * Math.PI / 180;
-    const T = 2 * maxDef / Math.abs(rateRad); // Periode einer Phase
-    const p0 = ((cam.te / T) % 1 + 1) % 1;
-    const p1 = (p0 + 0.5) % 1;
-    spinA = rateRad * T * (p0 - 0.5);
-    spinB = rateRad * T * (p1 - 0.5);
-    spinW = Math.abs(2 * p0 - 1);
-  }
-  u1f(bgProg, "uSpinA", spinA);
-  u1f(bgProg, "uSpinB", spinB);
-  u1f(bgProg, "uSpinW", spinW);
+  // Galaxien-Rotation (te-basiert -> im Loop-Modus nahtlos hin & zurück)
+  u1f(bgProg, "uSpinAngle", state.spinSpeed * Math.PI / 180 * cam.te);
   u2f(bgProg, "uSpinCenter", state.spinCenter.x, state.spinCenter.y);
   u1f(bgProg, "uSpinRadius", Math.max(0.02, (state.spinRadius / 100) * 0.75));
   u1f(bgProg, "uSpinDiff", state.spinDiff / 100);
@@ -1267,7 +1238,6 @@ bindSlider("ctlSpinDiff", "outSpinDiff", "spinDiff", asInt);
 bindSlider("ctlSpinFlat", "outSpinFlat", "spinFlat", asInt);
 bindSlider("ctlSpinTilt", "outSpinTilt", "spinTilt", (v) => v + "°");
 bindSlider("ctlSpinMaskAmt", "outSpinMaskAmt", "spinMaskAmt", asInt);
-bindSlider("ctlSpinMaxDeflect", "outSpinMaxDeflect", "spinMaxDeflect", (v) => v.toFixed(1) + "°");
 
 let spinMaskTimer = null;
 $("ctlSpinMaskSmooth").addEventListener("input", () => {
