@@ -52,6 +52,8 @@ const state = {
   swayTempo: 40,         // Schwenk-Tempo 0..100
   swayDir: 0,            // Schwenk-Richtung in Grad
   swayRandom: 0,         // 0 = gerichtet, 100 = zufälliges Wackeln
+  tiltRampAmp: 0,        // gerichteter Kipp-Schwenk: Stärke 0..100
+  tiltRampDir: 0,        // Kipp-Richtung in Grad
   fade: 0,               // Ein-/Ausblenden in Zehntelsekunden (0 = aus)
   duration: 20,          // s
   loopMode: false,       // hin & zurück, nahtlos
@@ -283,8 +285,19 @@ uniform float uStarBright; // Helligkeits-Multiplikator
 uniform float uStarSat;    // Sättigung (0 = weiß, 1 = original, 2 = kräftig)
 uniform vec2 uCenter;
 uniform vec2 uTilt;
+// Zweiter Kamerazustand (kurz danach) für die Geschwindigkeits-Streifen:
+// jeder Stern kennt damit seine echte Bildschirmgeschwindigkeit
+uniform float uZoom2;
+uniform float uAngle2;
+uniform vec2 uCenter2;
+uniform vec2 uTilt2;
+uniform float uStreak;    // Belichtungszeit / dt (0 = keine Streifen)
 out vec3 vColor;
 out float vAlpha;
+out vec2 vDir;    // Streifen-Richtung in Pixeln (normiert)
+out float vLen;   // Streifen-Länge in px
+out float vBase;  // Stern-Durchmesser in px
+out float vSize;  // gl_PointSize (für gl_PointCoord -> px)
 
 void main() {
   // Reproduzierbare Zufalls-Tiefe pro Stern; "Neu mischen" ändert den Seed
@@ -307,14 +320,49 @@ void main() {
   float c = cos(uAngle), s = sin(uAngle);
   // Inverse der Hintergrund-Rotation, damit Sterne auf dem Bild liegen bleiben
   vec2 p = mat2(c, s, -s, c) * pr;
-  gl_Position = vec4(p.x * 2.0 / uViewAspect, p.y * 2.0, 0.0, 1.0);
+  vec2 clip = vec2(p.x * 2.0 / uViewAspect, p.y * 2.0);
 
   float px = aSize * 2.0 * scale * uPixelsY * uStarSize;
-  gl_PointSize = clamp(px, 1.2, 500.0);
+  float base = clamp(px, 1.2, 500.0);
+
+  // Geschwindigkeits-Streifen: Position kurz danach mit demselben Tiefen-
+  // Exponenten -> die Streifenlänge folgt der echten Geschwindigkeit dieses
+  // Sterns (nahe Sterne ziehen lange Striche, ferne bleiben Punkte)
+  float len = 0.0;
+  vec2 dirPx = vec2(1.0, 0.0);
+  vec2 clipMid = clip;
+  if (uStreak > 0.0) {
+    float scale2 = uCover * pow(uZoom2, ex);
+    vec2 pr2 = (aPos - uCenter2 - uTilt2 * (depth - 0.45)) * scale2;
+    float c2 = cos(uAngle2), s2 = sin(uAngle2);
+    vec2 p2 = mat2(c2, s2, -s2, c2) * pr2;
+    vec2 clip2 = vec2(p2.x * 2.0 / uViewAspect, p2.y * 2.0);
+    vec2 velClip = (clip2 - clip) * uStreak;
+    // y negiert: gl_PointCoord zählt nach unten, der Clip-Space nach oben
+    vec2 velPx = velClip * 0.5 * vec2(uPixelsY * uViewAspect, -uPixelsY);
+    float rawLen = length(velPx);
+    len = min(rawLen, 1024.0 - base);
+    if (rawLen > 1e-4) {
+      dirPx = velPx / rawLen;
+      // Sprite mittig auf den Streifen setzen (ggf. auf die Kappung skaliert)
+      clipMid = clip + velClip * 0.5 * (len / rawLen);
+    }
+  }
+  gl_Position = vec4(clipMid, 0.0, 1.0);
+  float size = base + len;
+  gl_PointSize = size;
+  vDir = dirPx;
+  vLen = len;
+  vBase = base;
+  vSize = size;
 
   float seed = fract(aPos.x * 137.7 + aPos.y * 91.3) * 6.2831;
   float tw = sin(uTime * uTwSpeed * (1.0 + fract(seed) * 2.5) + seed * 10.0) * 0.5 + 0.5;
   vAlpha = 1.0 - uTwinkle * 0.55 * tw;
+  // Langzeitbelichtung: die Helligkeit verteilt sich über die Streifenlänge.
+  // Wurzel statt linear (und eine Untergrenze), damit lange Streifen sichtbar
+  // bleiben statt physikalisch korrekt im Nichts zu verschwinden.
+  vAlpha *= max(sqrt(vBase / vSize), 0.25);
   float lumS = dot(aColor, vec3(0.299, 0.587, 0.114));
   vColor = max(mix(vec3(lumS), aColor, uStarSat), 0.0) * uStarBright;
 }`;
@@ -323,10 +371,20 @@ const starFS = `#version 300 es
 precision highp float;
 in vec3 vColor;
 in float vAlpha;
+in vec2 vDir;
+in float vLen;
+in float vBase;
+in float vSize;
 out vec4 outColor;
 void main() {
-  vec2 d = gl_PointCoord - 0.5;
-  float r2 = dot(d, d) * 4.0; // 0 Mitte .. 1 Rand
+  // Kapsel entlang der Flugrichtung: Abstand zur Streifen-Mittellinie,
+  // normiert auf den Stern-Radius (vLen = 0 -> runder Stern wie bisher)
+  vec2 d = (gl_PointCoord - 0.5) * vSize;
+  float along = dot(d, vDir);
+  float across = dot(d, vec2(-vDir.y, vDir.x));
+  float da = max(abs(along) - vLen * 0.5, 0.0);
+  vec2 q = vec2(da, across) / (vBase * 0.5);
+  float r2 = dot(q, q); // 0 Mittellinie .. 1 Rand
   if (r2 > 1.0) discard;
   float core = exp(-r2 * 9.0);
   float halo = exp(-r2 * 2.5) * 0.35;
@@ -404,25 +462,23 @@ void main() {
   off = vec2(off.x / uViewAspect, off.y);
   vec2 ca = vec2(r.x / uViewAspect, r.y) * uChroma * 0.02;
 
-  vec3 acc = vec3(0.0);
-  const int N = 8;
-  for (int i = 0; i < N; i++) {
-    float f = float(i) / float(N - 1) - 0.5;
-    vec2 o = off * f;
-    if (uSplit > 0.5) {
-      acc.r += texture(uStarsTex, vUv + o * (1.0 + uChroma) + ca).r;
-      acc.g += texture(uStarsTex, vUv + o).g;
-      acc.b += texture(uStarsTex, vUv + o * (1.0 - uChroma) - ca).b;
-    } else {
+  vec3 col;
+  if (uSplit > 0.5) {
+    // "Nur Sterne": die Sterne sind bereits als Geschwindigkeits-Streifen
+    // gerendert (pro Stern, je nach echter Geschwindigkeit) – Nebel bleibt scharf
+    col = texture(uScene, vUv).rgb + texture(uStarsTex, vUv).rgb;
+  } else {
+    vec3 acc = vec3(0.0);
+    const int N = 8;
+    for (int i = 0; i < N; i++) {
+      float f = float(i) / float(N - 1) - 0.5;
+      vec2 o = off * f;
       acc.r += texture(uScene, vUv + o * (1.0 + uChroma) + ca).r;
       acc.g += texture(uScene, vUv + o).g;
       acc.b += texture(uScene, vUv + o * (1.0 - uChroma) - ca).b;
     }
+    col = acc / float(N);
   }
-  // "Nur Sterne": der Nebel bleibt scharf, nur die Sternebene wird verwischt
-  vec3 col = uSplit > 0.5
-    ? texture(uScene, vUv).rgb + acc / float(N)
-    : acc / float(N);
 
   // Klarheit: lokaler Kontrast gegen stark weichgezeichnete Szene
   if (uClarity != 0.0) {
@@ -916,6 +972,18 @@ function camAt(loopT) {
     tiltAddY = swayA * ((1 - rnd) * Math.sin(dir) * lin + rnd * ellY);
   }
 
+  // Gerichteter Kipp-Schwenk: die Kamera kippt über die gesamte Flugdauer
+  // langsam in eine Richtung (folgt der Beschleunigungskurve; basiert auf pe,
+  // das im Loop-Modus hin & zurück läuft -> nahtlos). Volle Stärke entspricht
+  // einer Fahrt des Kipp-Reglers von -100 nach +100, mittig neutral.
+  const rampA = (state.tiltRampAmp / 100) * 0.08;
+  if (rampA > 0) {
+    const rdir = state.tiltRampDir * Math.PI / 180;
+    const q = (pe - 0.5) * 2; // -1 .. +1 über die Flugdauer
+    tiltAddX += rampA * Math.cos(rdir) * q;
+    tiltAddY += rampA * Math.sin(rdir) * q;
+  }
+
   // Kamerafahrt zum Zoomziel (nur Zoom-Modus): Die Kamera schwenkt über die
   // gesamte Flugdauer langsam zum Ziel (folgt der Beschleunigungskurve, im
   // Loop-Modus nahtlos hin & zurück). Startpunkt ist der per Regler
@@ -1020,8 +1088,19 @@ function render(forcedT) {
   u1f(bgProg, "uSpinMaskAmt", texSpinMask ? state.spinMaskAmt / 100 : 0);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-  // "Nur Sterne"-Unschärfe: Sterne in eine eigene Ebene rendern
+  // Bewegungsgrößen numerisch aus der Kamerakurve ableiten (für die
+  // Geschwindigkeits-Streifen der Sterne und die Composite-Unschärfe)
+  const dt = 0.05;
+  const cam2 = camAt(Math.min(loopT + dt, state.duration));
+
+  // "Nur Sterne"-Unschärfe: Sterne als Geschwindigkeits-Streifen in eine
+  // eigene Ebene rendern – Streifenlänge pro Stern nach seiner echten
+  // Bildschirmgeschwindigkeit (nahe Sterne lang, ferne fast punktförmig)
   const splitBlur = state.mblurStars && state.mblur > 0 && state.starCount > 0;
+  const tilt2X = (state.tiltX / 100) * 0.08 + cam2.tiltAddX;
+  const tilt2Y = (state.tiltY / 100) * 0.08 + cam2.tiltAddY;
+  const starTilt2X = tilt2X + cam2.driftTX * drKStar;
+  const starTilt2Y = tilt2Y + cam2.driftTY * drKStar;
 
   if (state.starCount > 0) {
     if (splitBlur) {
@@ -1054,6 +1133,11 @@ function render(forcedT) {
     u1f(starProg, "uStarSat", state.starSat / 100);
     u2f(starProg, "uCenter", cam.cx, cam.cy);
     u2f(starProg, "uTilt", starTiltX, starTiltY);
+    u1f(starProg, "uZoom2", cam2.zoom);
+    u1f(starProg, "uAngle2", cam2.angle);
+    u2f(starProg, "uCenter2", cam2.cx, cam2.cy);
+    u2f(starProg, "uTilt2", starTilt2X, starTilt2Y);
+    u1f(starProg, "uStreak", splitBlur ? ((state.mblur / 100) * 1.5) / dt : 0);
     gl.drawArrays(gl.POINTS, 0, state.starCount);
     gl.disable(gl.BLEND);
   }
@@ -1125,9 +1209,6 @@ function render(forcedT) {
   }
 
   // ---- Pass 3: Composite auf den Bildschirm ----
-  // Bewegungsgrößen numerisch aus der Kamerakurve ableiten
-  const dt = 0.05;
-  const cam2 = camAt(Math.min(loopT + dt, state.duration));
   const zoomRate = Math.log(cam2.zoom / cam.zoom) / dt + warp * 0.6;
   const rotRate = (cam2.angle - cam.angle) / dt;
   // Fahrt zum Ziel: Inhalt wandert entgegen der Zielrichtung über den Schirm
@@ -1262,6 +1343,8 @@ bindSlider("ctlLayers", "outLayers", "starLayers", (v) => v === 0 ? "∞" : Stri
 bindSlider("ctlStarPar", "outStarPar", "starPar", asPct);
 bindSlider("ctlSwayDir", "outSwayDir", "swayDir", (v) => v + "°");
 bindSlider("ctlSwayRandom", "outSwayRandom", "swayRandom", asInt);
+bindSlider("ctlTiltRamp", "outTiltRamp", "tiltRampAmp", asInt);
+bindSlider("ctlTiltRampDir", "outTiltRampDir", "tiltRampDir", (v) => v + "°");
 bindSlider("ctlFade", "outFade", "fade", (v) => (v / 10).toFixed(1) + " s");
 bindSlider("ctlDriftDir", "outDriftDir", "driftDir", (v) => v + "°");
 

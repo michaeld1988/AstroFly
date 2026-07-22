@@ -75,6 +75,7 @@ All panel sections are collapsible – click a heading to open or close it
    | Shift framing horizontal/vertical | Moves the visible crop within the image – e.g. when your object sits outside the default center crop; automatically clamped to the image edges, so no black borders can appear |
    | Tilt horizontal/vertical | Tilts the camera – near regions shift relative to far ones (tilt parallax) |
    | Camera sway | Animated tilt with adjustable direction (0–360°), tempo and a randomness slider (0 = clean directional rocking, 100 = organic wobble) |
+   | Directional tilt | The camera slowly tips in a chosen direction (0–360°) over the whole flight – a one-way ramp instead of rocking, which continuously strengthens the parallax depth cue; seamless there-and-back in loop mode |
    | Duration | Length of the video (5–60 s) |
    | Fade in/out | Black-to-image and image-to-black fade, adjustable 0–3 s (0 = off) |
    | Loop mode | Camera flies in and seamlessly back out – perfect for endless loops on social media |
@@ -117,7 +118,7 @@ All panel sections are collapsible – click a heading to open or close it
    | Control | Effect |
    |---|---|
    | Bloom | Glow around bright stars and nebula cores |
-   | Motion blur | Radial/tangential blur along the flight motion – optionally on the stars only, keeping the nebula sharp |
+   | Motion blur | Radial/tangential blur along the flight motion – optionally on the stars only: each star is then drawn as a streak along its own flight path, proportional to its actual speed (near stars streak long, far stars stay point-like), while the nebula stays tack-sharp |
    | Warp | Stars race past the camera with color fringing and streaks – hyperspace feeling |
    | Vignette | Cinematic edge darkening |
    | Exposure | Brighter/darker (±2 stops) |
