@@ -44,6 +44,8 @@ const state = {
   spinCenter: { x: 0, y: 0 }, // Rotationszentrum in Ebenen-Einheiten
   spinPick: false,       // nächster Klick setzt das Rotationszentrum
   spinShow: false,       // Rotationsbereich als rote Maske einblenden
+  spinMaskAmt: 0,        // Helligkeitsmaske einbeziehen 0..100 (0 = nur Kreis/Ellipse)
+  spinMaskSmooth: 6,     // eigene Glättung der Spin-Helligkeitsmaske
   tiltX: 0,              // -100..100
   tiltY: 0,
   swayAmp: 0,            // Schwenk-Animation Stärke 0..100
@@ -177,9 +179,18 @@ uniform float uSpinRadius;  // Wirkradius in Ebenen-Einheiten
 uniform float uSpinDiff;    // 0 = starre Rotation, 1 = innen deutlich schneller
 uniform vec3 uSpinEll;      // Ellipse: (cos Neigung, sin Neigung, Stauchung)
 uniform float uSpinShow;    // 1 = Rotationsbereich als rote Maske einblenden
+uniform sampler2D uSpinMask; // Helligkeitsmaske (eigene Glättung)
+uniform float uSpinMaskAmt;  // 0 = ignorieren, 1 = voll gewichten
 
 vec2 imgUv(vec2 q) {
   return vec2(q.x / uImgAspect, q.y) + 0.5;
+}
+
+// Gewicht der Helligkeitsmaske an einem Ebenen-Punkt (1 = volle Drehung)
+float spinMaskW(vec2 q) {
+  if (uSpinMaskAmt == 0.0) return 1.0;
+  float m = texture(uSpinMask, vec2(q.x / uImgAspect, q.y) + 0.5).r;
+  return mix(1.0, m, uSpinMaskAmt);
 }
 
 // Radius eines Ebenen-Punkts im (elliptischen) Spin-Raum, 1 = Maskenrand
@@ -205,7 +216,7 @@ vec2 spinWarp(vec2 q) {
   if (r >= 1.0) return q;
   float fall = smoothstep(1.0, 0.55, r);
   float diffW = mix(1.0, 0.25 / (0.25 + 0.75 * r), uSpinDiff);
-  float a = uSpinAngle * fall * diffW;
+  float a = uSpinAngle * fall * diffW * spinMaskW(q);
   float ca = cos(a), sa = sin(a);
   e = mat2(ca, -sa, sa, ca) * e;
   e.y *= uSpinEll.z;                // zurück in die Bildlage
@@ -236,7 +247,7 @@ void main() {
   // (gleiche Falloff-Kurve), plus dünner Ring am Maskenrand
   if (uSpinShow > 0.5) {
     float r = spinR(q);
-    float w = smoothstep(1.0, 0.55, r);
+    float w = smoothstep(1.0, 0.55, r) * spinMaskW(q);
     col = mix(col, vec3(1.0, 0.15, 0.1), w * 0.4);
     float ring = smoothstep(0.05, 0.0, abs(r - 1.0));
     col = mix(col, vec3(1.0, 0.35, 0.25), ring * 0.85);
@@ -467,6 +478,7 @@ const starBuf = gl.createBuffer();
 
 let texColor = null;
 let texDepth = null;
+let texSpinMask = null;
 
 function makeTexture(source) {
   const t = gl.createTexture();
@@ -567,8 +579,8 @@ function downscale(img, maxEdge) {
 
 // ---------------------------------------------------------------- Tiefenkarte
 
-function buildDepthMap() {
-  if (!state.starless) return;
+/** Geglättete, kontrastgestreckte Luminanzkarte des Starless-Bildes. */
+function computeLuminanceMap(radius, invert) {
   const src = downscale(state.starless, 768);
   const w = src.width, h = src.height;
   const data = src.getContext("2d").getImageData(0, 0, w, h).data;
@@ -589,7 +601,6 @@ function buildDepthMap() {
   }
 
   // 3× Box-Blur ≈ Gauß
-  const radius = state.smooth;
   let a = lum, b = new Float32Array(w * h);
   for (let pass = 0; pass < 3; pass++) {
     boxBlurH(a, b, w, h, radius);
@@ -599,7 +610,7 @@ function buildDepthMap() {
   const dst = new Uint8ClampedArray(w * h * 4);
   for (let i = 0, j = 0; i < a.length; i++, j += 4) {
     let d = a[i];
-    if (state.invertDepth) d = 1 - d;
+    if (invert) d = 1 - d;
     const v = Math.round(d * 255);
     dst[j] = dst[j + 1] = dst[j + 2] = v;
     dst[j + 3] = 255;
@@ -608,15 +619,33 @@ function buildDepthMap() {
   const c = document.createElement("canvas");
   c.width = w; c.height = h;
   c.getContext("2d").putImageData(new ImageData(dst, w, h), 0, 0);
-  state.depthCanvas = c;
-  state.depthData = { data: dst, w, h }; // CPU-Kopie für die Klick-Zuordnung
+  return { canvas: c, data: dst, w, h };
+}
+
+function buildDepthMap() {
+  if (!state.starless) return;
+  const m = computeLuminanceMap(state.smooth, state.invertDepth);
+  state.depthCanvas = m.canvas;
+  state.depthData = { data: m.data, w: m.w, h: m.h }; // CPU-Kopie für die Klick-Zuordnung
 
   if (texDepth) gl.deleteTexture(texDepth);
-  texDepth = makeTexture(c);
+  texDepth = makeTexture(m.canvas);
 
   const pv = $("depthPreview");
-  pv.height = Math.round(160 * h / w) || 107;
-  pv.getContext("2d").drawImage(c, 0, 0, pv.width, pv.height);
+  pv.height = Math.round(160 * m.h / m.w) || 107;
+  pv.getContext("2d").drawImage(m.canvas, 0, 0, pv.width, pv.height);
+}
+
+/**
+ * Eigene Helligkeitsmaske für die Galaxien-Rotation: unabhängig von der
+ * Parallaxe-Tiefenkarte, mit eigener (typisch geringerer) Glättung – so
+ * folgt die Drehung der Galaxienstruktur statt dem groben Tiefenverlauf.
+ */
+function buildSpinMask() {
+  if (!state.starless) return;
+  const m = computeLuminanceMap(state.spinMaskSmooth, false);
+  if (texSpinMask) gl.deleteTexture(texSpinMask);
+  texSpinMask = makeTexture(m.canvas);
 }
 
 function boxBlurH(src, dst, w, h, r) {
@@ -964,8 +993,12 @@ function render(forcedT) {
   gl.bindTexture(gl.TEXTURE_2D, texColor);
   gl.activeTexture(gl.TEXTURE1);
   gl.bindTexture(gl.TEXTURE_2D, texDepth);
+  gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, texSpinMask || texBlack);
+  gl.activeTexture(gl.TEXTURE0);
   u1i(bgProg, "uColor", 0);
   u1i(bgProg, "uDepth", 1);
+  u1i(bgProg, "uSpinMask", 2);
   u1f(bgProg, "uViewAspect", viewAspect);
   u1f(bgProg, "uImgAspect", imgAspect);
   u1f(bgProg, "uZoom", cam.zoom);
@@ -984,6 +1017,7 @@ function render(forcedT) {
   u3f(bgProg, "uSpinEll", Math.cos(spinTiltRad), Math.sin(spinTiltRad), 1 - (state.spinFlat / 100) * 0.7);
   // Masken-Vorschau nie im Export; im "Zentrum setzen"-Modus automatisch an
   u1f(bgProg, "uSpinShow", (state.spinShow || state.spinPick) && !state.exporting ? 1 : 0);
+  u1f(bgProg, "uSpinMaskAmt", texSpinMask ? state.spinMaskAmt / 100 : 0);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
   // "Nur Sterne"-Unschärfe: Sterne in eine eigene Ebene rendern
@@ -1203,6 +1237,15 @@ bindSlider("ctlSpinRadius", "outSpinRadius", "spinRadius", asInt);
 bindSlider("ctlSpinDiff", "outSpinDiff", "spinDiff", asInt);
 bindSlider("ctlSpinFlat", "outSpinFlat", "spinFlat", asInt);
 bindSlider("ctlSpinTilt", "outSpinTilt", "spinTilt", (v) => v + "°");
+bindSlider("ctlSpinMaskAmt", "outSpinMaskAmt", "spinMaskAmt", asInt);
+
+let spinMaskTimer = null;
+$("ctlSpinMaskSmooth").addEventListener("input", () => {
+  state.spinMaskSmooth = parseInt($("ctlSpinMaskSmooth").value, 10);
+  $("outSpinMaskSmooth").textContent = state.spinMaskSmooth;
+  clearTimeout(spinMaskTimer);
+  spinMaskTimer = setTimeout(buildSpinMask, 200);
+});
 bindSlider("ctlTiltX", "outTiltX", "tiltX", asInt);
 bindSlider("ctlTiltY", "outTiltY", "tiltY", asInt);
 bindSlider("ctlSwayAmp", "outSwayAmp", "swayAmp", asInt);
@@ -1456,6 +1499,7 @@ async function loadFile(which, file) {
       if (texColor) gl.deleteTexture(texColor);
       texColor = makeTexture(downscale(img, 4096));
       buildDepthMap();
+      buildSpinMask();
       // generierte Sterne nutzen das Seitenverhältnis des Starless-Bildes
       if (state.genStars > 0) uploadStars();
       // Export-Dateiname vom Bildnamen ableiten (bleibt überschreibbar)
