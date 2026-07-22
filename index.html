@@ -43,9 +43,6 @@
         <input type="range" id="ctlStretch" min="0" max="100" step="1" value="50">
       </label>
       <div id="loadStatus"></div>
-      <button id="btnUpscale" class="secondary" disabled data-i18n="upscaleBtn">✨ AI upscaler (3×)</button>
-      <p class="tip" id="upscaleGpuHint"></p>
-      <p class="tip" data-i18n="upscaleNote">Non-generative: a deterministic restoration network only sharpens real image detail – nothing is invented, your astrophoto stays authentic.</p>
     </section>
 
     <section>
@@ -164,6 +161,30 @@
         <input type="checkbox" id="ctlLoop">
         <span data-i18n="loopMode">Loop mode (there &amp; back, seamless)</span>
       </label>
+      <p class="tip" data-i18n="spinHint">🌀 Galaxy spin: rotates only the region around the spin
+      center – with a soft falloff at the edge, so the rest of the image stays untouched.
+      Foreground stars do not rotate.</p>
+      <button id="btnSpinCenter" class="secondary" data-i18n="spinCenterBtn">🌀 Set spin center (then click the preview)</button>
+      <label class="slider">
+        <span><span data-i18n="spinSpeed">Galaxy spin (°/s at core)</span> <output id="outSpinSpeed">0.0 °/s</output></span>
+        <input type="range" id="ctlSpinSpeed" min="-20" max="20" step="0.5" value="0">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="spinRadius">Spin radius</span> <output id="outSpinRadius">40</output></span>
+        <input type="range" id="ctlSpinRadius" min="5" max="100" step="1" value="40">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="spinDiff">Differential rotation (inner faster)</span> <output id="outSpinDiff">40</output></span>
+        <input type="range" id="ctlSpinDiff" min="0" max="100" step="1" value="40">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="spinFlat">Spin ellipse (inclined galaxy)</span> <output id="outSpinFlat">0</output></span>
+        <input type="range" id="ctlSpinFlat" min="0" max="100" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="spinTilt">Ellipse angle</span> <output id="outSpinTilt">0°</output></span>
+        <input type="range" id="ctlSpinTilt" min="0" max="180" step="1" value="0">
+      </label>
       <p class="tip"><span data-i18n-html="tip">🎯 <b>Zoom target:</b> Click the preview to choose where
       the camera flies to. Double-click = back to center.</span>
       <span id="targetInfo" data-i18n="targetCenter">Target: image center</span></p>
@@ -190,6 +211,10 @@
       <label class="slider">
         <span><span data-i18n="twinkle">Twinkle</span> <output id="outTwinkle">25</output></span>
         <input type="range" id="ctlTwinkle" min="0" max="100" step="1" value="25">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="twinkleSpeed">Twinkle speed</span> <output id="outTwinkleSpeed">100 %</output></span>
+        <input type="range" id="ctlTwinkleSpeed" min="10" max="300" step="5" value="100">
       </label>
       <label class="slider">
         <span><span data-i18n="starSize">Size</span> <output id="outStarSize">100 %</output></span>
@@ -232,6 +257,10 @@
       <label class="slider">
         <span><span data-i18n="mblur">Motion blur</span> <output id="outMblur">0</output></span>
         <input type="range" id="ctlMblur" min="0" max="100" step="1" value="0">
+      </label>
+      <label class="check">
+        <input type="checkbox" id="ctlMblurStars">
+        <span data-i18n="mblurStars">Motion blur on stars only (nebula stays sharp)</span>
       </label>
       <label class="slider">
         <span><span data-i18n="warp">Warp</span> <output id="outWarp">0</output></span>
@@ -333,7 +362,6 @@
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
 <script src="i18n.js"></script>
-<script src="upscaler.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -57,16 +57,6 @@ All panel sections are collapsible – click a heading to open or close it
    *"Star mask is already stretched"* to skip the stretch entirely, and the
    *stretch intensity* slider controls how far the stretch goes.
 
-   **✨ AI upscaler (3×, optional):** enhances real detail in the starless
-   image before the flight – great for smaller images that would look soft
-   at deep zoom. It uses a small, **non-generative** super-resolution
-   network (deterministic sub-pixel CNN): it only reconstructs detail that
-   is actually in the image and never invents content, so your astrophoto
-   stays authentic. Runs GPU-accelerated via WebGPU where available –
-   fast on modern graphics cards such as **Nvidia RTX 2000 or newer**
-   (the app shows whether GPU acceleration is active); without a capable
-   GPU it falls back to a much slower CPU mode. Requires the online
-   version (or a local web server).
 2. **Depth map** – computed automatically from the brightness of the starless
    image: bright nebula regions appear "closer" to the camera.
    *Smoothing* softens the map, *Invert depth* flips the effect.
@@ -88,6 +78,7 @@ All panel sections are collapsible – click a heading to open or close it
    | Duration | Length of the video (5–60 s) |
    | Fade in/out | Black-to-image and image-to-black fade, adjustable 0–3 s (0 = off) |
    | Loop mode | Camera flies in and seamlessly back out – perfect for endless loops on social media |
+   | Galaxy spin | Rotates only the region around a click-set spin center (radius, soft edge falloff) – with adjustable differential rotation (inner faster, like a real galaxy) and an ellipse option for inclined galaxies; foreground stars do not rotate |
 
    **Zoom target:** simply **click** the preview – the camera pans slowly
    toward that point over the whole flight while zooming in (following the
@@ -105,6 +96,7 @@ All panel sections are collapsible – click a heading to open or close it
    | Depth layers (count) | Snap stars onto a set number of discrete depth layers (∞ = continuous random depths) |
    | Star parallax | How strongly the stars move relative to the nebula zoom (up to 600 %) |
    | Twinkle | Strength of the star twinkle |
+   | Twinkle speed | Tempo of the twinkle (10–300 %) |
    | Size / Brightness / Saturation | Adjust the appearance of the stars (20–300 % / 0–300 % / 0–200 %) |
    | Generated stars | Adds up to 3000 synthetic stars with a realistic brightness distribution (many faint, few bright) and natural star colors – ideal for lateral flights or sparse star masks; also works without a star mask |
    | 🎲 Reshuffle layers | Rolls a new random distribution of the star layers (and of the generated stars) |
@@ -116,7 +108,7 @@ All panel sections are collapsible – click a heading to open or close it
    | Control | Effect |
    |---|---|
    | Bloom | Glow around bright stars and nebula cores |
-   | Motion blur | Radial/tangential blur along the flight motion |
+   | Motion blur | Radial/tangential blur along the flight motion – optionally on the stars only, keeping the nebula sharp |
    | Warp | Stars race past the camera with color fringing and streaks – hyperspace feeling |
    | Vignette | Cinematic edge darkening |
    | Exposure | Brighter/darker (±2 stops) |
@@ -161,7 +153,3 @@ All panel sections are collapsible – click a heading to open or close it
 - Video export via WebCodecs (frame-by-frame offline rendering, guaranteed
   smooth 30 fps, muxed with `mp4-muxer`/`webm-muxer`) with MediaRecorder
   (`canvas.captureStream`) as fallback.
-- AI upscaler via [ONNX Runtime Web](https://onnxruntime.ai/) (loaded lazily
-  on first use; WebGPU with WASM fallback) and the sub-pixel CNN
-  super-resolution model from the ONNX model zoo, processed in overlapping
-  224×224 tiles on the luminance channel.

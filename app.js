@@ -36,6 +36,13 @@ const state = {
   orientation: 0,        // °
   frameX: 0,             // Ausschnitt-Verschiebung -100..100 (an Bildkante geklemmt)
   frameY: 0,
+  spinSpeed: 0,          // Galaxien-Rotation im Kern in °/s (0 = aus)
+  spinRadius: 40,        // Wirkradius in % 
+  spinDiff: 40,          // 0 = starr, 100 = innen deutlich schneller
+  spinFlat: 0,           // Ellipsen-Stauchung für geneigte Galaxien 0..100
+  spinTilt: 0,           // Ellipsen-Winkel in Grad
+  spinCenter: { x: 0, y: 0 }, // Rotationszentrum in Ebenen-Einheiten
+  spinPick: false,       // nächster Klick setzt das Rotationszentrum
   tiltX: 0,              // -100..100
   tiltY: 0,
   swayAmp: 0,            // Schwenk-Animation Stärke 0..100
@@ -57,6 +64,7 @@ const state = {
   maskStretched: false,  // Sternmaske ist bereits gestreckt -> keine Auto-Streckung
   stretchAmount: 50,     // Intensität der Auto-Streckung 0..100
   twinkle: 25,           // 0..100
+  twinkleSpeed: 100,     // Funkel-Tempo in %
   starSize: 100,         // % Sterngröße
   starBright: 100,       // % Sternhelligkeit
   starSat: 100,          // % Sternsättigung
@@ -64,6 +72,7 @@ const state = {
 
   bloom: 0,              // 0..100
   mblur: 0,              // 0..100
+  mblurStars: false,     // Bewegungsunschärfe nur auf die Sterne
   warp: 0,               // 0..100
   vignette: 0,           // 0..100
   exposure: 0,           // -100..100 (Blendenstufen ±2)
@@ -81,7 +90,6 @@ const state = {
 
   exporting: false,
   offlineExport: false,
-  upscaled: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -130,6 +138,7 @@ function loc(prog, name) {
 const u1f = (p, n, v) => gl.uniform1f(loc(p, n), v);
 const u1i = (p, n, v) => gl.uniform1i(loc(p, n), v);
 const u2f = (p, n, x, y) => gl.uniform2f(loc(p, n), x, y);
+const u3f = (p, n, x, y, z) => gl.uniform3f(loc(p, n), x, y, z);
 
 // Maximale Texturkante: hochskalierte Bilder dürfen bis 8192 px nutzen
 const MAX_TEX = Math.min(8192, gl.getParameter(gl.MAX_TEXTURE_SIZE));
@@ -161,9 +170,35 @@ uniform float uCover;       // Grundskalierung, damit Bild das Format füllt
 uniform vec2 uCenter;       // Kameraziel in Bildebenen-Einheiten
 uniform vec2 uTilt;         // Kipp-Parallaxe in Bildebenen-Einheiten
 uniform float uDepthRange;  // Räumlichkeit: Spreizung der Tiefen-Zoomraten
+uniform vec2 uSpinCenter;   // Galaxien-Rotation: Zentrum (Ebenen-Einheiten)
+uniform float uSpinAngle;   // aktueller Drehwinkel im Kern (rad)
+uniform float uSpinRadius;  // Wirkradius in Ebenen-Einheiten
+uniform float uSpinDiff;    // 0 = starre Rotation, 1 = innen deutlich schneller
+uniform vec3 uSpinEll;      // Ellipse: (cos Neigung, sin Neigung, Stauchung)
 
 vec2 imgUv(vec2 q) {
   return vec2(q.x / uImgAspect, q.y) + 0.5;
+}
+
+// Galaxien-Rotation: dreht die Bildabtastung nur innerhalb des Wirkradius um
+// das gesetzte Zentrum. Zum Rand hin läuft die Drehung weich auf null aus
+// (keine sichtbare Kante); der Differenzial-Anteil lässt den Kern schneller
+// rotieren als die Außenbereiche – wie bei einer echten Galaxie.
+vec2 spinWarp(vec2 q) {
+  if (uSpinAngle == 0.0) return q;
+  vec2 d = q - uSpinCenter;
+  float c = uSpinEll.x, s = uSpinEll.y;
+  vec2 e = mat2(c, -s, s, c) * d;   // in die Achsenlage der Ellipse drehen
+  e.y /= uSpinEll.z;                // Stauchung aufheben -> Kreisraum
+  float r = length(e) / uSpinRadius;
+  if (r >= 1.0) return q;
+  float fall = smoothstep(1.0, 0.55, r);
+  float diffW = mix(1.0, 0.25 / (0.25 + 0.75 * r), uSpinDiff);
+  float a = uSpinAngle * fall * diffW;
+  float ca = cos(a), sa = sin(a);
+  e = mat2(ca, -sa, sa, ca) * e;
+  e.y *= uSpinEll.z;                // zurück in die Bildlage
+  return uSpinCenter + mat2(c, s, -s, c) * e;
 }
 
 void main() {
@@ -175,12 +210,12 @@ void main() {
   // Parallax: nahe Bereiche (hohe Tiefe) zoomen überproportional;
   // Kippen verschiebt sie zusätzlich seitlich. Tiefe ist erst nach dem
   // Sampeln bekannt -> Fixpunkt-Iteration.
-  vec2 uv = imgUv(uCenter + pr / (uCover * uZoom));
+  vec2 uv = imgUv(spinWarp(uCenter + pr / (uCover * uZoom)));
   for (int i = 0; i < 3; i++) {
     float d = texture(uDepth, uv).r;
     float ex = 1.0 + uParallax * (d - 0.45) * uDepthRange;
     float scale = uCover * pow(uZoom, ex);
-    uv = imgUv(uCenter + pr / scale + uTilt * (d - 0.45));
+    uv = imgUv(spinWarp(uCenter + pr / scale + uTilt * (d - 0.45)));
   }
 
   outColor = vec4(texture(uColor, uv).rgb, 1.0);
@@ -206,6 +241,7 @@ uniform float uSpread;    // Streuung der Ebenen 0..1
 uniform float uLayers;    // Anzahl diskreter Ebenen (0 = kontinuierlich)
 uniform float uStarPar;   // Parallax-Multiplikator für Sterne
 uniform float uTwinkle;   // Funkel-Stärke 0..1
+uniform float uTwSpeed;   // Funkel-Tempo (1 = normal)
 uniform float uWarp;      // 0..1: Sterne rasen zusätzlich an der Kamera vorbei
 uniform float uDepthRange;
 uniform float uStarSize;   // Größen-Multiplikator
@@ -243,7 +279,7 @@ void main() {
   gl_PointSize = clamp(px, 1.2, 500.0);
 
   float seed = fract(aPos.x * 137.7 + aPos.y * 91.3) * 6.2831;
-  float tw = sin(uTime * (1.0 + fract(seed) * 2.5) + seed * 10.0) * 0.5 + 0.5;
+  float tw = sin(uTime * uTwSpeed * (1.0 + fract(seed) * 2.5) + seed * 10.0) * 0.5 + 0.5;
   vAlpha = 1.0 - uTwinkle * 0.55 * tw;
   float lumS = dot(aColor, vec3(0.299, 0.587, 0.114));
   vColor = max(mix(vec3(lumS), aColor, uStarSat), 0.0) * uStarBright;
@@ -271,8 +307,9 @@ precision highp float;
 in vec2 vUv;
 out vec4 outColor;
 uniform sampler2D uScene;
+uniform sampler2D uStarsTex; // separate Sternebene (schwarz, wenn nicht getrennt)
 void main() {
-  vec3 c = texture(uScene, vUv).rgb;
+  vec3 c = texture(uScene, vUv).rgb + texture(uStarsTex, vUv).rgb;
   float l = max(max(c.r, c.g), c.b);
   float k = smoothstep(0.55, 0.85, l);
   outColor = vec4(c * k, 1.0);
@@ -321,6 +358,8 @@ uniform float uClarity;    // 0 = aus, negativ = weich (Orton)
 uniform float uStructure;  // feine Details, 0 = aus
 uniform float uSharpen;    // 0 = aus
 uniform vec2 uTexel;       // 1 px der Szene in UV
+uniform sampler2D uStarsTex; // separate Sternebene ("nur Sterne"-Unschärfe)
+uniform float uSplit;      // 1 = Bewegungsunschärfe nur auf die Sterne
 
 void main() {
   vec2 r = vec2((vUv.x - 0.5) * uViewAspect, vUv.y - 0.5);
@@ -336,11 +375,20 @@ void main() {
   for (int i = 0; i < N; i++) {
     float f = float(i) / float(N - 1) - 0.5;
     vec2 o = off * f;
-    acc.r += texture(uScene, vUv + o * (1.0 + uChroma) + ca).r;
-    acc.g += texture(uScene, vUv + o).g;
-    acc.b += texture(uScene, vUv + o * (1.0 - uChroma) - ca).b;
+    if (uSplit > 0.5) {
+      acc.r += texture(uStarsTex, vUv + o * (1.0 + uChroma) + ca).r;
+      acc.g += texture(uStarsTex, vUv + o).g;
+      acc.b += texture(uStarsTex, vUv + o * (1.0 - uChroma) - ca).b;
+    } else {
+      acc.r += texture(uScene, vUv + o * (1.0 + uChroma) + ca).r;
+      acc.g += texture(uScene, vUv + o).g;
+      acc.b += texture(uScene, vUv + o * (1.0 - uChroma) - ca).b;
+    }
   }
-  vec3 col = acc / float(N);
+  // "Nur Sterne": der Nebel bleibt scharf, nur die Sternebene wird verwischt
+  vec3 col = uSplit > 0.5
+    ? texture(uScene, vUv).rgb + acc / float(N)
+    : acc / float(N);
 
   // Klarheit: lokaler Kontrast gegen stark weichgezeichnete Szene
   if (uClarity != 0.0) {
@@ -427,16 +475,24 @@ function makeFbo(w, h) {
   return { fb, tex, w, h };
 }
 
-let fbScene = null, fbBloomA = null, fbBloomB = null, fbSoftA = null, fbSoftB = null,
+// 1x1-Schwarztextur: Platzhalter für die Sternebene, wenn nicht getrennt wird
+const texBlack = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, texBlack);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+let fbScene = null, fbStars = null, fbBloomA = null, fbBloomB = null, fbSoftA = null, fbSoftB = null,
     fbMedA = null, fbMedB = null;
 
 function ensureFbos() {
   const w = canvas.width, h = canvas.height;
   if (fbScene && fbScene.w === w && fbScene.h === h) return;
-  for (const f of [fbScene, fbBloomA, fbBloomB, fbSoftA, fbSoftB, fbMedA, fbMedB]) {
+  for (const f of [fbScene, fbStars, fbBloomA, fbBloomB, fbSoftA, fbSoftB, fbMedA, fbMedB]) {
     if (f) { gl.deleteFramebuffer(f.fb); gl.deleteTexture(f.tex); }
   }
   fbScene = makeFbo(w, h);
+  fbStars = makeFbo(w, h);
   const bw = Math.max(1, w >> 2), bh = Math.max(1, h >> 2);
   fbBloomA = makeFbo(bw, bh);
   fbBloomB = makeFbo(bw, bh);
@@ -896,9 +952,24 @@ function render(forcedT) {
   u2f(bgProg, "uCenter", cam.cx, cam.cy);
   u2f(bgProg, "uTilt", bgTiltX, bgTiltY);
   u1f(bgProg, "uDepthRange", depthRange);
+  // Galaxien-Rotation (te-basiert -> im Loop-Modus nahtlos hin & zurück)
+  u1f(bgProg, "uSpinAngle", state.spinSpeed * Math.PI / 180 * cam.te);
+  u2f(bgProg, "uSpinCenter", state.spinCenter.x, state.spinCenter.y);
+  u1f(bgProg, "uSpinRadius", Math.max(0.02, (state.spinRadius / 100) * 0.75));
+  u1f(bgProg, "uSpinDiff", state.spinDiff / 100);
+  const spinTiltRad = state.spinTilt * Math.PI / 180;
+  u3f(bgProg, "uSpinEll", Math.cos(spinTiltRad), Math.sin(spinTiltRad), 1 - (state.spinFlat / 100) * 0.7);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
+  // "Nur Sterne"-Unschärfe: Sterne in eine eigene Ebene rendern
+  const splitBlur = state.mblurStars && state.mblur > 0 && state.starCount > 0;
+
   if (state.starCount > 0) {
+    if (splitBlur) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbStars.fb);
+      gl.viewport(0, 0, fbStars.w, fbStars.h);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+    }
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE);
     gl.useProgram(starProg);
@@ -916,6 +987,7 @@ function render(forcedT) {
     u1f(starProg, "uLayers", state.starLayers);
     u1f(starProg, "uStarPar", state.starPar / 100);
     u1f(starProg, "uTwinkle", state.twinkle / 100);
+    u1f(starProg, "uTwSpeed", state.twinkleSpeed / 100);
     u1f(starProg, "uWarp", warp);
     u1f(starProg, "uDepthRange", depthRange);
     u1f(starProg, "uStarSize", state.starSize / 100);
@@ -937,7 +1009,11 @@ function render(forcedT) {
     gl.viewport(0, 0, fbBloomA.w, fbBloomA.h);
     gl.useProgram(brightProg);
     gl.bindTexture(gl.TEXTURE_2D, fbScene.tex);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, splitBlur ? fbStars.tex : texBlack);
+    gl.activeTexture(gl.TEXTURE0);
     u1i(brightProg, "uScene", 0);
+    u1i(brightProg, "uStarsTex", 1);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
     gl.useProgram(blurProg);
@@ -1015,10 +1091,14 @@ function render(forcedT) {
   gl.bindTexture(gl.TEXTURE_2D, clarity !== 0 ? fbSoftB.tex : fbScene.tex);
   gl.activeTexture(gl.TEXTURE3);
   gl.bindTexture(gl.TEXTURE_2D, structure !== 0 ? fbMedB.tex : fbScene.tex);
+  gl.activeTexture(gl.TEXTURE4);
+  gl.bindTexture(gl.TEXTURE_2D, splitBlur ? fbStars.tex : texBlack);
   u1i(compProg, "uScene", 0);
   u1i(compProg, "uBloom", 1);
   u1i(compProg, "uSoft", 2);
   u1i(compProg, "uMed", 3);
+  u1i(compProg, "uStarsTex", 4);
+  u1f(compProg, "uSplit", splitBlur ? 1 : 0);
   u1f(compProg, "uViewAspect", viewAspect);
   u1f(compProg, "uBloomStrength", bloomStrength);
   u1f(compProg, "uShutter", (state.mblur / 100) * 1.5);
@@ -1093,6 +1173,11 @@ bindSlider("ctlRotation", "outRotation", "rotationSpeed", (v) => v.toFixed(1) + 
 bindSlider("ctlOrient", "outOrient", "orientation", (v) => v + "°");
 bindSlider("ctlFrameX", "outFrameX", "frameX", asInt);
 bindSlider("ctlFrameY", "outFrameY", "frameY", asInt);
+bindSlider("ctlSpinSpeed", "outSpinSpeed", "spinSpeed", (v) => v.toFixed(1) + " °/s");
+bindSlider("ctlSpinRadius", "outSpinRadius", "spinRadius", asInt);
+bindSlider("ctlSpinDiff", "outSpinDiff", "spinDiff", asInt);
+bindSlider("ctlSpinFlat", "outSpinFlat", "spinFlat", asInt);
+bindSlider("ctlSpinTilt", "outSpinTilt", "spinTilt", (v) => v + "°");
 bindSlider("ctlTiltX", "outTiltX", "tiltX", asInt);
 bindSlider("ctlTiltY", "outTiltY", "tiltY", asInt);
 bindSlider("ctlSwayAmp", "outSwayAmp", "swayAmp", asInt);
@@ -1101,6 +1186,7 @@ bindSlider("ctlDuration", "outDuration", "duration", (v) => v + " s");
 bindSlider("ctlSpread", "outSpread", "spread", asInt);
 bindSlider("ctlStarDist", "outStarDist", "starDist", asInt);
 bindSlider("ctlTwinkle", "outTwinkle", "twinkle", asInt);
+bindSlider("ctlTwinkleSpeed", "outTwinkleSpeed", "twinkleSpeed", asPct);
 bindSlider("ctlStarSize", "outStarSize", "starSize", asPct);
 bindSlider("ctlStarBright", "outStarBright", "starBright", asPct);
 bindSlider("ctlStarSat", "outStarSat", "starSat", asPct);
@@ -1149,6 +1235,16 @@ bindSlider("ctlSaturation", "outSaturation", "saturation", asInt);
 bindSlider("ctlClarity", "outClarity", "clarity", asInt);
 bindSlider("ctlStructure", "outStructure", "structure", asInt);
 bindSlider("ctlSharpen", "outSharpen", "sharpen", asInt);
+
+$("ctlMblurStars").addEventListener("change", () => {
+  state.mblurStars = $("ctlMblurStars").checked;
+});
+
+// Rotationszentrum der Galaxie: nächster Klick in die Vorschau setzt es
+$("btnSpinCenter").addEventListener("click", () => {
+  state.spinPick = !state.spinPick;
+  $("btnSpinCenter").classList.toggle("active", state.spinPick);
+});
 
 $("ctlLoop").addEventListener("change", () => {
   state.loopMode = $("ctlLoop").checked;
@@ -1262,12 +1358,22 @@ canvas.addEventListener("click", (e) => {
     qx = cam.cx + rx / sc;
     qy = cam.cy + ry / sc;
   }
-  state.target.x = Math.min(imgAspect * 0.475, Math.max(-imgAspect * 0.475, qx));
-  state.target.y = Math.min(0.475, Math.max(-0.475, qy));
-  updateTargetInfo();
+  const clampedX = Math.min(imgAspect * 0.475, Math.max(-imgAspect * 0.475, qx));
+  const clampedY = Math.min(0.475, Math.max(-0.475, qy));
+  const wasSpinPick = state.spinPick;
+  if (state.spinPick) {
+    state.spinCenter = { x: clampedX, y: clampedY };
+    state.spinPick = false;
+    $("btnSpinCenter").classList.remove("active");
+  } else {
+    state.target.x = clampedX;
+    state.target.y = clampedY;
+    updateTargetInfo();
+  }
 
   // Marker kurz einblenden
   const marker = $("targetMarker");
+  marker.textContent = wasSpinPick ? "🌀" : "🎯";
   marker.hidden = false;
   marker.style.left = (canvas.offsetLeft + fx * rect.width) + "px";
   marker.style.top = (canvas.offsetTop + fy * rect.height) + "px";
@@ -1315,12 +1421,11 @@ async function loadFile(which, file) {
     const img = await decodeFile(file);
     if (which === "starless") {
       state.starless = img;
-      state.upscaled = false;
       $("nameStarless").removeAttribute("data-i18n");
       $("nameStarless").textContent = `${file.name} (${img.width}×${img.height})`;
       $("dropStarless").classList.add("loaded");
       if (texColor) gl.deleteTexture(texColor);
-      texColor = makeTexture(downscale(img, state.upscaled ? MAX_TEX : 4096));
+      texColor = makeTexture(downscale(img, 4096));
       buildDepthMap();
       // generierte Sterne nutzen das Seitenverhältnis des Starless-Bildes
       if (state.genStars > 0) uploadStars();
@@ -1338,7 +1443,6 @@ async function loadFile(which, file) {
       $("btnExport").disabled = false;
       state.t0 = performance.now();
       if (which === "starless") status.textContent = t("starlessLoaded");
-      updateUpscaleButton();
     }
   } catch (err) {
     console.error(err);
@@ -1645,65 +1749,6 @@ $("btnExport").addEventListener("click", async () => {
   }
 })();
 
-// ---------------------------------------------------------------- KI-Upscaler
-
-function updateUpscaleButton() {
-  const maxSrc = Math.floor(MAX_TEX / Upscaler.SCALE); // Ergebnis muss in die Textur passen
-  const img = state.starless;
-  const usable = !!img && !state.upscaled && !Upscaler.running &&
-    Math.max(img.width, img.height) <= maxSrc;
-  $("btnUpscale").disabled = !usable;
-  if (img && !state.upscaled && Math.max(img.width, img.height) > maxSrc) {
-    $("loadStatus").textContent = t("upscaleTooBig");
-  }
-}
-
-Upscaler.detect().then(() => {
-  const hint = $("upscaleGpuHint");
-  const render = () => {
-    hint.textContent = Upscaler.gpu
-      ? t("upscaleHintGpu", Upscaler.gpu.desc)
-      : t("upscaleHintCpu");
-  };
-  render();
-  I18N.onChange.push(render);
-});
-
-$("btnUpscale").addEventListener("click", async () => {
-  if (!state.starless || state.upscaled || Upscaler.running) return;
-  const status = $("loadStatus");
-  status.classList.remove("error");
-  Upscaler.running = true;
-  $("btnUpscale").disabled = true;
-  status.textContent = t("upscaleLoading");
-  try {
-    const result = await Upscaler.upscale(state.starless.canvas, (p) => {
-      status.textContent = t("upscaleRunning", p);
-    });
-    state.starless = {
-      canvas: result,
-      width: result.width,
-      height: result.height,
-      name: state.starless.name + " ×3",
-    };
-    state.upscaled = true;
-    $("nameStarless").textContent =
-      `${state.starless.name} (${result.width}×${result.height})`;
-    if (texColor) gl.deleteTexture(texColor);
-    texColor = makeTexture(downscale(state.starless, MAX_TEX));
-    buildDepthMap();
-    status.textContent = t("upscaleDone", result.width, result.height);
-  } catch (err) {
-    console.error(err);
-    status.classList.add("error");
-    const offline = location.protocol === "file:";
-    status.textContent = offline ? t("upscaleNeedsHttp") : t("upscaleFailed", err.message);
-  } finally {
-    Upscaler.running = false;
-    updateUpscaleButton();
-  }
-});
-
 // ---------------------------------------------------------------- Feedback
 
 const FEEDBACK_REPO = "https://github.com/michaeld1988/AstroFly";
@@ -1712,7 +1757,11 @@ const INSTAGRAM_URL = "https://www.instagram.com/astrofly_app/";
 
 /** Technische Angaben für Bug-Reports (nur was der Browser ohnehin preisgibt). */
 function feedbackDiagnostics() {
-  const gpu = Upscaler.gpu ? (Upscaler.gpu.desc || "WebGPU") : "no WebGPU";
+  let gpu = "unknown";
+  try {
+    const ext = gl.getExtension("WEBGL_debug_renderer_info");
+    if (ext) gpu = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
+  } catch { /* optional */ }
   return [
     "App: AstroFly (" + location.host + ")",
     "Browser: " + navigator.userAgent,
