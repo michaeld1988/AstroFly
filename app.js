@@ -73,6 +73,7 @@ const state = {
   gaiaDepth: null,       // echte Tiefe je Masken-Stern (Float32Array, -1 = keine)
   gaiaAmt: 100,          // Einfluss der echten Tiefen 0..100
   gaiaInfo: null,        // { matched, total, dMin, dMax } für die Statuszeile
+  gaiaOnly: false,       // Wissenschafts-Modus: nur Sterne mit echter Tiefe
   twinkleSpeed: 100,     // Funkel-Tempo in %
   starSize: 100,         // % Sterngröße
   starBright: 100,       // % Sternhelligkeit
@@ -298,6 +299,7 @@ uniform vec2 uCenter2;
 uniform vec2 uTilt2;
 uniform float uStreak;    // Belichtungszeit / dt (0 = keine Streifen)
 uniform float uGaiaAmt;   // Mischung Zufallstiefe -> echte Gaia-Tiefe (0..1)
+uniform float uGaiaOnly;  // 1 = Wissenschafts-Modus: nur Sterne mit Gaia-Tiefe
 out vec3 vColor;
 out float vAlpha;
 out vec2 vDir;    // Streifen-Richtung in Pixeln (normiert)
@@ -316,8 +318,17 @@ void main() {
   }
   float depth = clamp(uStarBase + (h - 0.5) * uSpread + brightShift, 0.02, 1.0);
   // Echte Entfernung aus dem Gaia-Katalog (falls zugeordnet): ersetzt die
-  // Zufallstiefe je nach eingestellter Stärke
-  if (aGaia >= 0.0) depth = mix(depth, clamp(aGaia, 0.02, 1.0), uGaiaAmt);
+  // Zufallstiefe je nach eingestellter Stärke. Im Wissenschafts-Modus zählen
+  // ausschließlich echte Tiefen; Sterne ohne Gaia-Messung werden ausgeblendet
+  if (aGaia >= 0.0) {
+    depth = mix(depth, clamp(aGaia, 0.02, 1.0), max(uGaiaAmt, uGaiaOnly));
+  } else if (uGaiaOnly > 0.5) {
+    gl_Position = vec4(4.0, 4.0, 2.0, 1.0); // außerhalb des Clip-Volumens
+    gl_PointSize = 1.0;
+    vColor = vec3(0.0); vAlpha = 0.0;
+    vDir = vec2(1.0, 0.0); vLen = 0.0; vBase = 1.0; vSize = 1.0;
+    return;
+  }
 
   // Sterne parallaxieren deutlich stärker als der Nebel (Faktor ~2.6 relativ
   // zur Räumlichkeit); Warp lässt sie zusätzlich beschleunigt vorbeiziehen
@@ -1416,6 +1427,7 @@ function render(forcedT) {
     u2f(starProg, "uTilt2", starTilt2X, starTilt2Y);
     u1f(starProg, "uStreak", splitBlur ? ((state.mblur / 100) * 1.5) / dt : 0);
     u1f(starProg, "uGaiaAmt", state.gaiaAmt / 100);
+    u1f(starProg, "uGaiaOnly", state.gaiaOnly && state.gaiaDepth ? 1 : 0);
     gl.drawArrays(gl.POINTS, 0, state.starCount);
     gl.disable(gl.BLEND);
   }
@@ -1773,10 +1785,21 @@ function updateGaiaStatus() {
   const el = $("gaiaStatus");
   if (!el) return;
   $("btnGaia").disabled = !(state.wcs && state.maskStarCount > 0);
+
+  // Wissenschafts-Modus erst ab 75 % Erkennungsrate freischalten
+  const g = state.gaiaDepth && state.gaiaInfo ? state.gaiaInfo : null;
+  const pct = g ? Math.round((g.matched / Math.max(1, g.total)) * 100) : 0;
+  const sciAllowed = pct >= 75;
+  $("ctlGaiaOnly").disabled = !sciAllowed;
+  if (!sciAllowed && state.gaiaOnly) {
+    state.gaiaOnly = false;
+    $("ctlGaiaOnly").checked = false;
+  }
+
   if (gaiaTransient) { el.textContent = t(gaiaTransient.key, ...gaiaTransient.args); return; }
-  if (state.gaiaDepth && state.gaiaInfo) {
-    const g = state.gaiaInfo;
-    el.textContent = t("gaiaResult", g.matched, g.total, g.dMin, g.dMax);
+  if (g) {
+    el.textContent = t("gaiaResult", g.matched, g.total, pct, g.dMin, g.dMax) +
+      (sciAllowed ? "" : " " + t("gaiaSciLocked"));
   } else if (state.wcs) {
     el.textContent = t("gaiaWcsOk", state.wcs._name || "WCS");
   } else {
@@ -1787,6 +1810,10 @@ I18N.onChange.push(updateGaiaStatus);
 
 $("btnGaiaHelp").addEventListener("click", () => {
   $("gaiaHelp").hidden = !$("gaiaHelp").hidden;
+});
+
+$("ctlGaiaOnly").addEventListener("change", () => {
+  state.gaiaOnly = $("ctlGaiaOnly").checked;
 });
 
 $("btnWcs").addEventListener("click", () => $("fileWcs").click());

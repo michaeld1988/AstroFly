@@ -231,6 +231,13 @@
         <span><span data-i18n="gaiaAmt">Real depth influence</span> <output id="outGaiaAmt">100 %</output></span>
         <input type="range" id="ctlGaiaAmt" min="0" max="100" step="1" value="100">
       </label>
+      <label class="check">
+        <input type="checkbox" id="ctlGaiaOnly" disabled>
+        <span data-i18n="gaiaOnly">🔬 Scientifically accurate distances (Gaia stars only)</span>
+      </label>
+      <p class="tip" data-i18n="gaiaOnlyHint">Shows only stars with a real Gaia distance, at their
+      real depth – detected stars without a catalog match and generated stars are hidden.
+      Unlocks at a match rate of 75 % or higher, so the star field doesn't thin out too much.</p>
       <p class="tip" id="gaiaStatus"></p>
     </section>
 

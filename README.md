@@ -101,7 +101,10 @@ All panel sections are collapsible – click a heading to open or close it
    each matched star its real measured distance. The 3D star layers then
    follow the actual, log-compressed depth of the sky instead of random
    depths; unmatched stars keep their random layer, and a slider blends
-   between random and real depths. Requires an internet connection for the
+   between random and real depths. A **scientific mode** (unlocked at a
+   match rate of 75 % or higher, reported in the status line) shows only
+   stars with a real Gaia distance at their true depth and hides everything
+   else. Requires an internet connection for the
    catalog query – only sky coordinates are transferred, never your image.
 
    **Zoom target:** simply **click** the preview – the camera pans slowly
