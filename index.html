@@ -220,6 +220,10 @@
       catalog and assigns each one its real measured distance. The 3D layers follow the
       actual depth of the sky. Requires an internet connection for the catalog query;
       only sky coordinates are transferred, never your image.</p>
+      <button id="btnGaiaHelp" class="secondary" data-i18n="gaiaHelpBtn">❓ Where do I get a plate-solved file?</button>
+      <div id="gaiaHelp" hidden>
+        <p class="tip" data-i18n-html="gaiaHelpText">…</p>
+      </div>
       <button id="btnWcs" class="secondary" data-i18n="gaiaWcsBtn">📄 Load plate-solved FITS / WCS file</button>
       <input type="file" id="fileWcs" accept=".fits,.fit,.fts,.wcs" hidden>
       <button id="btnGaia" class="secondary" disabled data-i18n="gaiaMatchBtn">⭐ Match stars with Gaia (internet)</button>
