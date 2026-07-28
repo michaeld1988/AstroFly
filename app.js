@@ -919,7 +919,7 @@ function angSep(ra1, dec1, ra2, dec2) {
 
 /** Gaia DR3 über die VizieR-TAP-API abfragen (CSV, CORS-frei). */
 async function queryGaia(ra, dec, radiusDeg) {
-  const adql = `SELECT TOP 8000 RA_ICRS,DE_ICRS,Gmag,Plx FROM "I/355/gaiadr3" ` +
+  const adql = `SELECT TOP 30000 RA_ICRS,DE_ICRS,Gmag,Plx FROM "I/355/gaiadr3" ` +
     `WHERE 1=CONTAINS(POINT('ICRS',RA_ICRS,DE_ICRS),` +
     `CIRCLE('ICRS',${ra.toFixed(6)},${dec.toFixed(6)},${radiusDeg.toFixed(4)})) ` +
     `AND Plx>0.05 ORDER BY Gmag`;
@@ -938,10 +938,48 @@ async function queryGaia(ra, dec, radiusDeg) {
   return out;
 }
 
+/** 3x3-Gleichungssystem lösen (für die Affin-Anpassung). */
+function solve3(M, b) {
+  const [[a, c, d], [e, f, g], [h, k, l]] = M;
+  const det = a * (f * l - g * k) - c * (e * l - g * h) + d * (e * k - f * h);
+  if (Math.abs(det) < 1e-12) return null;
+  const inv = [
+    [(f * l - g * k) / det, (d * k - c * l) / det, (c * g - d * f) / det],
+    [(g * h - e * l) / det, (a * l - d * h) / det, (d * e - a * g) / det],
+    [(e * k - f * h) / det, (c * h - a * k) / det, (a * f - c * e) / det],
+  ];
+  return [
+    inv[0][0] * b[0] + inv[0][1] * b[1] + inv[0][2] * b[2],
+    inv[1][0] * b[0] + inv[1][1] * b[1] + inv[1][2] * b[2],
+    inv[2][0] * b[0] + inv[2][1] * b[1] + inv[2][2] * b[2],
+  ];
+}
+
+/**
+ * Affine Abbildung Katalog -> Maske per kleinster Quadrate aus groben
+ * Treffer-Paaren [gx, gy, dx, dy] schätzen.
+ */
+function affineFit(pairs) {
+  let sxx = 0, sxy = 0, sx = 0, syy = 0, sy = 0;
+  let bx0 = 0, bx1 = 0, bx2 = 0, by0 = 0, by1 = 0, by2 = 0;
+  for (const [gx, gy, dx, dy] of pairs) {
+    sxx += gx * gx; sxy += gx * gy; sx += gx; syy += gy * gy; sy += gy;
+    bx0 += gx * dx; bx1 += gy * dx; bx2 += dx;
+    by0 += gx * dy; by1 += gy * dy; by2 += dy;
+  }
+  const M = [[sxx, sxy, sx], [sxy, syy, sy], [sx, sy, pairs.length]];
+  const ax = solve3(M, [bx0, bx1, bx2]);
+  const ay = solve3(M, [by0, by1, by2]);
+  return ax && ay ? { ax, ay } : null;
+}
+
 /**
  * Ordnet Gaia-Sterne den erkannten Masken-Sternen zu und leitet echte Tiefen
  * ab. Die y-Orientierung des FITS (Zeile 1 unten oder oben) wird automatisch
- * bestimmt: Es gewinnt die Variante mit den meisten Treffern.
+ * bestimmt: Es gewinnt die Variante mit den meisten Treffern. Ein zweiter
+ * Durchgang schätzt eine Affin-Korrektur aus den groben Treffern (gleicht
+ * kleine Crop-/Skalierungs-/Drehungs-Abweichungen aus) und ordnet dann mit
+ * enger Toleranz neu zu.
  */
 function matchGaia(gaiaStars) {
   const wcs = state.wcs, mask = state.maskStarFloats;
@@ -950,15 +988,16 @@ function matchGaia(gaiaStars) {
   const nax1 = wcs.naxis1 || state.stars.width, nax2 = wcs.naxis2 || state.stars.height;
 
   // Erkannte Sterne in ein Suchgitter legen (Ebenen-Einheiten, Bildhöhe = 1)
-  const tol = 0.006; // ~0,6 % der Bildhöhe
-  const cell = tol;
+  const tolCoarse = 0.012; // Durchgang 1: ~1,2 % der Bildhöhe
+  const tolFine = 0.0045;  // Durchgang 2 (nach Affin-Korrektur)
+  const cell = tolCoarse;
   const grid = new Map();
   for (let i = 0; i < n; i++) {
     const x = mask[i * 7], y = mask[i * 7 + 1];
     const key = Math.round(x / cell) + ":" + Math.round(y / cell);
     (grid.get(key) || grid.set(key, []).get(key)).push(i);
   }
-  const nearest = (x, y, used) => {
+  const nearest = (x, y, used, tol) => {
     let best = -1, bd = tol * tol;
     const gx = Math.round(x / cell), gy = Math.round(y / cell);
     for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
@@ -972,33 +1011,59 @@ function matchGaia(gaiaStars) {
     return best;
   };
 
-  // Beide y-Konventionen probieren, die bessere gewinnt
-  const tryMatch = (flipY) => {
-    const used = new Uint8Array(n), pairs = [];
+  // Katalogsterne in Ebenen-Koordinaten projizieren (je y-Konvention);
+  // Reihenfolge bleibt hellste zuerst (Abfrage ist nach Gmag sortiert)
+  const project = (flipY) => {
+    const pts = [];
     for (const g of gaiaStars) {
       const p = wcsSky2Pix(wcs, g.ra, g.dec);
       if (!p) continue;
       const u = p.px / nax1, v = flipY ? 1 - p.py / nax2 : p.py / nax2;
-      if (u < -0.02 || u > 1.02 || v < -0.02 || v > 1.02) continue;
-      const x = (u - 0.5) * imgAspect, y = 0.5 - v;
-      const i = nearest(x, y, used);
-      if (i >= 0) { used[i] = 1; pairs.push([i, g.plx]); }
+      if (u < -0.03 || u > 1.03 || v < -0.03 || v > 1.03) continue;
+      pts.push({ x: (u - 0.5) * imgAspect, y: 0.5 - v, plx: g.plx });
+    }
+    return pts;
+  };
+  const runMatch = (pts, tol) => {
+    const used = new Uint8Array(n), pairs = [];
+    for (const g of pts) {
+      const i = nearest(g.x, g.y, used, tol);
+      if (i >= 0) { used[i] = 1; pairs.push({ i, g }); }
     }
     return pairs;
   };
-  const a = tryMatch(true), b = tryMatch(false);
-  const pairs = a.length >= b.length ? a : b;
+
+  // Durchgang 1 (grob) für beide y-Konventionen, die bessere gewinnt
+  const ptsA = project(true), ptsB = project(false);
+  const pairsA = runMatch(ptsA, tolCoarse), pairsB = runMatch(ptsB, tolCoarse);
+  const pts = pairsA.length >= pairsB.length ? ptsA : ptsB;
+  let pairs = pairsA.length >= pairsB.length ? pairsA : pairsB;
+
+  // Durchgang 2: Affin-Korrektur schätzen und enger neu zuordnen; das
+  // Ergebnis zählt nur, wenn es mehr Treffer liefert
+  if (pairs.length >= 20) {
+    const fit = affineFit(pairs.map(({ i, g }) => [g.x, g.y, mask[i * 7], mask[i * 7 + 1]]));
+    if (fit) {
+      const warped = pts.map((g) => ({
+        x: fit.ax[0] * g.x + fit.ax[1] * g.y + fit.ax[2],
+        y: fit.ay[0] * g.x + fit.ay[1] * g.y + fit.ay[2],
+        plx: g.plx,
+      }));
+      const refined = runMatch(warped, tolFine);
+      if (refined.length > pairs.length) pairs = refined;
+    }
+  }
   if (pairs.length < 5) return null;
 
   // Entfernungen (pc) logarithmisch auf die Tiefenebenen mappen: nahe Sterne
   // (10. Perzentil) -> vorn, ferne (90. Perzentil) -> hinten
-  const dists = pairs.map(([, plx]) => 1000 / plx).sort((x, y) => x - y);
+  const dists = pairs.map(({ g }) => 1000 / g.plx).sort((x, y) => x - y);
   const p10 = Math.log(dists[Math.floor(dists.length * 0.1)]);
   const p90 = Math.log(dists[Math.min(dists.length - 1, Math.floor(dists.length * 0.9))]);
   const span = Math.max(0.2, p90 - p10);
   const depth = new Float32Array(n).fill(-1);
-  for (const [i, plx] of pairs) {
-    const t = Math.min(1, Math.max(0, (Math.log(1000 / plx) - p10) / span));
+  for (const { i, g } of pairs) {
+    const t = Math.min(1, Math.max(0, (Math.log(1000 / g.plx) - p10) / span));
     depth[i] = 0.98 - t * 0.93; // nah = 0.98, fern = 0.05
   }
   state.gaiaDepth = depth;
