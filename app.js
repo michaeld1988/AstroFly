@@ -1720,6 +1720,10 @@ function updateGaiaStatus() {
 }
 I18N.onChange.push(updateGaiaStatus);
 
+$("btnGaiaHelp").addEventListener("click", () => {
+  $("gaiaHelp").hidden = !$("gaiaHelp").hidden;
+});
+
 $("btnWcs").addEventListener("click", () => $("fileWcs").click());
 $("fileWcs").addEventListener("change", async () => {
   const file = $("fileWcs").files[0];

@@ -67,6 +67,13 @@ const I18N = {
       spinMaskAmt: "Brightness mask influence",
       spinMaskSmooth: "Brightness mask smoothing",
       gaiaHint: "⭐ Real star distances (Gaia): load a plate-solved version of your image (FITS from ASTAP, PixInsight or Siril, or a .wcs file from astrometry.net) – AstroFly then matches your detected stars against the ESA Gaia catalog and assigns each one its real measured distance. The 3D layers follow the actual depth of the sky. Requires an internet connection for the catalog query; only sky coordinates are transferred, never your image.",
+      gaiaHelpBtn: "❓ Where do I get a plate-solved file?",
+      gaiaHelpText: "A plate-solved file is your image with its sky position stored in the header – most astrophotographers already have one:<br><br>" +
+        "<b>Siril:</b> plate-solve the image (Image Processing → Astrometry) and save as <b>.fit/.fits</b> – done.<br>" +
+        "<b>PixInsight:</b> run the <b>ImageSolver</b> script (Script → Image Analysis), then save as <b>FITS</b> (not XISF – AstroFly can't read XISF headers).<br>" +
+        "<b>ASTAP:</b> open the image, solve it, save as FITS – or use the small <b>.wcs</b> file ASTAP writes next to the image.<br>" +
+        "<b>No software?</b> Upload your image at <b>nova.astrometry.net</b> (free) and download the <b>wcs.fits</b> file after solving.<br><br>" +
+        "Important: the solved file must show the <b>same framing</b> as your starless/star mask (crop before solving if you crop). A different resolution is fine – AstroFly rescales automatically. You can pick the full-size solved FITS: only the tiny header is read, never the image data.",
       gaiaWcsBtn: "📄 Load plate-solved FITS / WCS file",
       gaiaMatchBtn: "⭐ Match stars with Gaia (internet)",
       gaiaAmt: "Real depth influence",
@@ -206,6 +213,13 @@ const I18N = {
       spinMaskAmt: "Helligkeitsmaske einbeziehen",
       spinMaskSmooth: "Glättung der Helligkeitsmaske",
       gaiaHint: "⭐ Echte Sternentfernungen (Gaia): Lade eine geplatesolvte Version deines Bildes (FITS aus ASTAP, PixInsight oder Siril, oder eine .wcs-Datei von astrometry.net) – AstroFly gleicht die erkannten Sterne dann mit dem ESA-Gaia-Katalog ab und weist jedem seine echte gemessene Entfernung zu. Die 3D-Ebenen folgen der tatsächlichen Tiefe des Himmels. Für die Katalog-Abfrage ist eine Internetverbindung nötig; übertragen werden nur Himmelskoordinaten, nie dein Bild.",
+      gaiaHelpBtn: "❓ Woher bekomme ich eine geplatesolvte Datei?",
+      gaiaHelpText: "Eine geplatesolvte Datei ist dein Bild mit seiner Himmelsposition im Header – die meisten Astrofotografen haben sie schon:<br><br>" +
+        "<b>Siril:</b> Bild platesolven (Bildverarbeitung → Astrometrie) und als <b>.fit/.fits</b> speichern – fertig.<br>" +
+        "<b>PixInsight:</b> das Skript <b>ImageSolver</b> ausführen (Script → Image Analysis), dann als <b>FITS</b> speichern (nicht XISF – dessen Header kann AstroFly nicht lesen).<br>" +
+        "<b>ASTAP:</b> Bild öffnen, solven, als FITS speichern – oder die kleine <b>.wcs</b>-Datei nehmen, die ASTAP neben das Bild legt.<br>" +
+        "<b>Keine Software?</b> Bild auf <b>nova.astrometry.net</b> hochladen (kostenlos) und nach dem Solven die Datei <b>wcs.fits</b> herunterladen.<br><br>" +
+        "Wichtig: Die gesolvte Datei muss denselben <b>Bildausschnitt</b> zeigen wie Starless/Sternmaske (bei Crop: vor dem Solven zuschneiden). Eine andere Auflösung ist egal – AstroFly rechnet automatisch um. Du kannst bedenkenlos das große gesolvte FITS auswählen: Es wird nur der winzige Header gelesen, nie die Bilddaten.",
       gaiaWcsBtn: "📄 Geplatesolvtes FITS / WCS-Datei laden",
       gaiaMatchBtn: "⭐ Sterne mit Gaia abgleichen (Internet)",
       gaiaAmt: "Einfluss echte Tiefen",
