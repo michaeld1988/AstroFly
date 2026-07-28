@@ -19,6 +19,10 @@ Chrome or Edge recommended – they support the fastest, frame-perfect MP4
 export. Safari exports MP4 via a compatibility mode (realtime recording);
 Firefox exports WebM (not accepted by Instagram/TikTok).
 
+**Videos you create are yours** – use them anywhere (social media, YouTube,
+client work), credit is appreciated but not required
+([@astrofly_app](https://www.instagram.com/astrofly_app/)).
+
 **No images at hand?** Click **"✨ Try it with a demo image"** – it loads a
 bundled Orion Nebula (starless + star mask, photographed by Michael Döhler)
 so you can experience the 3D flight in seconds, even on your phone.
