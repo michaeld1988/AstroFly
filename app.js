@@ -2116,6 +2116,12 @@ function exportFilename(ext) {
 const IS_SAFARI = /apple/i.test(navigator.vendor || "") &&
   !/crios|fxios|chrome|edg/i.test(navigator.userAgent);
 
+// In-App-Browser (Instagram, Facebook, TikTok & Co.): deren WebView kann
+// Blob-Downloads nicht speichern – der Export liefe am Ende ins Leere
+// ("Seite kann nicht geladen werden"). Wir warnen früh und blocken den Export.
+const IS_INAPP = /instagram|fban|fbav|fbios|fb_iab|tiktok|musical_ly|snapchat|line\//i
+  .test(navigator.userAgent);
+
 async function exportOffline(w, h, fps) {
   if (typeof VideoEncoder === "undefined" || IS_SAFARI) return false;
 
@@ -2243,6 +2249,11 @@ function exportRealtime(w, h, fps) {
 
 $("btnExport").addEventListener("click", async () => {
   if (state.exporting || !texColor) return;
+  if (IS_INAPP) {
+    // Nicht rendern lassen und dann am Speichern scheitern - klar sagen, warum
+    $("exportStatus").textContent = t("inappExport");
+    return;
+  }
   const [w, h] = exportDims();
   const fps = 30;
   const usedOffline = await exportOffline(w, h, fps);
@@ -2253,6 +2264,16 @@ $("btnExport").addEventListener("click", async () => {
 // reine WebM-Browser (z. B. Firefox) bekommen eine MP4-Warnung
 (async () => {
   const hint = $("exportBrowserHint");
+  if (IS_INAPP) {
+    hint.setAttribute("data-i18n", "inappExport");
+    hint.textContent = t("inappExport");
+    hint.hidden = false;
+    const banner = $("inappBanner");
+    banner.setAttribute("data-i18n", "inappExport");
+    banner.textContent = t("inappExport");
+    banner.hidden = false;
+    return;
+  }
   if (IS_SAFARI) {
     hint.setAttribute("data-i18n", "safariExport");
     hint.textContent = t("safariExport");
