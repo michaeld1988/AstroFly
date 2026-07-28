@@ -214,6 +214,20 @@
         <span><span data-i18n="spinMaskSmooth">Brightness mask smoothing</span> <output id="outSpinMaskSmooth">6</output></span>
         <input type="range" id="ctlSpinMaskSmooth" min="2" max="60" step="1" value="6">
       </label>
+      <p class="tip" data-i18n="gaiaHint">⭐ Real star distances (Gaia): load a plate-solved
+      version of your image (FITS from ASTAP, PixInsight or Siril, or a .wcs file from
+      astrometry.net) – AstroFly then matches your detected stars against the ESA Gaia
+      catalog and assigns each one its real measured distance. The 3D layers follow the
+      actual depth of the sky. Requires an internet connection for the catalog query;
+      only sky coordinates are transferred, never your image.</p>
+      <button id="btnWcs" class="secondary" data-i18n="gaiaWcsBtn">📄 Load plate-solved FITS / WCS file</button>
+      <input type="file" id="fileWcs" accept=".fits,.fit,.fts,.wcs" hidden>
+      <button id="btnGaia" class="secondary" disabled data-i18n="gaiaMatchBtn">⭐ Match stars with Gaia (internet)</button>
+      <label class="slider">
+        <span><span data-i18n="gaiaAmt">Real depth influence</span> <output id="outGaiaAmt">100 %</output></span>
+        <input type="range" id="ctlGaiaAmt" min="0" max="100" step="1" value="100">
+      </label>
+      <p class="tip" id="gaiaStatus"></p>
     </section>
 
     <section>

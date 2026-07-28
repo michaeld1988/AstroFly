@@ -69,6 +69,10 @@ const state = {
   maskStretched: false,  // Sternmaske ist bereits gestreckt -> keine Auto-Streckung
   stretchAmount: 50,     // Intensität der Auto-Streckung 0..100
   twinkle: 25,           // 0..100
+  wcs: null,             // Plate-Solve-Lösung (aus FITS/WCS-Header)
+  gaiaDepth: null,       // echte Tiefe je Masken-Stern (Float32Array, -1 = keine)
+  gaiaAmt: 100,          // Einfluss der echten Tiefen 0..100
+  gaiaInfo: null,        // { matched, total, dMin, dMax } für die Statuszeile
   twinkleSpeed: 100,     // Funkel-Tempo in %
   starSize: 100,         // % Sterngröße
   starBright: 100,       // % Sternhelligkeit
@@ -264,6 +268,7 @@ layout(location=0) in vec2 aPos;    // Ebenen-Einheiten: x in ±imgAspect/2, y i
 layout(location=1) in float aBright;// 0..1 (Helligkeit/Fluss)
 layout(location=2) in float aSize;  // Radius in Ebenen-Einheiten
 layout(location=3) in vec3 aColor;
+layout(location=4) in float aGaia;  // echte Tiefe 0..1 aus Gaia (-1 = keine)
 uniform float uViewAspect;
 uniform float uZoom;
 uniform float uParallax;
@@ -292,6 +297,7 @@ uniform float uAngle2;
 uniform vec2 uCenter2;
 uniform vec2 uTilt2;
 uniform float uStreak;    // Belichtungszeit / dt (0 = keine Streifen)
+uniform float uGaiaAmt;   // Mischung Zufallstiefe -> echte Gaia-Tiefe (0..1)
 out vec3 vColor;
 out float vAlpha;
 out vec2 vDir;    // Streifen-Richtung in Pixeln (normiert)
@@ -309,6 +315,9 @@ void main() {
     brightShift = 0.0;
   }
   float depth = clamp(uStarBase + (h - 0.5) * uSpread + brightShift, 0.02, 1.0);
+  // Echte Entfernung aus dem Gaia-Katalog (falls zugeordnet): ersetzt die
+  // Zufallstiefe je nach eingestellter Stärke
+  if (aGaia >= 0.0) depth = mix(depth, clamp(aGaia, 0.02, 1.0), uGaiaAmt);
 
   // Sterne parallaxieren deutlich stärker als der Nebel (Faktor ~2.6 relativ
   // zur Räumlichkeit); Warp lässt sie zusätzlich beschleunigt vorbeiziehen
@@ -809,7 +818,196 @@ function buildStarBuffer() {
 
   state.maskStarCount = list.length;
   state.maskStarFloats = buf;
+  // Neue Maske -> alte Gaia-Zuordnung passt nicht mehr
+  state.gaiaDepth = null;
+  if (typeof updateGaiaStatus === "function") updateGaiaStatus();
   uploadStars();
+}
+
+// ------------------------------------------------- Echte Tiefen (WCS + Gaia)
+
+/**
+ * Liest die Plate-Solve-Lösung (WCS) aus einem FITS-Header: CRVAL/CRPIX/CD-
+ * Matrix einer TAN-Projektion. Es werden nur die ersten Header-Blöcke gelesen,
+ * das Bild selbst bleibt unangetastet (funktioniert daher auch mit großen
+ * FITS-Dateien und mit reinen .wcs-Headerdateien von astrometry.net).
+ */
+function parseWcsHeader(bytes) {
+  const text = new TextDecoder("ascii").decode(bytes);
+  const h = {};
+  for (let off = 0; off + 80 <= text.length; off += 80) {
+    const card = text.slice(off, off + 80);
+    const key = card.slice(0, 8).trim();
+    if (key === "END") break;
+    if (card[8] !== "=") continue;
+    let val = card.slice(10).split("/")[0].trim();
+    if (val.startsWith("'")) val = val.slice(1, val.lastIndexOf("'")).trim();
+    h[key] = val;
+  }
+  const num = (k) => (h[k] !== undefined ? parseFloat(h[k]) : undefined);
+  const ctype = (h.CTYPE1 || "").toUpperCase();
+  if (h.CTYPE1 !== undefined && !ctype.includes("TAN")) {
+    throw new Error("CTYPE " + h.CTYPE1);
+  }
+  const crval1 = num("CRVAL1"), crval2 = num("CRVAL2");
+  const crpix1 = num("CRPIX1"), crpix2 = num("CRPIX2");
+  if ([crval1, crval2, crpix1, crpix2].some((v) => v === undefined || isNaN(v))) {
+    throw new Error("no WCS");
+  }
+  // CD-Matrix direkt, oder aus PC-Matrix/CDELT(+CROTA2) zusammensetzen
+  let cd11 = num("CD1_1"), cd12 = num("CD1_2"), cd21 = num("CD2_1"), cd22 = num("CD2_2");
+  if (cd11 === undefined) {
+    const cdelt1 = num("CDELT1"), cdelt2 = num("CDELT2");
+    if (cdelt1 === undefined || cdelt2 === undefined) throw new Error("no CD/CDELT");
+    const pc11 = num("PC1_1"), rot = (num("CROTA2") || 0) * Math.PI / 180;
+    if (pc11 !== undefined) {
+      cd11 = cdelt1 * pc11; cd12 = cdelt1 * (num("PC1_2") || 0);
+      cd21 = cdelt2 * (num("PC2_1") || 0); cd22 = cdelt2 * (num("PC2_2") || 1);
+    } else {
+      cd11 = cdelt1 * Math.cos(rot); cd12 = -cdelt2 * Math.sin(rot);
+      cd21 = cdelt1 * Math.sin(rot); cd22 = cdelt2 * Math.cos(rot);
+    }
+  }
+  cd12 = cd12 || 0; cd21 = cd21 || 0;
+  const det = cd11 * cd22 - cd12 * cd21;
+  if (!det) throw new Error("singular CD");
+  return {
+    crval1, crval2, crpix1, crpix2,
+    cd: [cd11, cd12, cd21, cd22],
+    icd: [cd22 / det, -cd12 / det, -cd21 / det, cd11 / det],
+    naxis1: num("NAXIS1") || num("IMAGEW") || 0,
+    naxis2: num("NAXIS2") || num("IMAGEH") || 0,
+  };
+}
+
+const D2R = Math.PI / 180, R2D = 180 / Math.PI;
+
+/** FITS-Pixel (1-basiert) -> RA/Dec in Grad (inverse Gnomonik). */
+function wcsPix2Sky(wcs, px, py) {
+  const xi = (wcs.cd[0] * (px - wcs.crpix1) + wcs.cd[1] * (py - wcs.crpix2)) * D2R;
+  const eta = (wcs.cd[2] * (px - wcs.crpix1) + wcs.cd[3] * (py - wcs.crpix2)) * D2R;
+  const ra0 = wcs.crval1 * D2R, dec0 = wcs.crval2 * D2R;
+  const rho = Math.hypot(xi, eta);
+  if (rho < 1e-12) return { ra: wcs.crval1, dec: wcs.crval2 };
+  const c = Math.atan(rho);
+  const dec = Math.asin(Math.cos(c) * Math.sin(dec0) + (eta * Math.sin(c) * Math.cos(dec0)) / rho);
+  const ra = ra0 + Math.atan2(xi * Math.sin(c),
+    rho * Math.cos(dec0) * Math.cos(c) - eta * Math.sin(dec0) * Math.sin(c));
+  return { ra: ((ra * R2D) % 360 + 360) % 360, dec: dec * R2D };
+}
+
+/** RA/Dec in Grad -> FITS-Pixel (1-basiert), null wenn hinter dem Himmelspol. */
+function wcsSky2Pix(wcs, ra, dec) {
+  const ra0 = wcs.crval1 * D2R, dec0 = wcs.crval2 * D2R;
+  const a = ra * D2R, d = dec * D2R;
+  const cosc = Math.sin(dec0) * Math.sin(d) + Math.cos(dec0) * Math.cos(d) * Math.cos(a - ra0);
+  if (cosc <= 1e-6) return null;
+  const xi = (Math.cos(d) * Math.sin(a - ra0)) / cosc * R2D;
+  const eta = (Math.cos(dec0) * Math.sin(d) - Math.sin(dec0) * Math.cos(d) * Math.cos(a - ra0)) / cosc * R2D;
+  return {
+    px: wcs.crpix1 + wcs.icd[0] * xi + wcs.icd[1] * eta,
+    py: wcs.crpix2 + wcs.icd[2] * xi + wcs.icd[3] * eta,
+  };
+}
+
+/** Winkelabstand zweier Himmelspositionen in Grad. */
+function angSep(ra1, dec1, ra2, dec2) {
+  const d1 = dec1 * D2R, d2 = dec2 * D2R, dra = (ra2 - ra1) * D2R;
+  const s = Math.sin((d2 - d1) / 2) ** 2 + Math.cos(d1) * Math.cos(d2) * Math.sin(dra / 2) ** 2;
+  return 2 * Math.asin(Math.min(1, Math.sqrt(s))) * R2D;
+}
+
+/** Gaia DR3 über die VizieR-TAP-API abfragen (CSV, CORS-frei). */
+async function queryGaia(ra, dec, radiusDeg) {
+  const adql = `SELECT TOP 8000 RA_ICRS,DE_ICRS,Gmag,Plx FROM "I/355/gaiadr3" ` +
+    `WHERE 1=CONTAINS(POINT('ICRS',RA_ICRS,DE_ICRS),` +
+    `CIRCLE('ICRS',${ra.toFixed(6)},${dec.toFixed(6)},${radiusDeg.toFixed(4)})) ` +
+    `AND Plx>0.05 ORDER BY Gmag`;
+  const url = "https://tapvizier.cds.unistra.fr/TAPVizieR/tap/sync?REQUEST=doQuery&LANG=ADQL&FORMAT=csv&QUERY=" +
+    encodeURIComponent(adql);
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error("HTTP " + resp.status);
+  const lines = (await resp.text()).trim().split("\n");
+  const out = [];
+  for (let i = 1; i < lines.length; i++) {
+    const p = lines[i].split(",");
+    if (p.length < 4) continue;
+    const ra_ = +p[0], dec_ = +p[1], plx = +p[3];
+    if (isFinite(ra_) && isFinite(dec_) && plx > 0) out.push({ ra: ra_, dec: dec_, plx });
+  }
+  return out;
+}
+
+/**
+ * Ordnet Gaia-Sterne den erkannten Masken-Sternen zu und leitet echte Tiefen
+ * ab. Die y-Orientierung des FITS (Zeile 1 unten oder oben) wird automatisch
+ * bestimmt: Es gewinnt die Variante mit den meisten Treffern.
+ */
+function matchGaia(gaiaStars) {
+  const wcs = state.wcs, mask = state.maskStarFloats;
+  const n = state.maskStarCount;
+  const imgAspect = state.stars.width / state.stars.height;
+  const nax1 = wcs.naxis1 || state.stars.width, nax2 = wcs.naxis2 || state.stars.height;
+
+  // Erkannte Sterne in ein Suchgitter legen (Ebenen-Einheiten, Bildhöhe = 1)
+  const tol = 0.006; // ~0,6 % der Bildhöhe
+  const cell = tol;
+  const grid = new Map();
+  for (let i = 0; i < n; i++) {
+    const x = mask[i * 7], y = mask[i * 7 + 1];
+    const key = Math.round(x / cell) + ":" + Math.round(y / cell);
+    (grid.get(key) || grid.set(key, []).get(key)).push(i);
+  }
+  const nearest = (x, y, used) => {
+    let best = -1, bd = tol * tol;
+    const gx = Math.round(x / cell), gy = Math.round(y / cell);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+      for (const i of grid.get((gx + dx) + ":" + (gy + dy)) || []) {
+        if (used[i]) continue;
+        const ddx = mask[i * 7] - x, ddy = mask[i * 7 + 1] - y;
+        const d2 = ddx * ddx + ddy * ddy;
+        if (d2 < bd) { bd = d2; best = i; }
+      }
+    }
+    return best;
+  };
+
+  // Beide y-Konventionen probieren, die bessere gewinnt
+  const tryMatch = (flipY) => {
+    const used = new Uint8Array(n), pairs = [];
+    for (const g of gaiaStars) {
+      const p = wcsSky2Pix(wcs, g.ra, g.dec);
+      if (!p) continue;
+      const u = p.px / nax1, v = flipY ? 1 - p.py / nax2 : p.py / nax2;
+      if (u < -0.02 || u > 1.02 || v < -0.02 || v > 1.02) continue;
+      const x = (u - 0.5) * imgAspect, y = 0.5 - v;
+      const i = nearest(x, y, used);
+      if (i >= 0) { used[i] = 1; pairs.push([i, g.plx]); }
+    }
+    return pairs;
+  };
+  const a = tryMatch(true), b = tryMatch(false);
+  const pairs = a.length >= b.length ? a : b;
+  if (pairs.length < 5) return null;
+
+  // Entfernungen (pc) logarithmisch auf die Tiefenebenen mappen: nahe Sterne
+  // (10. Perzentil) -> vorn, ferne (90. Perzentil) -> hinten
+  const dists = pairs.map(([, plx]) => 1000 / plx).sort((x, y) => x - y);
+  const p10 = Math.log(dists[Math.floor(dists.length * 0.1)]);
+  const p90 = Math.log(dists[Math.min(dists.length - 1, Math.floor(dists.length * 0.9))]);
+  const span = Math.max(0.2, p90 - p10);
+  const depth = new Float32Array(n).fill(-1);
+  for (const [i, plx] of pairs) {
+    const t = Math.min(1, Math.max(0, (Math.log(1000 / plx) - p10) / span));
+    depth[i] = 0.98 - t * 0.93; // nah = 0.98, fern = 0.05
+  }
+  state.gaiaDepth = depth;
+  state.gaiaInfo = {
+    matched: pairs.length, total: n,
+    dMin: Math.round(Math.exp(p10) * 3.262), dMax: Math.round(Math.exp(p90) * 3.262), // Lichtjahre
+  };
+  uploadStars();
+  return state.gaiaInfo;
 }
 
 // ---------------------------------------------------------------- Stern-Generator
@@ -864,24 +1062,38 @@ function generateStars() {
   return buf;
 }
 
-/** Masken-Sterne + generierte Sterne in den GPU-Puffer laden. */
+/**
+ * Masken-Sterne + generierte Sterne in den GPU-Puffer laden.
+ * GPU-Layout: 8 Floats pro Stern [x, y, helligkeit, größe, r, g, b, gaia];
+ * gaia = echte Tiefe 0..1 (aus state.gaiaDepth) oder -1, wenn nicht zugeordnet.
+ */
 function uploadStars() {
   const mask = state.maskStarFloats || new Float32Array(0);
   const gen = generateStars();
-  const buf = new Float32Array(mask.length + gen.length);
-  buf.set(mask, 0);
-  buf.set(gen, mask.length);
-  state.starCount = buf.length / 7;
-  if (!state.starCount) return;
+  const nMask = mask.length / 7, nGen = gen.length / 7;
+  const n = nMask + nGen;
+  state.starCount = n;
+  if (!n) return;
+
+  const buf = new Float32Array(n * 8);
+  for (let i = 0; i < nMask; i++) {
+    buf.set(mask.subarray(i * 7, i * 7 + 7), i * 8);
+    buf[i * 8 + 7] = state.gaiaDepth ? state.gaiaDepth[i] : -1;
+  }
+  for (let i = 0; i < nGen; i++) {
+    buf.set(gen.subarray(i * 7, i * 7 + 7), (nMask + i) * 8);
+    buf[(nMask + i) * 8 + 7] = -1;
+  }
 
   gl.bindVertexArray(starVao);
   gl.bindBuffer(gl.ARRAY_BUFFER, starBuf);
   gl.bufferData(gl.ARRAY_BUFFER, buf, gl.STATIC_DRAW);
-  const stride = 7 * 4;
+  const stride = 8 * 4;
   gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, stride, 0);
   gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 1, gl.FLOAT, false, stride, 8);
   gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 1, gl.FLOAT, false, stride, 12);
   gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 3, gl.FLOAT, false, stride, 16);
+  gl.enableVertexAttribArray(4); gl.vertexAttribPointer(4, 1, gl.FLOAT, false, stride, 28);
   gl.bindVertexArray(null);
 }
 
@@ -1138,6 +1350,7 @@ function render(forcedT) {
     u2f(starProg, "uCenter2", cam2.cx, cam2.cy);
     u2f(starProg, "uTilt2", starTilt2X, starTilt2Y);
     u1f(starProg, "uStreak", splitBlur ? ((state.mblur / 100) * 1.5) / dt : 0);
+    u1f(starProg, "uGaiaAmt", state.gaiaAmt / 100);
     gl.drawArrays(gl.POINTS, 0, state.starCount);
     gl.disable(gl.BLEND);
   }
@@ -1484,6 +1697,71 @@ function updateTargetInfo() {
   }
 }
 I18N.onChange.push(updateTargetInfo);
+
+// ------------------------------------------ Echte Tiefen (Gaia): Bedienung
+
+bindSlider("ctlGaiaAmt", "outGaiaAmt", "gaiaAmt", (v) => v + " %");
+
+// Statuszeile: transienter Text (Laden/Fehler) oder Zustand aus state
+let gaiaTransient = null; // { key, args } | null
+function updateGaiaStatus() {
+  const el = $("gaiaStatus");
+  if (!el) return;
+  $("btnGaia").disabled = !(state.wcs && state.maskStarCount > 0);
+  if (gaiaTransient) { el.textContent = t(gaiaTransient.key, ...gaiaTransient.args); return; }
+  if (state.gaiaDepth && state.gaiaInfo) {
+    const g = state.gaiaInfo;
+    el.textContent = t("gaiaResult", g.matched, g.total, g.dMin, g.dMax);
+  } else if (state.wcs) {
+    el.textContent = t("gaiaWcsOk", state.wcs._name || "WCS");
+  } else {
+    el.textContent = t("gaiaIdle");
+  }
+}
+I18N.onChange.push(updateGaiaStatus);
+
+$("btnWcs").addEventListener("click", () => $("fileWcs").click());
+$("fileWcs").addEventListener("change", async () => {
+  const file = $("fileWcs").files[0];
+  if (!file) return;
+  gaiaTransient = null;
+  try {
+    // Nur die ersten Header-Blöcke lesen (reicht für die WCS-Keywords)
+    const head = new Uint8Array(await file.slice(0, 57600).arrayBuffer());
+    const wcs = parseWcsHeader(head);
+    wcs._name = file.name;
+    state.wcs = wcs;
+    state.gaiaDepth = null; state.gaiaInfo = null;
+    uploadStars();
+  } catch (e) {
+    state.wcs = null;
+    gaiaTransient = { key: "gaiaWcsErr", args: [] };
+  }
+  updateGaiaStatus();
+  $("fileWcs").value = "";
+});
+
+$("btnGaia").addEventListener("click", async () => {
+  if (!state.wcs || !state.maskStarCount) return;
+  const wcs = state.wcs;
+  const nax1 = wcs.naxis1 || state.stars.width, nax2 = wcs.naxis2 || state.stars.height;
+  const c = wcsPix2Sky(wcs, nax1 / 2, nax2 / 2);
+  // Radius: halbe Bilddiagonale plus etwas Reserve
+  const corner = wcsPix2Sky(wcs, 1, 1);
+  const radius = Math.min(6, angSep(c.ra, c.dec, corner.ra, corner.dec) * 1.1 + 0.02);
+  gaiaTransient = { key: "gaiaQuerying", args: [] };
+  updateGaiaStatus();
+  $("btnGaia").disabled = true;
+  try {
+    const stars = await queryGaia(c.ra, c.dec, radius);
+    gaiaTransient = null;
+    const info = matchGaia(stars);
+    if (!info) gaiaTransient = { key: "gaiaNoMatch", args: [] };
+  } catch (e) {
+    gaiaTransient = { key: "gaiaNetErr", args: [] };
+  }
+  updateGaiaStatus();
+});
 
 // Zoomziel per Klick in die Vorschau
 canvas.addEventListener("click", (e) => {

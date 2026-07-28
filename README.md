@@ -94,6 +94,16 @@ All panel sections are collapsible – click a heading to open or close it
    overlay (Photoshop-style, auto-shown while picking the center, never
    exported) visualizes exactly where and how strongly the spin acts.
 
+   Also experimental: **Real star distances (Gaia)** – load a plate-solved
+   version of your image (a FITS solved by ASTAP, PixInsight or Siril, or an
+   astrometry.net `.wcs` file) and AstroFly matches your detected stars
+   against the **ESA Gaia DR3 catalog** (via the CDS VizieR API), assigning
+   each matched star its real measured distance. The 3D star layers then
+   follow the actual, log-compressed depth of the sky instead of random
+   depths; unmatched stars keep their random layer, and a slider blends
+   between random and real depths. Requires an internet connection for the
+   catalog query – only sky coordinates are transferred, never your image.
+
    **Zoom target:** simply **click** the preview – the camera pans slowly
    toward that point over the whole flight while zooming in (following the
    chosen acceleration curve, seamless in loop mode). The click is
