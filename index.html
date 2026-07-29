@@ -19,6 +19,11 @@
     </div>
     <p class="sub" data-i18n="subtitle">3D camera flight from starless image + star mask</p>
 
+    <div class="langrow" id="modeRow" style="margin: 2px 0 10px;">
+      <button id="modeSimple" data-i18n="modeSimple">✨ Easy</button>
+      <button id="modePro" data-i18n="modePro">🛠 Pro</button>
+    </div>
+
     <p class="tip" id="inappBanner" hidden
        style="border: 1.5px solid #e8b34b; border-radius: 10px; padding: 10px 14px;
               background: rgba(232,179,75,0.12); color: #f2d9a0;"></p>
@@ -47,6 +52,34 @@
         <input type="range" id="ctlStretch" min="0" max="100" step="1" value="50">
       </label>
       <div id="loadStatus"></div>
+    </section>
+
+    <section id="simpleSection" hidden>
+      <h2 data-i18n="secSimple">2 · Choose a style</h2>
+      <p class="tip" data-i18n="simpleHint">Pick what's in your image – each preset sets camera,
+      stars and look in one go. Click the preview to choose the flight target. You can
+      fine-tune everything later in Pro mode.</p>
+      <div class="pgroup" data-i18n="pgNebula">🌫️ Nebulae</div>
+      <div class="pgrid">
+        <button class="pcard" data-preset="nebGentle"><b data-i18n="pNebGentle">Gentle approach</b><small data-i18n="pNebGentleD">calm flight into the nebula</small></button>
+        <button class="pcard" data-preset="nebDrift"><b data-i18n="pNebDrift">Lateral drift</b><small data-i18n="pNebDriftD">gliding past with star streaks</small></button>
+        <button class="pcard" data-preset="nebHyper"><b data-i18n="pNebHyper">Hyperspace</b><small data-i18n="pNebHyperD">fast dive, stars race past</small></button>
+      </div>
+      <div class="pgroup" data-i18n="pgGalaxy">🌌 Galaxies</div>
+      <div class="pgrid">
+        <button class="pcard" data-preset="galMajestic"><b data-i18n="pGalMajestic">Majestic approach</b><small data-i18n="pGalMajesticD">slow, the galaxy stays rigid</small></button>
+        <button class="pcard" data-preset="galSpin"><b data-i18n="pGalSpin">Living galaxy</b><small data-i18n="pGalSpinD">gentle rotation – click the core first</small></button>
+        <button class="pcard" data-preset="galFlyby"><b data-i18n="pGalFlyby">Fly-by</b><small data-i18n="pGalFlybyD">sweeping pass with tilt</small></button>
+      </div>
+      <div class="pgroup" data-i18n="pgCluster">✨ Star clusters</div>
+      <div class="pgrid">
+        <button class="pcard" data-preset="clusterDive"><b data-i18n="pClusterDive">Into the cluster</b><small data-i18n="pClusterDiveD">deep dive through the stars</small></button>
+        <button class="pcard" data-preset="clusterSparkle"><b data-i18n="pClusterSparkle">Sparkling drift</b><small data-i18n="pClusterSparkleD">calm, twinkling – great for loops</small></button>
+      </div>
+      <label class="slider">
+        <span><span data-i18n="duration">Duration</span> <output id="outSimpleDuration">20 s</output></span>
+        <input type="range" id="ctlSimpleDuration" min="5" max="60" step="1" value="20">
+      </label>
     </section>
 
     <section>

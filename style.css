@@ -278,3 +278,25 @@ button.primary:not(:disabled):hover { filter: brightness(1.12); }
   input[type=range]::-moz-range-thumb { width: 22px; height: 22px; }
   #transport button { width: 44px; height: 38px; }
 }
+
+/* --- Einfach-Modus: Preset-Karten --- */
+.pgroup {
+  font-size: 13px; font-weight: 700; letter-spacing: 0.4px;
+  color: #9db8ff; margin: 12px 0 6px;
+}
+.pgrid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.pgrid .pcard {
+  display: flex; flex-direction: column; gap: 3px; align-items: flex-start;
+  text-align: left; padding: 10px 11px; border-radius: 12px;
+  background: rgba(122, 162, 255, 0.07);
+  border: 1.5px solid rgba(122, 162, 255, 0.28);
+  color: #e8eeff; cursor: pointer; transition: border-color 0.15s, background 0.15s;
+}
+.pgrid .pcard:hover { border-color: rgba(122, 162, 255, 0.7); }
+.pgrid .pcard.active {
+  border-color: #9db8ff; background: rgba(122, 162, 255, 0.18);
+  box-shadow: 0 0 12px rgba(122, 162, 255, 0.25);
+}
+.pgrid .pcard b { font-size: 13px; }
+.pgrid .pcard small { font-size: 11px; color: #aab6d0; line-height: 1.25; }
+@media (max-width: 820px) { .pgrid { grid-template-columns: 1fr 1fr; } }

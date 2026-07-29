@@ -1920,6 +1920,94 @@ $("ctlPreset").addEventListener("change", () => {
   $("ctlMblurStars").dispatchEvent(new Event("change"));
 });
 
+// ------------------------------------------------ Einfach-Modus & Flug-Presets
+
+// Neutralwerte, auf die jedes Flug-Preset zuerst zurücksetzt
+const SIMPLE_DEFAULTS = {
+  ctlZoom: 1, ctlSpeed: 40, ctlEase: 60, ctlParallax: 60, ctlDepthBoost: 33,
+  ctlRotation: 0, ctlOrient: 0, ctlFrameX: 0, ctlFrameY: 0, ctlTiltX: 0,
+  ctlTiltY: 0, ctlSwayAmp: 0, ctlSwayTempo: 40, ctlSwayDir: 0, ctlSwayRandom: 0,
+  ctlTiltRamp: 0, ctlTiltRampDir: 0, ctlFade: 0, ctlDriftDir: 90,
+  ctlSpinSpeed: 0, ctlSpinRadius: 40, ctlSpinDiff: 40, ctlSpinFlat: 0,
+  ctlSpinTilt: 0, ctlSpinMaskAmt: 0,
+  ctlSpread: 70, ctlStarDist: 55, ctlLayers: 0, ctlStarPar: 100,
+  ctlTwinkle: 25, ctlTwinkleSpeed: 100, ctlStarSize: 100, ctlStarBright: 100,
+  ctlStarSat: 100, ctlGenStars: 0,
+};
+
+// 8 Objekt-Presets: 3 Nebel, 3 Galaxien, 2 Sternhaufen. "look" wählt den
+// Look-Preset aus Sektion 5 mit; "set"/"checks" überschreiben danach gezielt.
+const FLIGHT_PRESETS = {
+  nebGentle:      { look: "neutral", set: { ctlSpeed: 30, ctlParallax: 60, ctlDepthBoost: 40, ctlStarPar: 250, ctlBloom: 15 } },
+  nebDrift:       { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.4, ctlSpeed: 60, ctlStarPar: 300, ctlGenStars: 1000, ctlMblur: 25, ctlBloom: 15 }, checks: { ctlMblurStars: true } },
+  nebHyper:       { look: "hyper", set: { ctlSpeed: 75, ctlStarPar: 300, ctlTwinkleSpeed: 150 } },
+  galMajestic:    { look: "neutral", set: { ctlSpeed: 25, ctlParallax: 40, ctlDepthBoost: 30, ctlStarPar: 350, ctlTiltRamp: 25, ctlBloom: 15 } },
+  galSpin:        { look: "neutral", set: { ctlSpeed: 15, ctlSpinSpeed: 0.8, ctlSpinRadius: 65, ctlSpinDiff: 40, ctlSpinMaskAmt: 50, ctlBloom: 12 } },
+  galFlyby:       { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.5, ctlSpeed: 70, ctlTiltRamp: 35, ctlTiltRampDir: 90, ctlStarPar: 400, ctlMblur: 30, ctlBloom: 15 }, checks: { ctlMblurStars: true } },
+  clusterDive:    { look: "neutral", set: { ctlSpeed: 55, ctlSpread: 90, ctlStarPar: 500, ctlTwinkle: 35, ctlBloom: 25 } },
+  clusterSparkle: { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.3, ctlSpeed: 30, ctlTwinkle: 45, ctlTwinkleSpeed: 160, ctlSwayAmp: 20, ctlSwayRandom: 40, ctlBloom: 20 } },
+};
+
+function setCtl(id, value) {
+  const el = $(id);
+  if (!el) return;
+  el.value = value;
+  el.dispatchEvent(new Event("input"));
+}
+
+function applyFlightPreset(name) {
+  const p = FLIGHT_PRESETS[name];
+  if (!p) return;
+  // Erst alles auf neutral, dann das Preset darüber
+  $("ctlFlightMode").value = p.flightMode || "zoom";
+  $("ctlFlightMode").dispatchEvent(new Event("change"));
+  $("ctlEaseMode").value = "linear";
+  $("ctlEaseMode").dispatchEvent(new Event("change"));
+  $("ctlLoop").checked = false;
+  $("ctlLoop").dispatchEvent(new Event("change"));
+  for (const [id, v] of Object.entries(SIMPLE_DEFAULTS)) setCtl(id, v);
+  $("ctlPreset").value = p.look;
+  $("ctlPreset").dispatchEvent(new Event("change")); // setzt Look + mblurStars
+  for (const [id, v] of Object.entries(p.set || {})) setCtl(id, v);
+  for (const [id, v] of Object.entries(p.checks || {})) {
+    $(id).checked = v;
+    $(id).dispatchEvent(new Event("change"));
+  }
+  for (const card of document.querySelectorAll(".pcard")) {
+    card.classList.toggle("active", card.dataset.preset === name);
+  }
+}
+
+for (const card of document.querySelectorAll(".pcard")) {
+  card.addEventListener("click", () => applyFlightPreset(card.dataset.preset));
+}
+
+// Dauer-Regler im Einfach-Modus spiegelt den echten Dauer-Regler
+$("ctlSimpleDuration").addEventListener("input", () => {
+  const v = $("ctlSimpleDuration").value;
+  $("outSimpleDuration").textContent = v + " s";
+  setCtl("ctlDuration", v);
+});
+
+// Einfach/Profi-Umschaltung: im Einfach-Modus bleiben nur Laden, Presets,
+// Seitenverhältnis, Export und Feedback sichtbar
+state.uiMode = localStorage.getItem("astrofly-mode") || "simple";
+const SIMPLE_VISIBLE = ["sec1", "secSimple", "sec6", "sec7", "sec8"];
+
+function applyUiMode() {
+  const simple = state.uiMode === "simple";
+  $("modeSimple").classList.toggle("active", simple);
+  $("modePro").classList.toggle("active", !simple);
+  for (const sec of document.querySelectorAll("#panel section")) {
+    const key = sec.querySelector('[data-i18n^="sec"]')?.dataset.i18n;
+    sec.hidden = simple ? !SIMPLE_VISIBLE.includes(key) : key === "secSimple";
+  }
+  localStorage.setItem("astrofly-mode", state.uiMode);
+}
+$("modeSimple").addEventListener("click", () => { state.uiMode = "simple"; applyUiMode(); });
+$("modePro").addEventListener("click", () => { state.uiMode = "pro"; applyUiMode(); });
+applyUiMode();
+
 let smoothTimer = null;
 $("ctlSmooth").addEventListener("input", () => {
   state.smooth = parseInt($("ctlSmooth").value, 10);
@@ -2664,9 +2752,11 @@ for (const [i, sec] of document.querySelectorAll("#panel section").entries()) {
   body.className = "secbody";
   while (h2.nextSibling) body.appendChild(h2.nextSibling);
   sec.appendChild(body);
-  const key = "astrofly-sec-" + (h2.dataset.i18n || i);
+  const keyName = h2.dataset.i18n || h2.querySelector("[data-i18n]")?.dataset.i18n || i;
+  const key = "astrofly-sec-" + keyName;
   const saved = localStorage.getItem(key);
-  const defaultOpen = i === 0 || i === 2; // Bilder laden + Kamera offen
+  // Bilder laden, Einfach-Presets und Kamera standardmäßig offen
+  const defaultOpen = ["sec1", "secSimple", "sec3"].includes(keyName);
   const open = saved === null ? defaultOpen : saved === "1";
   sec.classList.toggle("collapsed", !open);
   h2.addEventListener("click", () => {
