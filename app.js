@@ -171,6 +171,8 @@ in vec2 vUv;
 out vec4 outColor;
 uniform sampler2D uColor;
 uniform sampler2D uDepth;
+uniform vec2 uColorTexel;   // 1 Texel der Farbtextur in UV
+uniform float uBicubic;     // 1 = bikubisch abtasten (beim Hineinzoomen)
 uniform float uViewAspect;  // Breite/Höhe des Ausgabeformats
 uniform float uImgAspect;   // Breite/Höhe des Bildes
 uniform float uZoom;        // aktueller Gesamtzoom
@@ -249,7 +251,36 @@ void main() {
     uv = imgUv(spinWarp(q));
   }
 
-  vec3 col = texture(uColor, uv).rgb;
+  // Beim Hineinzoomen bikubisch (Catmull-Rom, 9 bilineare Taps) statt nur
+  // bilinear abtasten: deutlich weniger Verpixelung/Matschigkeit bei Zoom > 1
+  vec3 col;
+  if (uBicubic > 0.5) {
+    vec2 pos = uv / uColorTexel - 0.5;
+    vec2 f = fract(pos);
+    vec2 base = (pos - f + 0.5) * uColorTexel;
+    vec2 f2 = f * f, f3 = f2 * f;
+    vec2 w0 = -0.5 * f3 + f2 - 0.5 * f;
+    vec2 w1 =  1.5 * f3 - 2.5 * f2 + 1.0;
+    vec2 w2 = -1.5 * f3 + 2.0 * f2 + 0.5 * f;
+    vec2 w3 =  0.5 * f3 - 0.5 * f2;
+    vec2 w12 = w1 + w2;
+    vec2 uv12 = base + (w2 / w12) * uColorTexel;
+    vec2 uv0 = base - uColorTexel;
+    vec2 uv3 = base + 2.0 * uColorTexel;
+    col =
+      texture(uColor, vec2(uv0.x,  uv0.y)).rgb  * (w0.x  * w0.y) +
+      texture(uColor, vec2(uv12.x, uv0.y)).rgb  * (w12.x * w0.y) +
+      texture(uColor, vec2(uv3.x,  uv0.y)).rgb  * (w3.x  * w0.y) +
+      texture(uColor, vec2(uv0.x,  uv12.y)).rgb * (w0.x  * w12.y) +
+      texture(uColor, vec2(uv12.x, uv12.y)).rgb * (w12.x * w12.y) +
+      texture(uColor, vec2(uv3.x,  uv12.y)).rgb * (w3.x  * w12.y) +
+      texture(uColor, vec2(uv0.x,  uv3.y)).rgb  * (w0.x  * w3.y) +
+      texture(uColor, vec2(uv12.x, uv3.y)).rgb  * (w12.x * w3.y) +
+      texture(uColor, vec2(uv3.x,  uv3.y)).rgb  * (w3.x  * w3.y);
+    col = max(col, 0.0);
+  } else {
+    col = texture(uColor, uv).rgb;
+  }
   // Masken-Vorschau: rote Einfärbung entspricht exakt der Drehstärke
   // (gleiche Falloff-Kurve), plus dünner Ring am Maskenrand
   if (uSpinShow > 0.5) {
@@ -364,8 +395,9 @@ void main() {
     len = min(rawLen, 1024.0 - base);
     if (rawLen > 1e-4) {
       dirPx = velPx / rawLen;
-      // Sprite mittig auf den Streifen setzen (ggf. auf die Kappung skaliert)
-      clipMid = clip + velClip * 0.5 * (len / rawLen);
+      // Kometen-Optik: Der Stern bleibt an seiner Position (Kopf), der
+      // Schweif läuft entgegen der Flugrichtung aus -> Sprite nach hinten
+      clipMid = clip - velClip * 0.5 * (len / rawLen);
     }
   }
   gl_Position = vec4(clipMid, 0.0, 1.0);
@@ -409,6 +441,12 @@ void main() {
   float core = exp(-r2 * 9.0);
   float halo = exp(-r2 * 2.5) * 0.35;
   float a = (core + halo) * vAlpha;
+  // Verlauf entlang des Schweifs: am Kopf (Sternposition, in Flugrichtung
+  // vorn) volle Helligkeit, zum Ende hin weich auslaufend
+  if (vLen > 0.5) {
+    float s = clamp((along + vLen * 0.5) / max(vLen, 1.0), 0.0, 1.0);
+    a *= mix(0.10, 1.0, s * s);
+  }
   outColor = vec4(vColor * a, a);
 }`;
 
@@ -423,7 +461,9 @@ uniform sampler2D uStarsTex; // separate Sternebene (schwarz, wenn nicht getrenn
 void main() {
   vec3 c = texture(uScene, vUv).rgb + texture(uStarsTex, vUv).rgb;
   float l = max(max(c.r, c.g), c.b);
-  float k = smoothstep(0.55, 0.85, l);
+  // Empfindlicher (niedrige Schwelle, weiches Knie): auch schwache Sterne
+  // glimmen - die Gesamtstärke regelt der Composite entsprechend sanfter
+  float k = smoothstep(0.30, 0.78, l);
   outColor = vec4(c * k, 1.0);
 }`;
 
@@ -1364,6 +1404,11 @@ function render(forcedT) {
   u2f(bgProg, "uCenter", cam.cx, cam.cy);
   u2f(bgProg, "uTilt", bgTiltX, bgTiltY);
   u1f(bgProg, "uDepthRange", depthRange);
+  // Bikubisch abtasten, sobald die Textur vergrößert dargestellt wird
+  const texH = state.texColorH || 2048;
+  const magnify = (cover * cam.zoom * fbScene.h) / texH;
+  u2f(bgProg, "uColorTexel", 1 / (state.texColorW || 2048), 1 / texH);
+  u1f(bgProg, "uBicubic", magnify > 1.05 ? 1 : 0);
   // Galaxien-Rotation (te-basiert -> im Loop-Modus nahtlos hin & zurück)
   u1f(bgProg, "uSpinAngle", state.spinSpeed * Math.PI / 180 * cam.te);
   u2f(bgProg, "uSpinCenter", state.spinCenter.x, state.spinCenter.y);
@@ -1425,7 +1470,7 @@ function render(forcedT) {
     u1f(starProg, "uAngle2", cam2.angle);
     u2f(starProg, "uCenter2", cam2.cx, cam2.cy);
     u2f(starProg, "uTilt2", starTilt2X, starTilt2Y);
-    u1f(starProg, "uStreak", splitBlur ? ((state.mblur / 100) * 1.5) / dt : 0);
+    u1f(starProg, "uStreak", splitBlur ? (state.mblur / 100) / dt : 0);
     u1f(starProg, "uGaiaAmt", state.gaiaAmt / 100);
     u1f(starProg, "uGaiaOnly", state.gaiaOnly && state.gaiaDepth ? 1 : 0);
     gl.drawArrays(gl.POINTS, 0, state.starCount);
@@ -1433,7 +1478,9 @@ function render(forcedT) {
   }
 
   // ---- Pass 2: Bloom (Viertelauflösung) ----
-  const bloomStrength = (state.bloom / 100) * 1.2;
+  // Sanfter als früher: die niedrigere Bright-Pass-Schwelle bringt die
+  // Empfindlichkeit, die Stärke bleibt zurückhaltend
+  const bloomStrength = (state.bloom / 100) * 0.7;
   if (bloomStrength > 0) {
     gl.bindVertexArray(quadVao);
     gl.activeTexture(gl.TEXTURE0);
@@ -1954,7 +2001,10 @@ async function loadFile(which, file) {
       $("nameStarless").textContent = `${file.name} (${img.width}×${img.height})`;
       $("dropStarless").classList.add("loaded");
       if (texColor) gl.deleteTexture(texColor);
-      texColor = makeTexture(downscale(img, 4096));
+      const colSrc = downscale(img, 4096);
+      texColor = makeTexture(colSrc);
+      state.texColorW = colSrc.width;
+      state.texColorH = colSrc.height;
       buildDepthMap();
       buildSpinMask();
       // generierte Sterne nutzen das Seitenverhältnis des Starless-Bildes
