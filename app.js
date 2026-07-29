@@ -75,6 +75,8 @@ const state = {
   gaiaAmt: 100,          // Einfluss der echten Tiefen 0..100
   gaiaInfo: null,        // { matched, total, dMin, dMax } für die Statuszeile
   gaiaOnly: false,       // Wissenschafts-Modus: nur Sterne mit echter Tiefe
+  gaiaColorRGB: null,    // echte Katalogfarben je Masken-Stern (RGB, -1 = keine)
+  gaiaColors: false,     // Katalogfarben statt Fotofarben verwenden
   twinkleSpeed: 100,     // Funkel-Tempo in %
   starSize: 100,         // % Sterngröße
   starBright: 100,       // % Sternhelligkeit
@@ -909,6 +911,7 @@ function buildStarBuffer() {
   state.maskStarFloats = buf;
   // Neue Maske -> alte Gaia-Zuordnung passt nicht mehr
   state.gaiaDepth = null;
+  state.gaiaColorRGB = null;
   if (typeof updateGaiaStatus === "function") updateGaiaStatus();
   uploadStars();
 }
@@ -1008,7 +1011,7 @@ function angSep(ra1, dec1, ra2, dec2) {
 
 /** Gaia DR3 über die VizieR-TAP-API abfragen (CSV, CORS-frei). */
 async function queryGaia(ra, dec, radiusDeg) {
-  const adql = `SELECT TOP 30000 RA_ICRS,DE_ICRS,Gmag,Plx FROM "I/355/gaiadr3" ` +
+  const adql = `SELECT TOP 30000 RA_ICRS,DE_ICRS,Gmag,Plx,"BP-RP" FROM "I/355/gaiadr3" ` +
     `WHERE 1=CONTAINS(POINT('ICRS',RA_ICRS,DE_ICRS),` +
     `CIRCLE('ICRS',${ra.toFixed(6)},${dec.toFixed(6)},${radiusDeg.toFixed(4)})) ` +
     `AND Plx>0.05 ORDER BY Gmag`;
@@ -1022,9 +1025,32 @@ async function queryGaia(ra, dec, radiusDeg) {
     const p = lines[i].split(",");
     if (p.length < 4) continue;
     const ra_ = +p[0], dec_ = +p[1], plx = +p[3];
-    if (isFinite(ra_) && isFinite(dec_) && plx > 0) out.push({ ra: ra_, dec: dec_, plx });
+    const bprp = p.length > 4 && p[4] !== "" ? +p[4] : NaN;
+    if (isFinite(ra_) && isFinite(dec_) && plx > 0) out.push({ ra: ra_, dec: dec_, plx, bprp });
   }
   return out;
+}
+
+/**
+ * Gaia-Farbindex BP-RP -> RGB-Farbton: Näherung der Farbtemperatur
+ * (Ballesteros-Formel über B-V) und daraus die Schwarzkörperfarbe.
+ * Zurückgegeben wird der auf max=1 normierte Farbton (Helligkeit kommt
+ * weiterhin aus dem Foto).
+ */
+function bprpToRgb(bprp) {
+  const bv = Math.min(2.0, Math.max(-0.4, 0.8 * bprp - 0.03));
+  let t = 4600 * (1 / (0.92 * bv + 1.7) + 1 / (0.92 * bv + 0.62)); // Kelvin
+  t = Math.min(30000, Math.max(2200, t)) / 100;
+  let r, g, b;
+  if (t <= 66) { r = 255; } else { r = 329.7 * Math.pow(t - 60, -0.1332); }
+  if (t <= 66) { g = 99.47 * Math.log(t) - 161.12; } else { g = 288.1 * Math.pow(t - 60, -0.0755); }
+  if (t >= 66) { b = 255; } else if (t <= 19) { b = 0; } else { b = 138.52 * Math.log(t - 10) - 305.04; }
+  const m = Math.max(r, g, b, 1);
+  return [
+    Math.min(1, Math.max(0, r / m)),
+    Math.min(1, Math.max(0, g / m)),
+    Math.min(1, Math.max(0, b / m)),
+  ];
 }
 
 /** 3x3-Gleichungssystem lösen (für die Affin-Anpassung). */
@@ -1151,11 +1177,17 @@ function matchGaia(gaiaStars) {
   const p90 = Math.log(dists[Math.min(dists.length - 1, Math.floor(dists.length * 0.9))]);
   const span = Math.max(0.2, p90 - p10);
   const depth = new Float32Array(n).fill(-1);
+  const colors = new Float32Array(n * 3).fill(-1);
   for (const { i, g } of pairs) {
     const t = Math.min(1, Math.max(0, (Math.log(1000 / g.plx) - p10) / span));
     depth[i] = 0.98 - t * 0.93; // nah = 0.98, fern = 0.05
+    if (isFinite(g.bprp)) {
+      const [cr, cg, cb] = bprpToRgb(g.bprp);
+      colors[i * 3] = cr; colors[i * 3 + 1] = cg; colors[i * 3 + 2] = cb;
+    }
   }
   state.gaiaDepth = depth;
+  state.gaiaColorRGB = colors;
   state.gaiaInfo = {
     matched: pairs.length, total: n,
     dMin: Math.round(Math.exp(p10) * 3.262), dMax: Math.round(Math.exp(p90) * 3.262), // Lichtjahre
@@ -1230,9 +1262,16 @@ function uploadStars() {
   if (!n) return;
 
   const buf = new Float32Array(n * 8);
+  const gcol = state.gaiaColors && state.gaiaColorRGB ? state.gaiaColorRGB : null;
   for (let i = 0; i < nMask; i++) {
     buf.set(mask.subarray(i * 7, i * 7 + 7), i * 8);
     buf[i * 8 + 7] = state.gaiaDepth ? state.gaiaDepth[i] : -1;
+    // Echte Katalogfarbe (nur Farbton) statt Fotofarbe, wenn aktiviert
+    if (gcol && gcol[i * 3] >= 0) {
+      buf[i * 8 + 4] = 0.35 + 0.65 * gcol[i * 3];
+      buf[i * 8 + 5] = 0.35 + 0.65 * gcol[i * 3 + 1];
+      buf[i * 8 + 6] = 0.35 + 0.65 * gcol[i * 3 + 2];
+    }
   }
   for (let i = 0; i < nGen; i++) {
     buf.set(gen.subarray(i * 7, i * 7 + 7), (nMask + i) * 8);
@@ -1893,6 +1932,7 @@ function updateGaiaStatus() {
   const pct = g ? Math.round((g.matched / Math.max(1, g.total)) * 100) : 0;
   const sciAllowed = pct >= 75;
   $("ctlGaiaOnly").disabled = !sciAllowed;
+  $("ctlGaiaColors").disabled = !state.gaiaDepth;
   if (!sciAllowed && state.gaiaOnly) {
     state.gaiaOnly = false;
     $("ctlGaiaOnly").checked = false;
@@ -1922,6 +1962,11 @@ $("ctlSpinStars").addEventListener("change", () => {
   state.spinStars = $("ctlSpinStars").checked;
 });
 
+$("ctlGaiaColors").addEventListener("change", () => {
+  state.gaiaColors = $("ctlGaiaColors").checked;
+  uploadStars(); // Farben stecken im Vertex-Puffer
+});
+
 $("btnWcs").addEventListener("click", () => $("fileWcs").click());
 $("fileWcs").addEventListener("change", async () => {
   const file = $("fileWcs").files[0];
@@ -1933,7 +1978,7 @@ $("fileWcs").addEventListener("change", async () => {
     const wcs = parseWcsHeader(head);
     wcs._name = file.name;
     state.wcs = wcs;
-    state.gaiaDepth = null; state.gaiaInfo = null;
+    state.gaiaDepth = null; state.gaiaInfo = null; state.gaiaColorRGB = null;
     uploadStars();
   } catch (e) {
     state.wcs = null;
