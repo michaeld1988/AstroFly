@@ -254,6 +254,21 @@
       from the measured Gaia color index (blue-white = hot, orange-red = cool) – brightness
       still comes from your photo. Great for narrowband images, where star colors are never
       real. Unmatched stars keep their photo color.</p>
+      <label class="slider">
+        <span><span data-i18n="gaiaPm">⏩ Proper-motion time lapse (years)</span> <output id="outGaiaPm">0</output></span>
+        <input type="range" id="ctlGaiaPm" min="0" max="500000" step="5000" value="0">
+      </label>
+      <p class="tip" data-i18n="gaiaPmHint">Matched stars drift along their real measured
+      trajectories (Gaia proper motion) over the course of the video – e.g. 200,000 years
+      of stellar motion compressed into your clip. 0 = off.</p>
+      <label class="check">
+        <input type="checkbox" id="ctlObjFar">
+        <span data-i18n="objFar">🌌 Object at true depth (behind all stars)</span>
+      </label>
+      <p class="tip" data-i18n="objFarHint">Physically, a galaxy or nebula sits far behind
+      every foreground star. This option treats the image as one rigid, distant object: it
+      barely reacts to the flight while all stars pass in front – the most scientifically
+      accurate 3D behavior. The depth-map parallax inside the image is disabled while active.</p>
       <p class="tip" data-i18n="gaiaOnlyHint">Shows only stars with a real Gaia distance, at their
       real depth – detected stars without a catalog match and generated stars are hidden.
       Unlocks at a match rate of 75 % or higher, so the star field doesn't thin out too much.</p>

@@ -77,6 +77,9 @@ const state = {
   gaiaOnly: false,       // Wissenschafts-Modus: nur Sterne mit echter Tiefe
   gaiaColorRGB: null,    // echte Katalogfarben je Masken-Stern (RGB, -1 = keine)
   gaiaColors: false,     // Katalogfarben statt Fotofarben verwenden
+  gaiaPM: null,          // Eigenbewegung je Masken-Stern (Ebene/Jahr)
+  gaiaPmYears: 0,        // Zeitraffer-Spanne in Jahren (0 = aus)
+  objFar: false,         // Objekt einheitlich in die Ferne (hinter alle Sterne)
   twinkleSpeed: 100,     // Funkel-Tempo in %
   starSize: 100,         // % Sterngröße
   starBright: 100,       // % Sternhelligkeit
@@ -176,6 +179,7 @@ uniform sampler2D uColor;
 uniform sampler2D uDepth;
 uniform vec2 uColorTexel;   // 1 Texel der Farbtextur in UV
 uniform float uBicubic;     // 1 = bikubisch abtasten (beim Hineinzoomen)
+uniform float uObjFar;      // 1 = Objekt einheitlich in die Ferne legen
 uniform float uViewAspect;  // Breite/Höhe des Ausgabeformats
 uniform float uImgAspect;   // Breite/Höhe des Bildes
 uniform float uZoom;        // aktueller Gesamtzoom
@@ -248,6 +252,9 @@ void main() {
   vec2 uv = imgUv(spinWarp(q));
   for (int i = 0; i < 3; i++) {
     float d = texture(uDepth, uv).r;
+    // "Objekt in echte Tiefe": das Bild verhält sich wie ein fernes, starres
+    // Objekt (einheitlich weit hinten) - alle Sterne ziehen davor vorbei
+    d = mix(d, 0.02, uObjFar);
     float ex = 1.0 + uParallax * (d - 0.45) * uDepthRange;
     float scale = uCover * pow(uZoom, ex);
     q = uCenter + pr / scale + uTilt * (d - 0.45);
@@ -304,6 +311,7 @@ layout(location=1) in float aBright;// 0..1 (Helligkeit/Fluss)
 layout(location=2) in float aSize;  // Radius in Ebenen-Einheiten
 layout(location=3) in vec3 aColor;
 layout(location=4) in float aGaia;  // echte Tiefe 0..1 aus Gaia (-1 = keine)
+layout(location=5) in vec2 aPm;     // Eigenbewegung in Ebenen-Einheiten/Jahr
 uniform float uViewAspect;
 uniform float uZoom;
 uniform float uParallax;
@@ -346,6 +354,8 @@ uniform vec3 uSpinEllS;
 uniform sampler2D uSpinMaskS;
 uniform float uSpinMaskAmtS;
 uniform float uImgAspectS;
+uniform float uPmYears;   // Zeitraffer: verstrichene Jahre zum Zeitpunkt t
+uniform float uPmYears2;  // ... und kurz danach (für die Streifen)
 out vec3 vColor;
 out float vAlpha;
 out vec2 vDir;    // Streifen-Richtung in Pixeln (normiert)
@@ -406,7 +416,7 @@ void main() {
   // Ferne Sterne nie rückwärts fliegen lassen (Exponent bliebe sonst negativ)
   ex = max(ex, 0.12);
   float scale = uCover * pow(uZoom, ex);
-  vec2 sp1 = spinStar(aPos, uSpinAngleS);
+  vec2 sp1 = spinStar(aPos + aPm * uPmYears, uSpinAngleS);
   vec2 pr = (sp1 - uCenter - uTilt * (depth - 0.45)) * scale;
   float c = cos(uAngle), s = sin(uAngle);
   // Inverse der Hintergrund-Rotation, damit Sterne auf dem Bild liegen bleiben
@@ -424,7 +434,7 @@ void main() {
   vec2 clipMid = clip;
   if (uStreak > 0.0) {
     float scale2 = uCover * pow(uZoom2, ex);
-    vec2 pr2 = (spinStar(aPos, uSpinAngleS2) - uCenter2 - uTilt2 * (depth - 0.45)) * scale2;
+    vec2 pr2 = (spinStar(aPos + aPm * uPmYears2, uSpinAngleS2) - uCenter2 - uTilt2 * (depth - 0.45)) * scale2;
     float c2 = cos(uAngle2), s2 = sin(uAngle2);
     vec2 p2 = mat2(c2, s2, -s2, c2) * pr2;
     vec2 clip2 = vec2(p2.x * 2.0 / uViewAspect, p2.y * 2.0);
@@ -912,6 +922,7 @@ function buildStarBuffer() {
   // Neue Maske -> alte Gaia-Zuordnung passt nicht mehr
   state.gaiaDepth = null;
   state.gaiaColorRGB = null;
+  state.gaiaPM = null;
   if (typeof updateGaiaStatus === "function") updateGaiaStatus();
   uploadStars();
 }
@@ -1011,7 +1022,7 @@ function angSep(ra1, dec1, ra2, dec2) {
 
 /** Gaia DR3 über die VizieR-TAP-API abfragen (CSV, CORS-frei). */
 async function queryGaia(ra, dec, radiusDeg) {
-  const adql = `SELECT TOP 30000 RA_ICRS,DE_ICRS,Gmag,Plx,"BP-RP" FROM "I/355/gaiadr3" ` +
+  const adql = `SELECT TOP 30000 RA_ICRS,DE_ICRS,Gmag,Plx,"BP-RP",pmRA,pmDE FROM "I/355/gaiadr3" ` +
     `WHERE 1=CONTAINS(POINT('ICRS',RA_ICRS,DE_ICRS),` +
     `CIRCLE('ICRS',${ra.toFixed(6)},${dec.toFixed(6)},${radiusDeg.toFixed(4)})) ` +
     `AND Plx>0.05 ORDER BY Gmag`;
@@ -1026,7 +1037,9 @@ async function queryGaia(ra, dec, radiusDeg) {
     if (p.length < 4) continue;
     const ra_ = +p[0], dec_ = +p[1], plx = +p[3];
     const bprp = p.length > 4 && p[4] !== "" ? +p[4] : NaN;
-    if (isFinite(ra_) && isFinite(dec_) && plx > 0) out.push({ ra: ra_, dec: dec_, plx, bprp });
+    const pmra = p.length > 5 && p[5] !== "" ? +p[5] : NaN;  // mas/Jahr (inkl. cos δ)
+    const pmde = p.length > 6 && p[6] !== "" ? +p[6] : NaN;
+    if (isFinite(ra_) && isFinite(dec_) && plx > 0) out.push({ ra: ra_, dec: dec_, plx, bprp, pmra, pmde });
   }
   return out;
 }
@@ -1135,7 +1148,7 @@ function matchGaia(gaiaStars) {
       if (!p) continue;
       const u = p.px / nax1, v = flipY ? 1 - p.py / nax2 : p.py / nax2;
       if (u < -0.03 || u > 1.03 || v < -0.03 || v > 1.03) continue;
-      pts.push({ x: (u - 0.5) * imgAspect, y: 0.5 - v, plx: g.plx });
+      pts.push({ ...g, x: (u - 0.5) * imgAspect, y: 0.5 - v });
     }
     return pts;
   };
@@ -1151,8 +1164,10 @@ function matchGaia(gaiaStars) {
   // Durchgang 1 (grob) für beide y-Konventionen, die bessere gewinnt
   const ptsA = project(true), ptsB = project(false);
   const pairsA = runMatch(ptsA, tolCoarse), pairsB = runMatch(ptsB, tolCoarse);
-  const pts = pairsA.length >= pairsB.length ? ptsA : ptsB;
-  let pairs = pairsA.length >= pairsB.length ? pairsA : pairsB;
+  const flipUsed = pairsA.length >= pairsB.length;
+  const pts = flipUsed ? ptsA : ptsB;
+  let pairs = flipUsed ? pairsA : pairsB;
+  let fitUsed = null;
 
   // Durchgang 2: Affin-Korrektur schätzen und enger neu zuordnen; das
   // Ergebnis zählt nur, wenn es mehr Treffer liefert
@@ -1160,15 +1175,30 @@ function matchGaia(gaiaStars) {
     const fit = affineFit(pairs.map(({ i, g }) => [g.x, g.y, mask[i * 7], mask[i * 7 + 1]]));
     if (fit) {
       const warped = pts.map((g) => ({
+        ...g,
         x: fit.ax[0] * g.x + fit.ax[1] * g.y + fit.ax[2],
         y: fit.ay[0] * g.x + fit.ay[1] * g.y + fit.ay[2],
-        plx: g.plx,
       }));
       const refined = runMatch(warped, tolFine);
-      if (refined.length > pairs.length) pairs = refined;
+      if (refined.length > pairs.length) { pairs = refined; fitUsed = fit; }
     }
   }
   if (pairs.length < 5) return null;
+
+  // Himmelskoordinate -> Ebenen-Position unter der Gewinner-Transformation
+  // (für die Eigenbewegungs-Vektoren)
+  const planeOf = (ra, dec) => {
+    const p = wcsSky2Pix(wcs, ra, dec);
+    if (!p) return null;
+    const u = p.px / nax1, v = flipUsed ? 1 - p.py / nax2 : p.py / nax2;
+    let x = (u - 0.5) * imgAspect, y = 0.5 - v;
+    if (fitUsed) {
+      const nx = fitUsed.ax[0] * x + fitUsed.ax[1] * y + fitUsed.ax[2];
+      const ny = fitUsed.ay[0] * x + fitUsed.ay[1] * y + fitUsed.ay[2];
+      x = nx; y = ny;
+    }
+    return { x, y };
+  };
 
   // Entfernungen (pc) logarithmisch auf die Tiefenebenen mappen: nahe Sterne
   // (10. Perzentil) -> vorn, ferne (90. Perzentil) -> hinten
@@ -1178,6 +1208,8 @@ function matchGaia(gaiaStars) {
   const span = Math.max(0.2, p90 - p10);
   const depth = new Float32Array(n).fill(-1);
   const colors = new Float32Array(n * 3).fill(-1);
+  const pm = new Float32Array(n * 2); // Ebenen-Einheiten pro Jahr (0 = keine)
+  const K = 20000; // Jahre für den Differenzenquotienten
   for (const { i, g } of pairs) {
     const t = Math.min(1, Math.max(0, (Math.log(1000 / g.plx) - p10) / span));
     depth[i] = 0.98 - t * 0.93; // nah = 0.98, fern = 0.05
@@ -1185,9 +1217,17 @@ function matchGaia(gaiaStars) {
       const [cr, cg, cb] = bprpToRgb(g.bprp);
       colors[i * 3] = cr; colors[i * 3 + 1] = cg; colors[i * 3 + 2] = cb;
     }
+    // Eigenbewegung (mas/Jahr, pmRA inkl. cos δ) -> Ebenen-Vektor pro Jahr
+    if (isFinite(g.pmra) && isFinite(g.pmde) && Math.hypot(g.pmra, g.pmde) < 10000) {
+      const cosd = Math.max(0.05, Math.cos(g.dec * D2R));
+      const p0 = planeOf(g.ra, g.dec);
+      const p1 = planeOf(g.ra + (g.pmra / 3.6e6) * K / cosd, g.dec + (g.pmde / 3.6e6) * K);
+      if (p0 && p1) { pm[i * 2] = (p1.x - p0.x) / K; pm[i * 2 + 1] = (p1.y - p0.y) / K; }
+    }
   }
   state.gaiaDepth = depth;
   state.gaiaColorRGB = colors;
+  state.gaiaPM = pm;
   state.gaiaInfo = {
     matched: pairs.length, total: n,
     dMin: Math.round(Math.exp(p10) * 3.262), dMax: Math.round(Math.exp(p90) * 3.262), // Lichtjahre
@@ -1261,32 +1301,36 @@ function uploadStars() {
   state.starCount = n;
   if (!n) return;
 
-  const buf = new Float32Array(n * 8);
+  const F = 10; // [x, y, hell, größe, r, g, b, gaia, pmx, pmy]
+  const buf = new Float32Array(n * F);
   const gcol = state.gaiaColors && state.gaiaColorRGB ? state.gaiaColorRGB : null;
+  const gpm = state.gaiaPM;
   for (let i = 0; i < nMask; i++) {
-    buf.set(mask.subarray(i * 7, i * 7 + 7), i * 8);
-    buf[i * 8 + 7] = state.gaiaDepth ? state.gaiaDepth[i] : -1;
+    buf.set(mask.subarray(i * 7, i * 7 + 7), i * F);
+    buf[i * F + 7] = state.gaiaDepth ? state.gaiaDepth[i] : -1;
     // Echte Katalogfarbe (nur Farbton) statt Fotofarbe, wenn aktiviert
     if (gcol && gcol[i * 3] >= 0) {
-      buf[i * 8 + 4] = 0.35 + 0.65 * gcol[i * 3];
-      buf[i * 8 + 5] = 0.35 + 0.65 * gcol[i * 3 + 1];
-      buf[i * 8 + 6] = 0.35 + 0.65 * gcol[i * 3 + 2];
+      buf[i * F + 4] = 0.35 + 0.65 * gcol[i * 3];
+      buf[i * F + 5] = 0.35 + 0.65 * gcol[i * 3 + 1];
+      buf[i * F + 6] = 0.35 + 0.65 * gcol[i * 3 + 2];
     }
+    if (gpm) { buf[i * F + 8] = gpm[i * 2]; buf[i * F + 9] = gpm[i * 2 + 1]; }
   }
   for (let i = 0; i < nGen; i++) {
-    buf.set(gen.subarray(i * 7, i * 7 + 7), (nMask + i) * 8);
-    buf[(nMask + i) * 8 + 7] = -1;
+    buf.set(gen.subarray(i * 7, i * 7 + 7), (nMask + i) * F);
+    buf[(nMask + i) * F + 7] = -1;
   }
 
   gl.bindVertexArray(starVao);
   gl.bindBuffer(gl.ARRAY_BUFFER, starBuf);
   gl.bufferData(gl.ARRAY_BUFFER, buf, gl.STATIC_DRAW);
-  const stride = 8 * 4;
+  const stride = F * 4;
   gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, stride, 0);
   gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 1, gl.FLOAT, false, stride, 8);
   gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 1, gl.FLOAT, false, stride, 12);
   gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 3, gl.FLOAT, false, stride, 16);
   gl.enableVertexAttribArray(4); gl.vertexAttribPointer(4, 1, gl.FLOAT, false, stride, 28);
+  gl.enableVertexAttribArray(5); gl.vertexAttribPointer(5, 2, gl.FLOAT, false, stride, 32);
   gl.bindVertexArray(null);
 }
 
@@ -1486,6 +1530,7 @@ function render(forcedT) {
   const magnify = (cover * cam.zoom * fbScene.h) / texH;
   u2f(bgProg, "uColorTexel", 1 / (state.texColorW || 2048), 1 / texH);
   u1f(bgProg, "uBicubic", magnify > 1.05 ? 1 : 0);
+  u1f(bgProg, "uObjFar", state.objFar ? 1 : 0);
   // Galaxien-Rotation (te-basiert -> im Loop-Modus nahtlos hin & zurück)
   u1f(bgProg, "uSpinAngle", state.spinSpeed * Math.PI / 180 * cam.te);
   u2f(bgProg, "uSpinCenter", state.spinCenter.x, state.spinCenter.y);
@@ -1564,6 +1609,10 @@ function render(forcedT) {
     gl.bindTexture(gl.TEXTURE_2D, texSpinMask || texBlack);
     gl.activeTexture(gl.TEXTURE0);
     u1i(starProg, "uSpinMaskS", 5);
+    // Eigenbewegungs-Zeitraffer: Jahre wachsen mit der Flugzeit (loop-sicher)
+    const pmSpan = state.duration * (state.loopMode ? 0.5 : 1);
+    u1f(starProg, "uPmYears", state.gaiaPmYears * (cam.te / pmSpan));
+    u1f(starProg, "uPmYears2", state.gaiaPmYears * (cam2.te / pmSpan));
     gl.drawArrays(gl.POINTS, 0, state.starCount);
     gl.disable(gl.BLEND);
   }
@@ -1919,6 +1968,7 @@ I18N.onChange.push(updateTargetInfo);
 // ------------------------------------------ Echte Tiefen (Gaia): Bedienung
 
 bindSlider("ctlGaiaAmt", "outGaiaAmt", "gaiaAmt", (v) => v + " %");
+bindSlider("ctlGaiaPm", "outGaiaPm", "gaiaPmYears", (v) => v.toLocaleString());
 
 // Statuszeile: transienter Text (Laden/Fehler) oder Zustand aus state
 let gaiaTransient = null; // { key, args } | null
@@ -1967,6 +2017,10 @@ $("ctlGaiaColors").addEventListener("change", () => {
   uploadStars(); // Farben stecken im Vertex-Puffer
 });
 
+$("ctlObjFar").addEventListener("change", () => {
+  state.objFar = $("ctlObjFar").checked;
+});
+
 $("btnWcs").addEventListener("click", () => $("fileWcs").click());
 $("fileWcs").addEventListener("change", async () => {
   const file = $("fileWcs").files[0];
@@ -1978,7 +2032,7 @@ $("fileWcs").addEventListener("change", async () => {
     const wcs = parseWcsHeader(head);
     wcs._name = file.name;
     state.wcs = wcs;
-    state.gaiaDepth = null; state.gaiaInfo = null; state.gaiaColorRGB = null;
+    state.gaiaDepth = null; state.gaiaInfo = null; state.gaiaColorRGB = null; state.gaiaPM = null;
     uploadStars();
   } catch (e) {
     state.wcs = null;
