@@ -80,6 +80,10 @@ const state = {
   gaiaPM: null,          // Eigenbewegung je Masken-Stern (Ebene/Jahr)
   gaiaPmYears: 0,        // Zeitraffer-Spanne in Jahren (0 = aus)
   objFar: false,         // Objekt einheitlich in die Ferne (hinter alle Sterne)
+  objInfo: null,         // erkanntes Hauptobjekt { id, facts, otype }
+  labels: null,          // Feld-Beschriftungen [{ id, x, y, sizePlane, otype, on }]
+  showInfo: true,        // Infokarte ins Video einblenden
+  showLabels: true,      // Feld-Beschriftungen ins Video einblenden
   twinkleSpeed: 100,     // Funkel-Tempo in %
   starSize: 100,         // % Sterngröße
   starBright: 100,       // % Sternhelligkeit
@@ -1228,12 +1232,39 @@ function matchGaia(gaiaStars) {
   state.gaiaDepth = depth;
   state.gaiaColorRGB = colors;
   state.gaiaPM = pm;
+  // Gewinner-Transformation merken (für Objekt-Beschriftungen)
+  state.wcsFlip = flipUsed;
+  state.wcsFit = fitUsed;
   state.gaiaInfo = {
     matched: pairs.length, total: n,
     dMin: Math.round(Math.exp(p10) * 3.262), dMax: Math.round(Math.exp(p90) * 3.262), // Lichtjahre
   };
   uploadStars();
   return state.gaiaInfo;
+}
+
+/**
+ * Himmelskoordinate -> Ebenen-Position mit der aktuell bekannten Transformation
+ * (y-Konvention und Affin-Korrektur aus dem Gaia-Abgleich, sonst Standard).
+ */
+function planeOfSky(ra, dec) {
+  const wcs = state.wcs;
+  const img = state.starless || state.stars;
+  if (!wcs || !img) return null;
+  const nax1 = wcs.naxis1 || img.width, nax2 = wcs.naxis2 || img.height;
+  const imgAspect = img.width / img.height;
+  const p = wcsSky2Pix(wcs, ra, dec);
+  if (!p) return null;
+  const flip = state.wcsFlip !== false; // Standard: FITS-Zeile 1 unten
+  const u = p.px / nax1, v = flip ? 1 - p.py / nax2 : p.py / nax2;
+  let x = (u - 0.5) * imgAspect, y = 0.5 - v;
+  const fit = state.wcsFit;
+  if (fit) {
+    const nx = fit.ax[0] * x + fit.ax[1] * y + fit.ax[2];
+    const ny = fit.ay[0] * x + fit.ay[1] * y + fit.ay[2];
+    x = nx; y = ny;
+  }
+  return { x, y };
 }
 
 // ---------------------------------------------------------------- Stern-Generator
@@ -1332,6 +1363,166 @@ function uploadStars() {
   gl.enableVertexAttribArray(4); gl.vertexAttribPointer(4, 1, gl.FLOAT, false, stride, 28);
   gl.enableVertexAttribArray(5); gl.vertexAttribPointer(5, 2, gl.FLOAT, false, stride, 32);
   gl.bindVertexArray(null);
+}
+
+// ------------------------------------------ Objekt-Overlay (Infokarte + Labels)
+
+function overlayActive() {
+  return (state.showLabels && state.labels && state.labels.some((l) => l.on)) ||
+    (state.showInfo && state.objInfo);
+}
+
+/**
+ * Zeichnet Infokarte und Feld-Beschriftungen in einen 2D-Kontext –
+ * auflösungsunabhängig (alles relativ zur Höhe H), identisch für Vorschau
+ * und Export. Die Labels folgen der Kamerafahrt (neutrale Tiefe).
+ */
+function drawOverlayTo(ctx, W, H, loopT, cam) {
+  if (!state.starless || !overlayActive()) return;
+  const lang = I18N.lang === "de" ? "de" : "en";
+  const viewAspect = state.aspect;
+  const imgAspect = state.starless.width / state.starless.height;
+  const cover = Math.max(viewAspect / imgAspect, 1) * 1.02;
+  const scale = cover * cam.zoom;
+  const rc = Math.cos(cam.angle), rs = Math.sin(cam.angle);
+  const toScreen = (P) => {
+    const prx = (P.x - cam.cx) * scale, pry = (P.y - cam.cy) * scale;
+    const px = rc * prx - rs * pry, py = rs * prx + rc * pry;
+    return { x: (px / viewAspect + 0.5) * W, y: (1 - (py + 0.5)) * H };
+  };
+  const u = H / 1000; // Skalierungseinheit (1000er-Referenzhöhe)
+  const ACC = "rgba(157,184,255,";
+  ctx.save();
+  ctx.textBaseline = "alphabetic";
+
+  // ---- Feld-Beschriftungen ----
+  if (state.showLabels && state.labels) {
+    for (const L of state.labels) {
+      if (!L.on) continue;
+      const sp = toScreen(L);
+      if (sp.x < -80 * u || sp.x > W + 80 * u || sp.y < -80 * u || sp.y > H + 80 * u) continue;
+      const r = Math.max(16 * u, (L.sizePlane * scale * H) / 2);
+      ctx.strokeStyle = ACC + "0.75)";
+      ctx.lineWidth = 1.6 * u;
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, r, 0, Math.PI * 2);
+      ctx.stroke();
+      // Chip rechts vom Ring, bei Platzmangel links
+      const facts = OBJECT_FACTS[normObjId(L.id)];
+      const name = L.id;
+      const sub = facts
+        ? `${facts[lang].name} · ${facts[lang].dist || ""}`.replace(/ · $/, "")
+        : (OTYPE_NAMES[lang][L.otype] || L.otype);
+      ctx.font = `700 ${15 * u}px system-ui, sans-serif`;
+      const wName = ctx.measureText(name).width;
+      ctx.font = `${11.5 * u}px system-ui, sans-serif`;
+      const wSub = ctx.measureText(sub).width;
+      const chipW = Math.max(wName, wSub) + 24 * u;
+      const chipH = 40 * u;
+      const right = sp.x + r + 14 * u + chipW < W - 8 * u;
+      const cx0 = right ? sp.x + r + 14 * u : sp.x - r - 14 * u - chipW;
+      const cy0 = Math.min(Math.max(sp.y - chipH / 2, 8 * u), H - chipH - 8 * u);
+      ctx.strokeStyle = ACC + "0.7)";
+      ctx.lineWidth = 1.4 * u;
+      ctx.beginPath();
+      ctx.moveTo(right ? sp.x + r : sp.x - r, sp.y);
+      ctx.lineTo(right ? cx0 : cx0 + chipW, cy0 + chipH / 2);
+      ctx.stroke();
+      ctx.fillStyle = "rgba(8,10,16,0.72)";
+      ctx.strokeStyle = ACC + "0.55)";
+      ctx.beginPath();
+      ctx.roundRect(cx0, cy0, chipW, chipH, 8 * u);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#e8eeff";
+      ctx.font = `700 ${15 * u}px system-ui, sans-serif`;
+      ctx.fillText(name, cx0 + 12 * u, cy0 + 17 * u);
+      ctx.fillStyle = "#aab8d8";
+      ctx.font = `${11.5 * u}px system-ui, sans-serif`;
+      ctx.fillText(sub, cx0 + 12 * u, cy0 + 32 * u);
+    }
+  }
+
+  // ---- Infokarte (blendet ein und wieder aus) ----
+  if (state.showInfo && state.objInfo) {
+    const outStart = Math.min(7, state.duration - 2);
+    const a = Math.min(1, Math.max(0, (loopT - 0.8) / 0.8)) *
+      Math.min(1, Math.max(0, (outStart + 1 - loopT) / 1));
+    if (a > 0.01) {
+      ctx.globalAlpha = a;
+      const info = state.objInfo;
+      const f = info.facts ? info.facts[lang] : null;
+      const title = f ? `${info.id} · ${f.name}` : info.id;
+      const typeLine = f ? f.type : (OTYPE_NAMES[lang][info.otype] || "");
+      const facts = [];
+      if (f) {
+        const LBL = lang === "de"
+          ? { dist: "Entfernung", size: "Durchmesser", stars: "Sterne", age: "Alter" }
+          : { dist: "Distance", size: "Diameter", stars: "Stars", age: "Age" };
+        for (const k of ["dist", "size", "stars", "age"]) {
+          if (f[k]) facts.push([LBL[k], f[k]]);
+        }
+      }
+      const pad = 20 * u, colW = 195 * u;
+      const cardW = Math.min(W - 40 * u, Math.max(300 * u, 2 * colW + 2 * pad));
+      const rows = Math.ceil(facts.length / 2);
+      const cardH = (56 + (typeLine ? 20 : 0) + rows * 40 + 14) * u;
+      const x0 = 24 * u, y0 = H - cardH - 24 * u;
+      ctx.fillStyle = "rgba(8,10,16,0.74)";
+      ctx.strokeStyle = ACC + "0.5)";
+      ctx.lineWidth = 1.6 * u;
+      ctx.beginPath();
+      ctx.roundRect(x0, y0, cardW, cardH, 14 * u);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#eef2ff";
+      ctx.font = `800 ${22 * u}px system-ui, sans-serif`;
+      ctx.fillText(title, x0 + pad, y0 + 33 * u, cardW - 2 * pad);
+      if (typeLine) {
+        ctx.fillStyle = "#aab8d8";
+        ctx.font = `${13 * u}px system-ui, sans-serif`;
+        ctx.fillText(typeLine, x0 + pad, y0 + 52 * u, cardW - 2 * pad);
+      }
+      facts.forEach(([k, v], i) => {
+        const fx = x0 + pad + (i % 2) * colW;
+        const fy = y0 + (typeLine ? 76 : 58) * u + Math.floor(i / 2) * 40 * u;
+        ctx.fillStyle = "#ffffff";
+        ctx.font = `700 ${13.5 * u}px system-ui, sans-serif`;
+        ctx.fillText(k, fx, fy);
+        ctx.fillStyle = "#c6cfe4";
+        ctx.font = `${13.5 * u}px system-ui, sans-serif`;
+        ctx.fillText(v, fx, fy + 17 * u, colW - 14 * u);
+      });
+      // Datenquelle dezent unter der Karte
+      ctx.globalAlpha = a * 0.8;
+      ctx.fillStyle = ACC + "0.75)";
+      ctx.font = `${10.5 * u}px system-ui, sans-serif`;
+      ctx.fillText("Data: SIMBAD/CDS · ESA Gaia DR3", x0 + 2 * u, y0 + cardH + 15 * u);
+      ctx.globalAlpha = 1;
+    }
+  }
+  ctx.restore();
+}
+
+// Transparente Overlay-Ebene über der Vorschau
+const overlayCanvas = document.createElement("canvas");
+overlayCanvas.id = "overlayCanvas";
+overlayCanvas.style.cssText = "position:absolute; pointer-events:none; left:0; top:0;";
+canvas.parentElement.style.position = "relative";
+canvas.parentElement.appendChild(overlayCanvas);
+const overlayCtx = overlayCanvas.getContext("2d");
+
+function drawPreviewOverlay(loopT, cam) {
+  if (overlayCanvas.width !== canvas.width || overlayCanvas.height !== canvas.height) {
+    overlayCanvas.width = canvas.width;
+    overlayCanvas.height = canvas.height;
+  }
+  overlayCanvas.style.left = canvas.offsetLeft + "px";
+  overlayCanvas.style.top = canvas.offsetTop + "px";
+  overlayCanvas.style.width = canvas.clientWidth + "px";
+  overlayCanvas.style.height = canvas.clientHeight + "px";
+  overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+  drawOverlayTo(overlayCtx, overlayCanvas.width, overlayCanvas.height, loopT, cam);
 }
 
 // ---------------------------------------------------------------- Kamera & Zeit
@@ -1734,6 +1925,9 @@ function render(forcedT) {
   u2f(compProg, "uTexel", 1 / fbScene.w, 1 / fbScene.h);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
+  // Objekt-Overlay (Infokarte + Labels) über der Vorschau
+  drawPreviewOverlay(loopT, cam);
+
   // Transport-UI
   const prog = (loopT / state.duration) * 100;
   $("timelineFill").style.width = prog + "%";
@@ -2071,6 +2265,7 @@ function updateGaiaStatus() {
   const sciAllowed = pct >= 75;
   $("ctlGaiaOnly").disabled = !sciAllowed;
   $("ctlGaiaColors").disabled = !state.gaiaDepth;
+  $("btnObjects").disabled = !(state.wcs && state.starless);
   if (!sciAllowed && state.gaiaOnly) {
     state.gaiaOnly = false;
     $("ctlGaiaOnly").checked = false;
@@ -2107,6 +2302,77 @@ $("ctlGaiaColors").addEventListener("change", () => {
 
 $("ctlObjFar").addEventListener("change", () => {
   state.objFar = $("ctlObjFar").checked;
+});
+
+// --------------------------- Objekt-Erkennung (SIMBAD) & Overlay-Bedienung
+
+function rebuildObjList() {
+  const box = $("objList");
+  box.innerHTML = "";
+  if (!state.labels) return;
+  for (const L of state.labels) {
+    const lab = document.createElement("label");
+    lab.className = "check";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = L.on;
+    cb.addEventListener("change", () => { L.on = cb.checked; });
+    const span = document.createElement("span");
+    const facts = OBJECT_FACTS[normObjId(L.id)];
+    const lang = I18N.lang === "de" ? "de" : "en";
+    span.textContent = facts ? `${L.id} – ${facts[lang].name}` : L.id;
+    lab.appendChild(cb);
+    lab.appendChild(span);
+    box.appendChild(lab);
+  }
+}
+I18N.onChange.push(rebuildObjList);
+
+$("ctlShowInfo").addEventListener("change", () => { state.showInfo = $("ctlShowInfo").checked; });
+$("ctlShowLabels").addEventListener("change", () => { state.showLabels = $("ctlShowLabels").checked; });
+
+$("btnObjects").addEventListener("click", async () => {
+  if (!state.wcs || !state.starless) return;
+  const wcs = state.wcs;
+  const img = state.starless;
+  const nax1 = wcs.naxis1 || img.width, nax2 = wcs.naxis2 || img.height;
+  const c = wcsPix2Sky(wcs, nax1 / 2, nax2 / 2);
+  const corner = wcsPix2Sky(wcs, 1, 1);
+  const radius = Math.min(6, angSep(c.ra, c.dec, corner.ra, corner.dec) * 1.05 + 0.02);
+  $("objStatus").textContent = t("objDetecting");
+  $("btnObjects").disabled = true;
+  try {
+    const objs = await querySimbad(c.ra, c.dec, radius);
+    const imgAspect = img.width / img.height;
+    const degPerPx = Math.sqrt(Math.abs(wcs.cd[0] * wcs.cd[3] - wcs.cd[1] * wcs.cd[2]));
+    const items = [];
+    for (const o of objs) {
+      if (!INTERESTING_OTYPES.has(o.otype)) continue;
+      // Nur die bekannten Kataloge beschriften (keine kryptischen Survey-Ids)
+      if (!/^(M|NGC|IC)\d/.test(normObjId(o.id))) continue;
+      const p = planeOfSky(o.ra, o.dec);
+      if (!p) continue;
+      if (Math.abs(p.x) > imgAspect / 2 || Math.abs(p.y) > 0.5) continue;
+      const sizePlane = (o.sizeArcmin / 60) / degPerPx / nax2;
+      items.push({ id: prettyObjId(o.id), otype: o.otype, x: p.x, y: p.y, sizePlane });
+    }
+    if (!items.length) {
+      state.objInfo = null; state.labels = null;
+      $("objStatus").textContent = t("objNone");
+    } else {
+      items.sort((a, b) => b.sizePlane - a.sizePlane);
+      const main = items[0];
+      state.objInfo = { id: main.id, facts: OBJECT_FACTS[normObjId(main.id)] || null, otype: main.otype };
+      // Hauptobjekt nur beschriften, wenn es nicht das halbe Bild füllt
+      const labels = items.filter((it, idx) => idx > 0 || it.sizePlane < 0.35).slice(0, 6);
+      state.labels = labels.map((it) => ({ ...it, on: true }));
+      rebuildObjList();
+      $("objStatus").textContent = t("objFound", items.length, main.id);
+    }
+  } catch (e) {
+    $("objStatus").textContent = t("objNetErr");
+  }
+  $("btnObjects").disabled = !state.wcs;
 });
 
 $("btnWcs").addEventListener("click", () => $("fileWcs").click());
@@ -2468,11 +2734,26 @@ async function exportOffline(w, h, fps) {
   encoder.configure(config);
 
   const totalFrames = Math.round(state.duration * fps);
+  // Overlay (Infokarte/Labels) wird über einen 2D-Zwischenpuffer eingebrannt
+  const burnOverlay = overlayActive();
+  let compCanvas = null, compCtx = null;
+  if (burnOverlay) {
+    compCanvas = document.createElement("canvas");
+    compCanvas.width = w; compCanvas.height = h;
+    compCtx = compCanvas.getContext("2d");
+  }
   try {
     for (let i = 0; i < totalFrames; i++) {
       const t = i / fps;
       render(t);
-      const vf = new VideoFrame(canvas, {
+      let src = canvas;
+      if (burnOverlay) {
+        compCtx.drawImage(canvas, 0, 0, w, h);
+        const ap = animParams(t);
+        drawOverlayTo(compCtx, w, h, ap.loopT, ap.cam);
+        src = compCanvas;
+      }
+      const vf = new VideoFrame(src, {
         timestamp: Math.round(i * 1e6 / fps),
         duration: Math.round(1e6 / fps),
       });
@@ -2518,7 +2799,15 @@ function exportRealtime(w, h, fps) {
   state.t0 = performance.now();
   status.textContent = t("renderingRealtime", w, h, state.duration);
 
-  const stream = canvas.captureStream(fps);
+  // Overlay einbrennen: Stream kommt dann aus einem 2D-Zwischenpuffer
+  const burnOverlay = overlayActive();
+  let compCanvas = null, compCtx = null;
+  if (burnOverlay) {
+    compCanvas = document.createElement("canvas");
+    compCanvas.width = w; compCanvas.height = h;
+    compCtx = compCanvas.getContext("2d");
+  }
+  const stream = (burnOverlay ? compCanvas : canvas).captureStream(fps);
   const rec = new MediaRecorder(stream, {
     mimeType: mime,
     videoBitsPerSecond: Math.min(60_000_000, Math.round(w * h * fps * 0.15)),
@@ -2536,6 +2825,11 @@ function exportRealtime(w, h, fps) {
   rec.start(250);
   const tick = () => {
     const t = (performance.now() - state.t0) / 1000;
+    if (burnOverlay) {
+      compCtx.drawImage(canvas, 0, 0, w, h);
+      const ap = animParams(Math.min(t, state.duration));
+      drawOverlayTo(compCtx, w, h, ap.loopT, ap.cam);
+    }
     $("exportProgress").style.width = Math.min(100, (t / state.duration) * 100) + "%";
     if (t >= state.duration) rec.stop();
     else if (state.exporting) requestAnimationFrame(tick);

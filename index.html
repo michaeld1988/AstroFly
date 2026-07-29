@@ -302,6 +302,21 @@
       every foreground star. This option treats the image as one rigid, distant object: it
       barely reacts to the flight while all stars pass in front – the most scientifically
       accurate 3D behavior. The depth-map parallax inside the image is disabled while active.</p>
+      <p class="tip" data-i18n="objHint">🔭 Object info &amp; field labels: with a plate-solve
+      solution loaded, AstroFly can identify the objects in your image via the SIMBAD
+      database (CDS) and render an info card (distance, size, stars, age for popular
+      objects) plus labeled markers into the video. Only sky coordinates are transferred.</p>
+      <button id="btnObjects" class="secondary" disabled data-i18n="objDetectBtn">🔭 Detect objects in the field (internet)</button>
+      <label class="check">
+        <input type="checkbox" id="ctlShowInfo" checked>
+        <span data-i18n="objShowInfo">Render object info card into the video</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="ctlShowLabels" checked>
+        <span data-i18n="objShowLabels">Render field labels into the video</span>
+      </label>
+      <div id="objList"></div>
+      <p class="tip" id="objStatus"></p>
       <p class="tip" data-i18n="gaiaOnlyHint">Shows only stars with a real Gaia distance, at their
       real depth – detected stars without a catalog match and generated stars are hidden.
       Unlocks at a match rate of 75 % or higher, so the star field doesn't thin out too much.</p>
@@ -480,6 +495,7 @@
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
 <script src="i18n.js"></script>
+<script src="objectinfo.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

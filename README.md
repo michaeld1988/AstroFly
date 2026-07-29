@@ -35,6 +35,11 @@ The interface is available in **English and German** – switch with the
 EN/DE toggle at the top left (your choice is remembered; the app follows
 your browser language on first visit).
 
+**New to AstroFly?** The app starts in **Easy mode**: load your two images,
+pick one of eight one-click style presets (3 for nebulae, 3 for galaxies,
+2 for star clusters), choose duration and aspect ratio, export – done.
+Switch to **Pro mode** anytime for every individual control.
+
 ## Run locally
 
 Download the repository and open `index.html` in your browser – that's it,
@@ -104,8 +109,19 @@ All panel sections are collapsible – click a heading to open or close it
    between random and real depths. A **scientific mode** (unlocked at a
    match rate of 75 % or higher, reported in the status line) shows only
    stars with a real Gaia distance at their true depth and hides everything
-   else. Requires an internet connection for the
+   else. Matched stars can also take their **true colors** from the measured
+   Gaia color index, and a **proper-motion time lapse** lets them drift along
+   their real measured trajectories (e.g. 200,000 years compressed into your
+   clip). Requires an internet connection for the
    catalog query – only sky coordinates are transferred, never your image.
+
+   More experimental options: stars inside the galaxy-spin region can
+   **rotate along with the galaxy**; **object at true depth** treats the
+   image as one rigid distant object so all stars pass in front of it; and
+   with a plate-solve solution loaded, AstroFly can **identify the objects
+   in your field via SIMBAD** (CDS) and render an info card (distance, size,
+   stars, age for popular objects) plus labeled markers that follow the
+   camera directly into the exported video.
 
    **Zoom target:** simply **click** the preview – the camera pans slowly
    toward that point over the whole flight while zooming in (following the
