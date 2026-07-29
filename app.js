@@ -1763,8 +1763,9 @@ const PRESETS = {
   glow:      { bloom: 75, mblur: 30, warp: 0,  vignette: 25, exposure: 8,   contrast: -8, saturation: 15,   clarity: -35, structure: -10, sharpen: 0 },
   // dramatisches Schwarzweiß
   mono:      { bloom: 30, mblur: 25, warp: 0,  vignette: 45, exposure: 0,   contrast: 30, saturation: -100, clarity: 35,  structure: 25, sharpen: 15 },
-  // Hyperraum: Warp + starke Bewegungsunschärfe
-  hyper:     { bloom: 55, mblur: 65, warp: 70, vignette: 30, exposure: 5,   contrast: 12, saturation: 10,   clarity: 10,  structure: 5,  sharpen: 0 },
+  // Hyperraum: Warp + Streifen nur auf den Sternen (mblurStars) - der Nebel
+  // bleibt scharf, sonst brennt das Bild bei hellen Kernen komplett aus
+  hyper:     { bloom: 28, mblur: 50, warp: 45, vignette: 30, exposure: 5,   contrast: 12, saturation: 10,   clarity: 10,  structure: 5,  sharpen: 0, mblurStars: true },
 };
 
 $("ctlPreset").addEventListener("change", () => {
@@ -1775,6 +1776,8 @@ $("ctlPreset").addEventListener("change", () => {
     el.value = preset[key];
     el.dispatchEvent(new Event("input"));
   }
+  $("ctlMblurStars").checked = !!preset.mblurStars;
+  $("ctlMblurStars").dispatchEvent(new Event("change"));
 });
 
 let smoothTimer = null;
