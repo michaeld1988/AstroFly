@@ -1,0 +1,2518 @@
+/* AstroFly – 3D camera flight through astrophotos
+ *
+ * Pipeline:
+ *   starless image -> color texture + depth map (smoothed luminance)
+ *   star mask      -> star particles (blob detection) with individual 3D depth
+ *   WebGL2 pass 1  -> scene (parallax nebula + stars) into framebuffer
+ *   WebGL2 pass 2  -> bloom (bright pass + Gaussian blur at quarter resolution)
+ *   WebGL2 pass 3  -> composite: motion blur, warp fringing,
+ *                     vignette, fade in/out
+ *   WebCodecs / MediaRecorder -> export as MP4/WebM
+ */
+
+"use strict";
+
+// ---------------------------------------------------------------- Zustand
+
+const state = {
+  starless: null,        // { canvas, width, height, name }
+  stars: null,
+  starsOriginal: null,   // unbearbeitete Sternmaske (für Streckung an/aus)
+  depthCanvas: null,
+  starCount: 0,
+
+  aspect: 16 / 9,
+  aspectName: "16:9",
+
+  flightMode: "zoom",    // "zoom" = auf den Nebel zu, "lateral" = seitlicher Flug
+  driftDir: 90,          // Flugrichtung beim seitlichen Flug in Grad
+  zoomBase: 1,
+  speed: 40,             // 0..100 (beim seitlichen Flug: Fahrstrecke)
+  ease: 60,              // Beschleunigen/Abbremsen 0..100
+  easeMode: "linear",    // inout | in | out | linear
+  parallax: 60,          // 0..100
+  depthBoost: 33,        // Räumlichkeit/Tiefenumfang 0..100
+  rotationSpeed: 0,      // °/s
+  orientation: 0,        // °
+  frameX: 0,             // Ausschnitt-Verschiebung -100..100 (an Bildkante geklemmt)
+  frameY: 0,
+  spinSpeed: 0,          // Galaxien-Rotation im Kern in °/s (0 = aus)
+  spinRadius: 40,        // Wirkradius in % 
+  spinDiff: 40,          // 0 = starr, 100 = innen deutlich schneller
+  spinFlat: 0,           // Ellipsen-Stauchung für geneigte Galaxien 0..100
+  spinTilt: 0,           // Ellipsen-Winkel in Grad
+  spinCenter: { x: 0, y: 0 }, // Rotationszentrum in Ebenen-Einheiten
+  spinPick: false,       // nächster Klick setzt das Rotationszentrum
+  spinShow: false,       // Rotationsbereich als rote Maske einblenden
+  spinMaskAmt: 0,        // Helligkeitsmaske einbeziehen 0..100 (0 = nur Kreis/Ellipse)
+  spinMaskSmooth: 6,     // eigene Glättung der Spin-Helligkeitsmaske
+  tiltX: 0,              // -100..100
+  tiltY: 0,
+  swayAmp: 0,            // Schwenk-Animation Stärke 0..100
+  swayTempo: 40,         // Schwenk-Tempo 0..100
+  swayDir: 0,            // Schwenk-Richtung in Grad
+  swayRandom: 0,         // 0 = gerichtet, 100 = zufälliges Wackeln
+  tiltRampAmp: 0,        // gerichteter Kipp-Schwenk: Stärke 0..100
+  tiltRampDir: 0,        // Kipp-Richtung in Grad
+  fade: 0,               // Ein-/Ausblenden in Zehntelsekunden (0 = aus)
+  duration: 20,          // s
+  loopMode: false,       // hin & zurück, nahtlos
+  smooth: 18,
+  invertDepth: false,
+  target: { x: 0, y: 0 }, // Zoomziel in Bildebenen-Einheiten (0,0 = Mitte)
+
+  spread: 70,            // Stern-Ebenen-Streuung 0..100
+  starDist: 55,          // Stern-Grundtiefe (Abstand zum Nebel) 0..100
+  starLayers: 0,         // Anzahl diskreter Tiefen-Ebenen (0 = kontinuierlich)
+  genStars: 0,           // Anzahl zusätzlich generierter (synthetischer) Sterne
+  starPar: 100,          // Stern-Parallaxe in % (Bewegung relativ zum Nebel)
+  maskStretched: false,  // Sternmaske ist bereits gestreckt -> keine Auto-Streckung
+  stretchAmount: 50,     // Intensität der Auto-Streckung 0..100
+  twinkle: 25,           // 0..100
+  wcs: null,             // Plate-Solve-Lösung (aus FITS/WCS-Header)
+  gaiaDepth: null,       // echte Tiefe je Masken-Stern (Float32Array, -1 = keine)
+  gaiaAmt: 100,          // Einfluss der echten Tiefen 0..100
+  gaiaInfo: null,        // { matched, total, dMin, dMax } für die Statuszeile
+  gaiaOnly: false,       // Wissenschafts-Modus: nur Sterne mit echter Tiefe
+  twinkleSpeed: 100,     // Funkel-Tempo in %
+  starSize: 100,         // % Sterngröße
+  starBright: 100,       // % Sternhelligkeit
+  starSat: 100,          // % Sternsättigung
+  seed: 1,               // Zufalls-Seed für Stern-Ebenen
+
+  bloom: 0,              // 0..100
+  mblur: 0,              // 0..100
+  mblurStars: false,     // Bewegungsunschärfe nur auf die Sterne
+  warp: 0,               // 0..100
+  vignette: 0,           // 0..100
+  exposure: 0,           // -100..100 (Blendenstufen ±2)
+  contrast: 0,           // -100..100
+  saturation: 0,         // -100..100
+  clarity: 0,            // -100..100 (negativ = weich/Orton)
+  structure: 0,          // -100..100 (feine Details, Multi-Scale-Lokalkontrast)
+  sharpen: 0,            // 0..100
+
+  viewScale: 70,         // Vorschaugröße in % der verfügbaren Fläche
+
+  playing: true,
+  t0: performance.now(),
+  pausedAt: 0,
+
+  exporting: false,
+  offlineExport: false,
+};
+
+const $ = (id) => document.getElementById(id);
+const canvas = $("glcanvas");
+
+// ---------------------------------------------------------------- WebGL
+
+const gl = canvas.getContext("webgl2", {
+  antialias: false, // Szene wird in FBO gerendert, MSAA griffe hier nicht
+  preserveDrawingBuffer: true, // nötig für captureStream in manchen Browsern
+});
+if (!gl) {
+  alert(t("webgl2"));
+  throw new Error("no webgl2");
+}
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    throw new Error("Shader: " + gl.getShaderInfoLog(s));
+  }
+  return s;
+}
+
+function program(vsSrc, fsSrc) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vsSrc));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fsSrc));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    throw new Error("Link: " + gl.getProgramInfoLog(p));
+  }
+  return p;
+}
+
+const locCache = new Map();
+function loc(prog, name) {
+  let m = locCache.get(prog);
+  if (!m) { m = new Map(); locCache.set(prog, m); }
+  let l = m.get(name);
+  if (l === undefined) { l = gl.getUniformLocation(prog, name); m.set(name, l); }
+  return l;
+}
+const u1f = (p, n, v) => gl.uniform1f(loc(p, n), v);
+const u1i = (p, n, v) => gl.uniform1i(loc(p, n), v);
+const u2f = (p, n, x, y) => gl.uniform2f(loc(p, n), x, y);
+const u3f = (p, n, x, y, z) => gl.uniform3f(loc(p, n), x, y, z);
+
+// Maximale Texturkante: hochskalierte Bilder dürfen bis 8192 px nutzen
+const MAX_TEX = Math.min(8192, gl.getParameter(gl.MAX_TEXTURE_SIZE));
+
+// --- Vollbild-Vertexshader (für alle Bildschirm-Pässe) ---
+
+const quadVS = `#version 300 es
+layout(location=0) in vec2 aPos;
+out vec2 vUv;
+void main() {
+  vUv = aPos * 0.5 + 0.5;
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}`;
+
+// --- Pass 1a: Hintergrund (Starless + Tiefenkarte, Parallax-Zoom) ---
+
+const bgFS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D uColor;
+uniform sampler2D uDepth;
+uniform vec2 uColorTexel;   // 1 Texel der Farbtextur in UV
+uniform float uBicubic;     // 1 = bikubisch abtasten (beim Hineinzoomen)
+uniform float uViewAspect;  // Breite/Höhe des Ausgabeformats
+uniform float uImgAspect;   // Breite/Höhe des Bildes
+uniform float uZoom;        // aktueller Gesamtzoom
+uniform float uParallax;    // 0..1
+uniform float uAngle;       // rad
+uniform float uCover;       // Grundskalierung, damit Bild das Format füllt
+uniform vec2 uCenter;       // Kameraziel in Bildebenen-Einheiten
+uniform vec2 uTilt;         // Kipp-Parallaxe in Bildebenen-Einheiten
+uniform float uDepthRange;  // Räumlichkeit: Spreizung der Tiefen-Zoomraten
+uniform vec2 uSpinCenter;   // Galaxien-Rotation: Zentrum (Ebenen-Einheiten)
+uniform float uSpinAngle;   // aktueller Drehwinkel im Kern (rad)
+uniform float uSpinRadius;  // Wirkradius in Ebenen-Einheiten
+uniform float uSpinDiff;    // 0 = starre Rotation, 1 = innen deutlich schneller
+uniform vec3 uSpinEll;      // Ellipse: (cos Neigung, sin Neigung, Stauchung)
+uniform float uSpinShow;    // 1 = Rotationsbereich als rote Maske einblenden
+uniform sampler2D uSpinMask; // Helligkeitsmaske (eigene Glättung)
+uniform float uSpinMaskAmt;  // 0 = ignorieren, 1 = voll gewichten
+
+vec2 imgUv(vec2 q) {
+  return vec2(q.x / uImgAspect, q.y) + 0.5;
+}
+
+// Gewicht der Helligkeitsmaske an einem Ebenen-Punkt (1 = volle Drehung)
+float spinMaskW(vec2 q) {
+  if (uSpinMaskAmt == 0.0) return 1.0;
+  float m = texture(uSpinMask, vec2(q.x / uImgAspect, q.y) + 0.5).r;
+  return mix(1.0, m, uSpinMaskAmt);
+}
+
+// Radius eines Ebenen-Punkts im (elliptischen) Spin-Raum, 1 = Maskenrand
+float spinR(vec2 q) {
+  vec2 d = q - uSpinCenter;
+  float c = uSpinEll.x, s = uSpinEll.y;
+  vec2 e = mat2(c, -s, s, c) * d;
+  e.y /= uSpinEll.z;
+  return length(e) / uSpinRadius;
+}
+
+// Galaxien-Rotation: dreht die Bildabtastung nur innerhalb des Wirkradius um
+// das gesetzte Zentrum. Zum Rand hin läuft die Drehung weich auf null aus
+// (keine sichtbare Kante); der Differenzial-Anteil lässt den Kern schneller
+// rotieren als die Außenbereiche – wie bei einer echten Galaxie.
+vec2 spinWarp(vec2 q) {
+  if (uSpinAngle == 0.0) return q;
+  vec2 d = q - uSpinCenter;
+  float c = uSpinEll.x, s = uSpinEll.y;
+  vec2 e = mat2(c, -s, s, c) * d;   // in die Achsenlage der Ellipse drehen
+  e.y /= uSpinEll.z;                // Stauchung aufheben -> Kreisraum
+  float r = length(e) / uSpinRadius;
+  if (r >= 1.0) return q;
+  float fall = smoothstep(1.0, 0.55, r);
+  float diffW = mix(1.0, 0.25 / (0.25 + 0.75 * r), uSpinDiff);
+  float a = uSpinAngle * fall * diffW * spinMaskW(q);
+  float ca = cos(a), sa = sin(a);
+  e = mat2(ca, -sa, sa, ca) * e;
+  e.y *= uSpinEll.z;                // zurück in die Bildlage
+  return uSpinCenter + mat2(c, s, -s, c) * e;
+}
+
+void main() {
+  // Canvas-Punkt in Ebenen-Einheiten (Höhe = 1)
+  vec2 p = vec2((vUv.x - 0.5) * uViewAspect, vUv.y - 0.5);
+  float c = cos(uAngle), s = sin(uAngle);
+  vec2 pr = mat2(c, -s, s, c) * p;
+
+  // Parallax: nahe Bereiche (hohe Tiefe) zoomen überproportional;
+  // Kippen verschiebt sie zusätzlich seitlich. Tiefe ist erst nach dem
+  // Sampeln bekannt -> Fixpunkt-Iteration.
+  vec2 q = uCenter + pr / (uCover * uZoom);
+  vec2 uv = imgUv(spinWarp(q));
+  for (int i = 0; i < 3; i++) {
+    float d = texture(uDepth, uv).r;
+    float ex = 1.0 + uParallax * (d - 0.45) * uDepthRange;
+    float scale = uCover * pow(uZoom, ex);
+    q = uCenter + pr / scale + uTilt * (d - 0.45);
+    uv = imgUv(spinWarp(q));
+  }
+
+  // Beim Hineinzoomen bikubisch (Catmull-Rom, 9 bilineare Taps) statt nur
+  // bilinear abtasten: deutlich weniger Verpixelung/Matschigkeit bei Zoom > 1
+  vec3 col;
+  if (uBicubic > 0.5) {
+    vec2 pos = uv / uColorTexel - 0.5;
+    vec2 f = fract(pos);
+    vec2 base = (pos - f + 0.5) * uColorTexel;
+    vec2 f2 = f * f, f3 = f2 * f;
+    vec2 w0 = -0.5 * f3 + f2 - 0.5 * f;
+    vec2 w1 =  1.5 * f3 - 2.5 * f2 + 1.0;
+    vec2 w2 = -1.5 * f3 + 2.0 * f2 + 0.5 * f;
+    vec2 w3 =  0.5 * f3 - 0.5 * f2;
+    vec2 w12 = w1 + w2;
+    vec2 uv12 = base + (w2 / w12) * uColorTexel;
+    vec2 uv0 = base - uColorTexel;
+    vec2 uv3 = base + 2.0 * uColorTexel;
+    col =
+      texture(uColor, vec2(uv0.x,  uv0.y)).rgb  * (w0.x  * w0.y) +
+      texture(uColor, vec2(uv12.x, uv0.y)).rgb  * (w12.x * w0.y) +
+      texture(uColor, vec2(uv3.x,  uv0.y)).rgb  * (w3.x  * w0.y) +
+      texture(uColor, vec2(uv0.x,  uv12.y)).rgb * (w0.x  * w12.y) +
+      texture(uColor, vec2(uv12.x, uv12.y)).rgb * (w12.x * w12.y) +
+      texture(uColor, vec2(uv3.x,  uv12.y)).rgb * (w3.x  * w12.y) +
+      texture(uColor, vec2(uv0.x,  uv3.y)).rgb  * (w0.x  * w3.y) +
+      texture(uColor, vec2(uv12.x, uv3.y)).rgb  * (w12.x * w3.y) +
+      texture(uColor, vec2(uv3.x,  uv3.y)).rgb  * (w3.x  * w3.y);
+    col = max(col, 0.0);
+  } else {
+    col = texture(uColor, uv).rgb;
+  }
+  // Masken-Vorschau: rote Einfärbung entspricht exakt der Drehstärke
+  // (gleiche Falloff-Kurve), plus dünner Ring am Maskenrand
+  if (uSpinShow > 0.5) {
+    float r = spinR(q);
+    float w = smoothstep(1.0, 0.55, r) * spinMaskW(q);
+    col = mix(col, vec3(1.0, 0.15, 0.1), w * 0.4);
+    float ring = smoothstep(0.05, 0.0, abs(r - 1.0));
+    col = mix(col, vec3(1.0, 0.35, 0.25), ring * 0.85);
+  }
+  outColor = vec4(col, 1.0);
+}`;
+
+// --- Pass 1b: Sterne (Punkt-Sprites mit individueller Tiefe) ---
+
+const starVS = `#version 300 es
+layout(location=0) in vec2 aPos;    // Ebenen-Einheiten: x in ±imgAspect/2, y in ±0.5
+layout(location=1) in float aBright;// 0..1 (Helligkeit/Fluss)
+layout(location=2) in float aSize;  // Radius in Ebenen-Einheiten
+layout(location=3) in vec3 aColor;
+layout(location=4) in float aGaia;  // echte Tiefe 0..1 aus Gaia (-1 = keine)
+uniform float uViewAspect;
+uniform float uZoom;
+uniform float uParallax;
+uniform float uAngle;
+uniform float uCover;
+uniform float uPixelsY;   // Canvas-Höhe in px
+uniform float uTime;
+uniform float uSeed;      // Zufalls-Seed für die Ebenen-Verteilung
+uniform float uStarBase;  // Grundtiefe (Abstand zum Nebel), 0 fern .. 1 nah
+uniform float uSpread;    // Streuung der Ebenen 0..1
+uniform float uLayers;    // Anzahl diskreter Ebenen (0 = kontinuierlich)
+uniform float uStarPar;   // Parallax-Multiplikator für Sterne
+uniform float uTwinkle;   // Funkel-Stärke 0..1
+uniform float uTwSpeed;   // Funkel-Tempo (1 = normal)
+uniform float uWarp;      // 0..1: Sterne rasen zusätzlich an der Kamera vorbei
+uniform float uDepthRange;
+uniform float uStarSize;   // Größen-Multiplikator
+uniform float uStarBright; // Helligkeits-Multiplikator
+uniform float uStarSat;    // Sättigung (0 = weiß, 1 = original, 2 = kräftig)
+uniform vec2 uCenter;
+uniform vec2 uTilt;
+// Zweiter Kamerazustand (kurz danach) für die Geschwindigkeits-Streifen:
+// jeder Stern kennt damit seine echte Bildschirmgeschwindigkeit
+uniform float uZoom2;
+uniform float uAngle2;
+uniform vec2 uCenter2;
+uniform vec2 uTilt2;
+uniform float uStreak;    // Belichtungszeit / dt (0 = keine Streifen)
+uniform float uGaiaAmt;   // Mischung Zufallstiefe -> echte Gaia-Tiefe (0..1)
+uniform float uGaiaOnly;  // 1 = Wissenschafts-Modus: nur Sterne mit Gaia-Tiefe
+out vec3 vColor;
+out float vAlpha;
+out vec2 vDir;    // Streifen-Richtung in Pixeln (normiert)
+out float vLen;   // Streifen-Länge in px
+out float vBase;  // Stern-Durchmesser in px
+out float vSize;  // gl_PointSize (für gl_PointCoord -> px)
+
+void main() {
+  // Reproduzierbare Zufalls-Tiefe pro Stern; "Neu mischen" ändert den Seed
+  float h = fract(sin(aPos.x * 127.1 + aPos.y * 311.7 + uSeed * 17.0) * 43758.5453);
+  // Optional in diskrete Ebenen einrasten (gleichmäßig verteilt)
+  float brightShift = aBright * 0.12;
+  if (uLayers > 0.5) {
+    h = (floor(h * uLayers) + 0.5) / uLayers;
+    brightShift = 0.0;
+  }
+  float depth = clamp(uStarBase + (h - 0.5) * uSpread + brightShift, 0.02, 1.0);
+  // Echte Entfernung aus dem Gaia-Katalog (falls zugeordnet): ersetzt die
+  // Zufallstiefe je nach eingestellter Stärke. Im Wissenschafts-Modus zählen
+  // ausschließlich echte Tiefen; Sterne ohne Gaia-Messung werden ausgeblendet
+  if (aGaia >= 0.0) {
+    depth = mix(depth, clamp(aGaia, 0.02, 1.0), max(uGaiaAmt, uGaiaOnly));
+  } else if (uGaiaOnly > 0.5) {
+    gl_Position = vec4(4.0, 4.0, 2.0, 1.0); // außerhalb des Clip-Volumens
+    gl_PointSize = 1.0;
+    vColor = vec3(0.0); vAlpha = 0.0;
+    vDir = vec2(1.0, 0.0); vLen = 0.0; vBase = 1.0; vSize = 1.0;
+    return;
+  }
+
+  // Sterne parallaxieren deutlich stärker als der Nebel (Faktor ~2.6 relativ
+  // zur Räumlichkeit); Warp lässt sie zusätzlich beschleunigt vorbeiziehen
+  float ex = 1.0 + uParallax * (depth - 0.45) * uDepthRange * 2.6 * uStarPar + uWarp * (0.4 + depth);
+  // Ferne Sterne nie rückwärts fliegen lassen (Exponent bliebe sonst negativ)
+  ex = max(ex, 0.12);
+  float scale = uCover * pow(uZoom, ex);
+  vec2 pr = (aPos - uCenter - uTilt * (depth - 0.45)) * scale;
+  float c = cos(uAngle), s = sin(uAngle);
+  // Inverse der Hintergrund-Rotation, damit Sterne auf dem Bild liegen bleiben
+  vec2 p = mat2(c, s, -s, c) * pr;
+  vec2 clip = vec2(p.x * 2.0 / uViewAspect, p.y * 2.0);
+
+  float px = aSize * 2.0 * scale * uPixelsY * uStarSize;
+  float base = clamp(px, 1.2, 500.0);
+
+  // Geschwindigkeits-Streifen: Position kurz danach mit demselben Tiefen-
+  // Exponenten -> die Streifenlänge folgt der echten Geschwindigkeit dieses
+  // Sterns (nahe Sterne ziehen lange Striche, ferne bleiben Punkte)
+  float len = 0.0;
+  vec2 dirPx = vec2(1.0, 0.0);
+  vec2 clipMid = clip;
+  if (uStreak > 0.0) {
+    float scale2 = uCover * pow(uZoom2, ex);
+    vec2 pr2 = (aPos - uCenter2 - uTilt2 * (depth - 0.45)) * scale2;
+    float c2 = cos(uAngle2), s2 = sin(uAngle2);
+    vec2 p2 = mat2(c2, s2, -s2, c2) * pr2;
+    vec2 clip2 = vec2(p2.x * 2.0 / uViewAspect, p2.y * 2.0);
+    vec2 velClip = (clip2 - clip) * uStreak;
+    // y negiert: gl_PointCoord zählt nach unten, der Clip-Space nach oben
+    vec2 velPx = velClip * 0.5 * vec2(uPixelsY * uViewAspect, -uPixelsY);
+    float rawLen = length(velPx);
+    len = min(rawLen, 1024.0 - base);
+    if (rawLen > 1e-4) {
+      dirPx = velPx / rawLen;
+      // Kometen-Optik: Der Stern bleibt an seiner Position (Kopf), der
+      // Schweif läuft entgegen der Flugrichtung aus -> Sprite nach hinten
+      clipMid = clip - velClip * 0.5 * (len / rawLen);
+    }
+  }
+  gl_Position = vec4(clipMid, 0.0, 1.0);
+  float size = base + len;
+  gl_PointSize = size;
+  vDir = dirPx;
+  vLen = len;
+  vBase = base;
+  vSize = size;
+
+  float seed = fract(aPos.x * 137.7 + aPos.y * 91.3) * 6.2831;
+  float tw = sin(uTime * uTwSpeed * (1.0 + fract(seed) * 2.5) + seed * 10.0) * 0.5 + 0.5;
+  vAlpha = 1.0 - uTwinkle * 0.55 * tw;
+  // Langzeitbelichtung: die Helligkeit verteilt sich über die Streifenlänge.
+  // Wurzel statt linear (und eine Untergrenze), damit lange Streifen sichtbar
+  // bleiben statt physikalisch korrekt im Nichts zu verschwinden.
+  vAlpha *= max(sqrt(vBase / vSize), 0.25);
+  float lumS = dot(aColor, vec3(0.299, 0.587, 0.114));
+  vColor = max(mix(vec3(lumS), aColor, uStarSat), 0.0) * uStarBright;
+}`;
+
+const starFS = `#version 300 es
+precision highp float;
+in vec3 vColor;
+in float vAlpha;
+in vec2 vDir;
+in float vLen;
+in float vBase;
+in float vSize;
+out vec4 outColor;
+void main() {
+  // Kapsel entlang der Flugrichtung: Abstand zur Streifen-Mittellinie,
+  // normiert auf den Stern-Radius (vLen = 0 -> runder Stern wie bisher)
+  vec2 d = (gl_PointCoord - 0.5) * vSize;
+  float along = dot(d, vDir);
+  float across = dot(d, vec2(-vDir.y, vDir.x));
+  float da = max(abs(along) - vLen * 0.5, 0.0);
+  vec2 q = vec2(da, across) / (vBase * 0.5);
+  float r2 = dot(q, q); // 0 Mittellinie .. 1 Rand
+  if (r2 > 1.0) discard;
+  float core = exp(-r2 * 9.0);
+  float halo = exp(-r2 * 2.5) * 0.35;
+  float a = (core + halo) * vAlpha;
+  // Verlauf entlang des Schweifs: am Kopf (Sternposition, in Flugrichtung
+  // vorn) volle Helligkeit, zum Ende hin weich auslaufend
+  if (vLen > 0.5) {
+    float s = clamp((along + vLen * 0.5) / max(vLen, 1.0), 0.0, 1.0);
+    a *= mix(0.10, 1.0, s * s);
+  }
+  outColor = vec4(vColor * a, a);
+}`;
+
+// --- Pass 2: Bloom ---
+
+const brightFS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D uScene;
+uniform sampler2D uStarsTex; // separate Sternebene (schwarz, wenn nicht getrennt)
+void main() {
+  vec3 c = texture(uScene, vUv).rgb + texture(uStarsTex, vUv).rgb;
+  float l = max(max(c.r, c.g), c.b);
+  // Empfindlicher (niedrige Schwelle, weiches Knie): auch schwache Sterne
+  // glimmen - die Gesamtstärke regelt der Composite entsprechend sanfter
+  float k = smoothstep(0.30, 0.78, l);
+  outColor = vec4(c * k, 1.0);
+}`;
+
+const blurFS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D uScene;
+uniform vec2 uDir; // 1 Texel in Blur-Richtung
+void main() {
+  const float W[5] = float[](0.227027, 0.194594, 0.121622, 0.054054, 0.016216);
+  vec3 acc = texture(uScene, vUv).rgb * W[0];
+  for (int i = 1; i < 5; i++) {
+    vec2 o = uDir * float(i) * 1.5;
+    acc += texture(uScene, vUv + o).rgb * W[i];
+    acc += texture(uScene, vUv - o).rgb * W[i];
+  }
+  outColor = vec4(acc, 1.0);
+}`;
+
+// --- Pass 3: Composite (Bewegungsunschärfe, Warp-Farbsäume, Vignette) ---
+
+const compFS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D uScene;
+uniform sampler2D uBloom;
+uniform sampler2D uSoft;  // stark weichgezeichnete Szene (für Klarheit)
+uniform sampler2D uMed;   // mittel weichgezeichnete Szene (für Struktur)
+uniform float uViewAspect;
+uniform float uBloomStrength;
+uniform float uShutter;   // "Belichtungszeit" der Bewegungsunschärfe in s
+uniform float uZoomRate;  // d(ln zoom)/dt
+uniform float uRotRate;   // rad/s
+uniform vec2 uPanVel;     // Kamerafahrt in Ebenen-Einheiten/s
+uniform float uChroma;    // Warp-Farbsäume
+uniform float uVignette;
+uniform float uFade;
+uniform float uExposure;   // Blendenstufen
+uniform float uContrast;   // 1 = neutral
+uniform float uSaturation; // 1 = neutral
+uniform float uClarity;    // 0 = aus, negativ = weich (Orton)
+uniform float uStructure;  // feine Details, 0 = aus
+uniform float uSharpen;    // 0 = aus
+uniform vec2 uTexel;       // 1 px der Szene in UV
+uniform sampler2D uStarsTex; // separate Sternebene ("nur Sterne"-Unschärfe)
+uniform float uSplit;      // 1 = Bewegungsunschärfe nur auf die Sterne
+
+void main() {
+  vec2 r = vec2((vUv.x - 0.5) * uViewAspect, vUv.y - 0.5);
+
+  // Bewegungsvektor dieses Pixels: radial (Zoom) + tangential (Rotation) + Fahrt
+  vec2 vel = r * uZoomRate + vec2(-r.y, r.x) * uRotRate + uPanVel;
+  vec2 off = vel * uShutter;
+  off = vec2(off.x / uViewAspect, off.y);
+  vec2 ca = vec2(r.x / uViewAspect, r.y) * uChroma * 0.02;
+
+  vec3 col;
+  if (uSplit > 0.5) {
+    // "Nur Sterne": die Sterne sind bereits als Geschwindigkeits-Streifen
+    // gerendert (pro Stern, je nach echter Geschwindigkeit) – Nebel bleibt scharf
+    col = texture(uScene, vUv).rgb + texture(uStarsTex, vUv).rgb;
+  } else {
+    vec3 acc = vec3(0.0);
+    const int N = 8;
+    for (int i = 0; i < N; i++) {
+      float f = float(i) / float(N - 1) - 0.5;
+      vec2 o = off * f;
+      acc.r += texture(uScene, vUv + o * (1.0 + uChroma) + ca).r;
+      acc.g += texture(uScene, vUv + o).g;
+      acc.b += texture(uScene, vUv + o * (1.0 - uChroma) - ca).b;
+    }
+    col = acc / float(N);
+  }
+
+  // Klarheit: lokaler Kontrast gegen stark weichgezeichnete Szene
+  if (uClarity != 0.0) {
+    vec3 soft = texture(uSoft, vUv).rgb;
+    col += (col - soft) * uClarity;
+  }
+  // Struktur: feiner Lokalkontrast gegen mittel weichgezeichnete Szene
+  if (uStructure != 0.0) {
+    vec3 med = texture(uMed, vUv).rgb;
+    col += (col - med) * uStructure;
+  }
+  // Schärfe: Unsharp-Mask mit 1-Pixel-Radius
+  if (uSharpen > 0.0) {
+    vec3 nb = texture(uScene, vUv + vec2(uTexel.x, 0.0)).rgb
+            + texture(uScene, vUv - vec2(uTexel.x, 0.0)).rgb
+            + texture(uScene, vUv + vec2(0.0, uTexel.y)).rgb
+            + texture(uScene, vUv - vec2(0.0, uTexel.y)).rgb;
+    col += (texture(uScene, vUv).rgb - nb * 0.25) * uSharpen;
+  }
+
+  col += texture(uBloom, vUv).rgb * uBloomStrength;
+
+  // Farbabstimmung: Belichtung -> Kontrast -> Sättigung
+  col = max(col, 0.0) * exp2(uExposure);
+  col = (col - 0.5) * uContrast + 0.5;
+  float lum = dot(max(col, 0.0), vec3(0.2126, 0.7152, 0.0722));
+  col = mix(vec3(lum), col, uSaturation);
+
+  float d = length(r) / (0.7071 * max(uViewAspect, 1.0));
+  col *= 1.0 - uVignette * smoothstep(0.45, 1.25, d);
+
+  outColor = vec4(col * uFade, 1.0);
+}`;
+
+const bgProg = program(quadVS, bgFS);
+const starProg = program(starVS, starFS);
+const brightProg = program(quadVS, brightFS);
+const blurProg = program(quadVS, blurFS);
+const compProg = program(quadVS, compFS);
+
+// Fullscreen-Dreieck
+const quadVao = gl.createVertexArray();
+gl.bindVertexArray(quadVao);
+const quadBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+// Stern-Puffer
+const starVao = gl.createVertexArray();
+const starBuf = gl.createBuffer();
+
+let texColor = null;
+let texDepth = null;
+let texSpinMask = null;
+
+function makeTexture(source) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, source);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.MIRRORED_REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.MIRRORED_REPEAT);
+  return t;
+}
+
+// --- Framebuffer für die Post-Processing-Kette ---
+
+function makeFbo(w, h) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fb = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return { fb, tex, w, h };
+}
+
+// 1x1-Schwarztextur: Platzhalter für die Sternebene, wenn nicht getrennt wird
+const texBlack = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, texBlack);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+let fbScene = null, fbStars = null, fbBloomA = null, fbBloomB = null, fbSoftA = null, fbSoftB = null,
+    fbMedA = null, fbMedB = null;
+
+function ensureFbos() {
+  const w = canvas.width, h = canvas.height;
+  if (fbScene && fbScene.w === w && fbScene.h === h) return;
+  for (const f of [fbScene, fbStars, fbBloomA, fbBloomB, fbSoftA, fbSoftB, fbMedA, fbMedB]) {
+    if (f) { gl.deleteFramebuffer(f.fb); gl.deleteTexture(f.tex); }
+  }
+  fbScene = makeFbo(w, h);
+  fbStars = makeFbo(w, h);
+  const bw = Math.max(1, w >> 2), bh = Math.max(1, h >> 2);
+  fbBloomA = makeFbo(bw, bh);
+  fbBloomB = makeFbo(bw, bh);
+  fbSoftA = makeFbo(bw, bh);
+  fbSoftB = makeFbo(bw, bh);
+  const mw = Math.max(1, w >> 1), mh = Math.max(1, h >> 1);
+  fbMedA = makeFbo(mw, mh);
+  fbMedB = makeFbo(mw, mh);
+}
+
+// ---------------------------------------------------------------- Bild-Dekodierung
+
+async function decodeFile(file) {
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".tif") || name.endsWith(".tiff")) {
+    const buf = await file.arrayBuffer();
+    const ifds = UTIF.decode(buf);
+    if (!ifds.length) throw new Error(t("tiffError"));
+    let best = ifds[0];
+    for (const ifd of ifds) {
+      UTIF.decodeImage(buf, ifd);
+      if ((ifd.width * ifd.height) > (best.width * best.height || 0)) best = ifd;
+    }
+    const rgba = UTIF.toRGBA8(best);
+    const c = document.createElement("canvas");
+    c.width = best.width; c.height = best.height;
+    const imgData = new ImageData(new Uint8ClampedArray(rgba.buffer, 0, best.width * best.height * 4), best.width, best.height);
+    c.getContext("2d").putImageData(imgData, 0, 0);
+    return { canvas: c, width: c.width, height: c.height, name: file.name };
+  }
+  const bmp = await createImageBitmap(file);
+  const c = document.createElement("canvas");
+  c.width = bmp.width; c.height = bmp.height;
+  c.getContext("2d").drawImage(bmp, 0, 0);
+  bmp.close();
+  return { canvas: c, width: c.width, height: c.height, name: file.name };
+}
+
+/** Bild auf maximale Kantenlänge verkleinern (gibt Canvas zurück). */
+function downscale(img, maxEdge) {
+  const s = Math.min(1, maxEdge / Math.max(img.width, img.height));
+  if (s >= 1) return img.canvas;
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(img.width * s));
+  c.height = Math.max(1, Math.round(img.height * s));
+  c.getContext("2d").drawImage(img.canvas, 0, 0, c.width, c.height);
+  return c;
+}
+
+// ---------------------------------------------------------------- Tiefenkarte
+
+/** Geglättete, kontrastgestreckte Luminanzkarte des Starless-Bildes. */
+function computeLuminanceMap(radius, invert) {
+  const src = downscale(state.starless, 768);
+  const w = src.width, h = src.height;
+  const data = src.getContext("2d").getImageData(0, 0, w, h).data;
+
+  // Luminanz
+  let lum = new Float32Array(w * h);
+  for (let i = 0, j = 0; i < lum.length; i++, j += 4) {
+    lum[i] = 0.299 * data[j] + 0.587 * data[j + 1] + 0.114 * data[j + 2];
+  }
+
+  // Kontrast über Perzentile strecken
+  const sorted = Float32Array.from(lum).sort();
+  const lo = sorted[Math.floor(sorted.length * 0.02)];
+  const hi = sorted[Math.floor(sorted.length * 0.98)];
+  const range = Math.max(1e-3, hi - lo);
+  for (let i = 0; i < lum.length; i++) {
+    lum[i] = Math.min(1, Math.max(0, (lum[i] - lo) / range));
+  }
+
+  // 3× Box-Blur ≈ Gauß
+  let a = lum, b = new Float32Array(w * h);
+  for (let pass = 0; pass < 3; pass++) {
+    boxBlurH(a, b, w, h, radius);
+    boxBlurV(b, a, w, h, radius);
+  }
+
+  const dst = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0, j = 0; i < a.length; i++, j += 4) {
+    let d = a[i];
+    if (invert) d = 1 - d;
+    const v = Math.round(d * 255);
+    dst[j] = dst[j + 1] = dst[j + 2] = v;
+    dst[j + 3] = 255;
+  }
+
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  c.getContext("2d").putImageData(new ImageData(dst, w, h), 0, 0);
+  return { canvas: c, data: dst, w, h };
+}
+
+function buildDepthMap() {
+  if (!state.starless) return;
+  const m = computeLuminanceMap(state.smooth, state.invertDepth);
+  state.depthCanvas = m.canvas;
+  state.depthData = { data: m.data, w: m.w, h: m.h }; // CPU-Kopie für die Klick-Zuordnung
+
+  if (texDepth) gl.deleteTexture(texDepth);
+  texDepth = makeTexture(m.canvas);
+
+  const pv = $("depthPreview");
+  pv.height = Math.round(160 * m.h / m.w) || 107;
+  pv.getContext("2d").drawImage(m.canvas, 0, 0, pv.width, pv.height);
+}
+
+/**
+ * Eigene Helligkeitsmaske für die Galaxien-Rotation: unabhängig von der
+ * Parallaxe-Tiefenkarte, mit eigener (typisch geringerer) Glättung – so
+ * folgt die Drehung der Galaxienstruktur statt dem groben Tiefenverlauf.
+ */
+function buildSpinMask() {
+  if (!state.starless) return;
+  const m = computeLuminanceMap(state.spinMaskSmooth, false);
+  if (texSpinMask) gl.deleteTexture(texSpinMask);
+  texSpinMask = makeTexture(m.canvas);
+}
+
+function boxBlurH(src, dst, w, h, r) {
+  const div = r * 2 + 1;
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    let acc = 0;
+    for (let x = -r; x <= r; x++) acc += src[row + clampi(x, w)];
+    for (let x = 0; x < w; x++) {
+      dst[row + x] = acc / div;
+      acc += src[row + clampi(x + r + 1, w)] - src[row + clampi(x - r, w)];
+    }
+  }
+}
+
+function boxBlurV(src, dst, w, h, r) {
+  const div = r * 2 + 1;
+  for (let x = 0; x < w; x++) {
+    let acc = 0;
+    for (let y = -r; y <= r; y++) acc += src[clampi(y, h) * w + x];
+    for (let y = 0; y < h; y++) {
+      dst[y * w + x] = acc / div;
+      acc += src[clampi(y + r + 1, h) * w + x] - src[clampi(y - r, h) * w + x];
+    }
+  }
+}
+
+function clampi(v, n) { return v < 0 ? 0 : (v >= n ? n - 1 : v); }
+
+// ---------------------------------------------------------------- Stern-Extraktion
+
+/**
+ * Findet Sterne in der Maske über Zusammenhangskomponenten und baut den
+ * GPU-Puffer: pro Stern [x, y, helligkeit, größe, r, g, b] in Ebenen-Einheiten.
+ * Die Tiefen-Ebene wird erst im Vertexshader aus Seed/Streuung/Abstand bestimmt.
+ */
+function buildStarBuffer() {
+  if (!state.stars) { state.maskStarFloats = null; state.maskStarCount = 0; uploadStars(); return; }
+  const src = downscale(state.stars, 3000);
+  const w = src.width, h = src.height;
+  const data = src.getContext("2d").getImageData(0, 0, w, h).data;
+  const imgAspect = state.stars.width / state.stars.height;
+
+  const lum = new Uint8Array(w * h);
+  for (let i = 0, j = 0; i < lum.length; i++, j += 4) {
+    lum[i] = (data[j] * 77 + data[j + 1] * 150 + data[j + 2] * 29) >> 8;
+  }
+
+  const THRESH = 24;
+  const visited = new Uint8Array(w * h);
+  const stack = new Int32Array(1 << 16);
+  const found = [];
+
+  for (let i = 0; i < lum.length; i++) {
+    if (visited[i] || lum[i] < THRESH) continue;
+    let sp = 0;
+    stack[sp++] = i;
+    visited[i] = 1;
+    let flux = 0, cx = 0, cy = 0, area = 0, peak = 0;
+    let sr = 0, sg = 0, sb = 0;
+    while (sp > 0) {
+      const idx = stack[--sp];
+      const v = lum[idx];
+      const x = idx % w, y = (idx / w) | 0;
+      flux += v; cx += x * v; cy += y * v; area++;
+      if (v > peak) peak = v;
+      const j = idx * 4;
+      sr += data[j] * v; sg += data[j + 1] * v; sb += data[j + 2] * v;
+      if (area > 4000) break; // Ausreißer (Nebelreste in der Maske) begrenzen
+      if (x > 0     && !visited[idx - 1] && lum[idx - 1] >= THRESH && sp < stack.length) { visited[idx - 1] = 1; stack[sp++] = idx - 1; }
+      if (x < w - 1 && !visited[idx + 1] && lum[idx + 1] >= THRESH && sp < stack.length) { visited[idx + 1] = 1; stack[sp++] = idx + 1; }
+      if (y > 0     && !visited[idx - w] && lum[idx - w] >= THRESH && sp < stack.length) { visited[idx - w] = 1; stack[sp++] = idx - w; }
+      if (y < h - 1 && !visited[idx + w] && lum[idx + w] >= THRESH && sp < stack.length) { visited[idx + w] = 1; stack[sp++] = idx + w; }
+    }
+    if (flux <= 0) continue;
+    found.push({
+      x: cx / flux, y: cy / flux,
+      flux, area, peak,
+      r: sr / flux, g: sg / flux, b: sb / flux,
+    });
+  }
+
+  found.sort((p, q) => q.flux - p.flux);
+  const MAX = 9000;
+  const list = found.slice(0, MAX);
+
+  const FLOATS = 7;
+  const buf = new Float32Array(list.length * FLOATS);
+  let o = 0;
+  for (const st of list) {
+    const u = st.x / w, v = st.y / h;
+    const bright = Math.min(1, st.flux / 20000);
+    const radiusPx = Math.max(1.1, Math.sqrt(st.area / Math.PI) * 0.9 + bright * 2.5);
+    const size = radiusPx / h; // Radius in Ebenen-Einheiten
+
+    const norm = Math.max(st.r, st.g, st.b, 1);
+    buf[o++] = (u - 0.5) * imgAspect;
+    buf[o++] = 0.5 - v;               // ImageData ist top-down, Ebene ist y-up
+    buf[o++] = bright;
+    buf[o++] = size;
+    buf[o++] = 0.35 + 0.65 * st.r / norm;
+    buf[o++] = 0.35 + 0.65 * st.g / norm;
+    buf[o++] = 0.35 + 0.65 * st.b / norm;
+  }
+
+  state.maskStarCount = list.length;
+  state.maskStarFloats = buf;
+  // Neue Maske -> alte Gaia-Zuordnung passt nicht mehr
+  state.gaiaDepth = null;
+  if (typeof updateGaiaStatus === "function") updateGaiaStatus();
+  uploadStars();
+}
+
+// ------------------------------------------------- Echte Tiefen (WCS + Gaia)
+
+/**
+ * Liest die Plate-Solve-Lösung (WCS) aus einem FITS-Header: CRVAL/CRPIX/CD-
+ * Matrix einer TAN-Projektion. Es werden nur die ersten Header-Blöcke gelesen,
+ * das Bild selbst bleibt unangetastet (funktioniert daher auch mit großen
+ * FITS-Dateien und mit reinen .wcs-Headerdateien von astrometry.net).
+ */
+function parseWcsHeader(bytes) {
+  const text = new TextDecoder("ascii").decode(bytes);
+  const h = {};
+  for (let off = 0; off + 80 <= text.length; off += 80) {
+    const card = text.slice(off, off + 80);
+    const key = card.slice(0, 8).trim();
+    if (key === "END") break;
+    if (card[8] !== "=") continue;
+    let val = card.slice(10).split("/")[0].trim();
+    if (val.startsWith("'")) val = val.slice(1, val.lastIndexOf("'")).trim();
+    h[key] = val;
+  }
+  const num = (k) => (h[k] !== undefined ? parseFloat(h[k]) : undefined);
+  const ctype = (h.CTYPE1 || "").toUpperCase();
+  if (h.CTYPE1 !== undefined && !ctype.includes("TAN")) {
+    throw new Error("CTYPE " + h.CTYPE1);
+  }
+  const crval1 = num("CRVAL1"), crval2 = num("CRVAL2");
+  const crpix1 = num("CRPIX1"), crpix2 = num("CRPIX2");
+  if ([crval1, crval2, crpix1, crpix2].some((v) => v === undefined || isNaN(v))) {
+    throw new Error("no WCS");
+  }
+  // CD-Matrix direkt, oder aus PC-Matrix/CDELT(+CROTA2) zusammensetzen
+  let cd11 = num("CD1_1"), cd12 = num("CD1_2"), cd21 = num("CD2_1"), cd22 = num("CD2_2");
+  if (cd11 === undefined) {
+    const cdelt1 = num("CDELT1"), cdelt2 = num("CDELT2");
+    if (cdelt1 === undefined || cdelt2 === undefined) throw new Error("no CD/CDELT");
+    const pc11 = num("PC1_1"), rot = (num("CROTA2") || 0) * Math.PI / 180;
+    if (pc11 !== undefined) {
+      cd11 = cdelt1 * pc11; cd12 = cdelt1 * (num("PC1_2") || 0);
+      cd21 = cdelt2 * (num("PC2_1") || 0); cd22 = cdelt2 * (num("PC2_2") || 1);
+    } else {
+      cd11 = cdelt1 * Math.cos(rot); cd12 = -cdelt2 * Math.sin(rot);
+      cd21 = cdelt1 * Math.sin(rot); cd22 = cdelt2 * Math.cos(rot);
+    }
+  }
+  cd12 = cd12 || 0; cd21 = cd21 || 0;
+  const det = cd11 * cd22 - cd12 * cd21;
+  if (!det) throw new Error("singular CD");
+  return {
+    crval1, crval2, crpix1, crpix2,
+    cd: [cd11, cd12, cd21, cd22],
+    icd: [cd22 / det, -cd12 / det, -cd21 / det, cd11 / det],
+    naxis1: num("NAXIS1") || num("IMAGEW") || 0,
+    naxis2: num("NAXIS2") || num("IMAGEH") || 0,
+  };
+}
+
+const D2R = Math.PI / 180, R2D = 180 / Math.PI;
+
+/** FITS-Pixel (1-basiert) -> RA/Dec in Grad (inverse Gnomonik). */
+function wcsPix2Sky(wcs, px, py) {
+  const xi = (wcs.cd[0] * (px - wcs.crpix1) + wcs.cd[1] * (py - wcs.crpix2)) * D2R;
+  const eta = (wcs.cd[2] * (px - wcs.crpix1) + wcs.cd[3] * (py - wcs.crpix2)) * D2R;
+  const ra0 = wcs.crval1 * D2R, dec0 = wcs.crval2 * D2R;
+  const rho = Math.hypot(xi, eta);
+  if (rho < 1e-12) return { ra: wcs.crval1, dec: wcs.crval2 };
+  const c = Math.atan(rho);
+  const dec = Math.asin(Math.cos(c) * Math.sin(dec0) + (eta * Math.sin(c) * Math.cos(dec0)) / rho);
+  const ra = ra0 + Math.atan2(xi * Math.sin(c),
+    rho * Math.cos(dec0) * Math.cos(c) - eta * Math.sin(dec0) * Math.sin(c));
+  return { ra: ((ra * R2D) % 360 + 360) % 360, dec: dec * R2D };
+}
+
+/** RA/Dec in Grad -> FITS-Pixel (1-basiert), null wenn hinter dem Himmelspol. */
+function wcsSky2Pix(wcs, ra, dec) {
+  const ra0 = wcs.crval1 * D2R, dec0 = wcs.crval2 * D2R;
+  const a = ra * D2R, d = dec * D2R;
+  const cosc = Math.sin(dec0) * Math.sin(d) + Math.cos(dec0) * Math.cos(d) * Math.cos(a - ra0);
+  if (cosc <= 1e-6) return null;
+  const xi = (Math.cos(d) * Math.sin(a - ra0)) / cosc * R2D;
+  const eta = (Math.cos(dec0) * Math.sin(d) - Math.sin(dec0) * Math.cos(d) * Math.cos(a - ra0)) / cosc * R2D;
+  return {
+    px: wcs.crpix1 + wcs.icd[0] * xi + wcs.icd[1] * eta,
+    py: wcs.crpix2 + wcs.icd[2] * xi + wcs.icd[3] * eta,
+  };
+}
+
+/** Winkelabstand zweier Himmelspositionen in Grad. */
+function angSep(ra1, dec1, ra2, dec2) {
+  const d1 = dec1 * D2R, d2 = dec2 * D2R, dra = (ra2 - ra1) * D2R;
+  const s = Math.sin((d2 - d1) / 2) ** 2 + Math.cos(d1) * Math.cos(d2) * Math.sin(dra / 2) ** 2;
+  return 2 * Math.asin(Math.min(1, Math.sqrt(s))) * R2D;
+}
+
+/** Gaia DR3 über die VizieR-TAP-API abfragen (CSV, CORS-frei). */
+async function queryGaia(ra, dec, radiusDeg) {
+  const adql = `SELECT TOP 30000 RA_ICRS,DE_ICRS,Gmag,Plx FROM "I/355/gaiadr3" ` +
+    `WHERE 1=CONTAINS(POINT('ICRS',RA_ICRS,DE_ICRS),` +
+    `CIRCLE('ICRS',${ra.toFixed(6)},${dec.toFixed(6)},${radiusDeg.toFixed(4)})) ` +
+    `AND Plx>0.05 ORDER BY Gmag`;
+  const url = "https://tapvizier.cds.unistra.fr/TAPVizieR/tap/sync?REQUEST=doQuery&LANG=ADQL&FORMAT=csv&QUERY=" +
+    encodeURIComponent(adql);
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error("HTTP " + resp.status);
+  const lines = (await resp.text()).trim().split("\n");
+  const out = [];
+  for (let i = 1; i < lines.length; i++) {
+    const p = lines[i].split(",");
+    if (p.length < 4) continue;
+    const ra_ = +p[0], dec_ = +p[1], plx = +p[3];
+    if (isFinite(ra_) && isFinite(dec_) && plx > 0) out.push({ ra: ra_, dec: dec_, plx });
+  }
+  return out;
+}
+
+/** 3x3-Gleichungssystem lösen (für die Affin-Anpassung). */
+function solve3(M, b) {
+  const [[a, c, d], [e, f, g], [h, k, l]] = M;
+  const det = a * (f * l - g * k) - c * (e * l - g * h) + d * (e * k - f * h);
+  if (Math.abs(det) < 1e-12) return null;
+  const inv = [
+    [(f * l - g * k) / det, (d * k - c * l) / det, (c * g - d * f) / det],
+    [(g * h - e * l) / det, (a * l - d * h) / det, (d * e - a * g) / det],
+    [(e * k - f * h) / det, (c * h - a * k) / det, (a * f - c * e) / det],
+  ];
+  return [
+    inv[0][0] * b[0] + inv[0][1] * b[1] + inv[0][2] * b[2],
+    inv[1][0] * b[0] + inv[1][1] * b[1] + inv[1][2] * b[2],
+    inv[2][0] * b[0] + inv[2][1] * b[1] + inv[2][2] * b[2],
+  ];
+}
+
+/**
+ * Affine Abbildung Katalog -> Maske per kleinster Quadrate aus groben
+ * Treffer-Paaren [gx, gy, dx, dy] schätzen.
+ */
+function affineFit(pairs) {
+  let sxx = 0, sxy = 0, sx = 0, syy = 0, sy = 0;
+  let bx0 = 0, bx1 = 0, bx2 = 0, by0 = 0, by1 = 0, by2 = 0;
+  for (const [gx, gy, dx, dy] of pairs) {
+    sxx += gx * gx; sxy += gx * gy; sx += gx; syy += gy * gy; sy += gy;
+    bx0 += gx * dx; bx1 += gy * dx; bx2 += dx;
+    by0 += gx * dy; by1 += gy * dy; by2 += dy;
+  }
+  const M = [[sxx, sxy, sx], [sxy, syy, sy], [sx, sy, pairs.length]];
+  const ax = solve3(M, [bx0, bx1, bx2]);
+  const ay = solve3(M, [by0, by1, by2]);
+  return ax && ay ? { ax, ay } : null;
+}
+
+/**
+ * Ordnet Gaia-Sterne den erkannten Masken-Sternen zu und leitet echte Tiefen
+ * ab. Die y-Orientierung des FITS (Zeile 1 unten oder oben) wird automatisch
+ * bestimmt: Es gewinnt die Variante mit den meisten Treffern. Ein zweiter
+ * Durchgang schätzt eine Affin-Korrektur aus den groben Treffern (gleicht
+ * kleine Crop-/Skalierungs-/Drehungs-Abweichungen aus) und ordnet dann mit
+ * enger Toleranz neu zu.
+ */
+function matchGaia(gaiaStars) {
+  const wcs = state.wcs, mask = state.maskStarFloats;
+  const n = state.maskStarCount;
+  const imgAspect = state.stars.width / state.stars.height;
+  const nax1 = wcs.naxis1 || state.stars.width, nax2 = wcs.naxis2 || state.stars.height;
+
+  // Erkannte Sterne in ein Suchgitter legen (Ebenen-Einheiten, Bildhöhe = 1)
+  const tolCoarse = 0.012; // Durchgang 1: ~1,2 % der Bildhöhe
+  const tolFine = 0.0045;  // Durchgang 2 (nach Affin-Korrektur)
+  const cell = tolCoarse;
+  const grid = new Map();
+  for (let i = 0; i < n; i++) {
+    const x = mask[i * 7], y = mask[i * 7 + 1];
+    const key = Math.round(x / cell) + ":" + Math.round(y / cell);
+    (grid.get(key) || grid.set(key, []).get(key)).push(i);
+  }
+  const nearest = (x, y, used, tol) => {
+    let best = -1, bd = tol * tol;
+    const gx = Math.round(x / cell), gy = Math.round(y / cell);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+      for (const i of grid.get((gx + dx) + ":" + (gy + dy)) || []) {
+        if (used[i]) continue;
+        const ddx = mask[i * 7] - x, ddy = mask[i * 7 + 1] - y;
+        const d2 = ddx * ddx + ddy * ddy;
+        if (d2 < bd) { bd = d2; best = i; }
+      }
+    }
+    return best;
+  };
+
+  // Katalogsterne in Ebenen-Koordinaten projizieren (je y-Konvention);
+  // Reihenfolge bleibt hellste zuerst (Abfrage ist nach Gmag sortiert)
+  const project = (flipY) => {
+    const pts = [];
+    for (const g of gaiaStars) {
+      const p = wcsSky2Pix(wcs, g.ra, g.dec);
+      if (!p) continue;
+      const u = p.px / nax1, v = flipY ? 1 - p.py / nax2 : p.py / nax2;
+      if (u < -0.03 || u > 1.03 || v < -0.03 || v > 1.03) continue;
+      pts.push({ x: (u - 0.5) * imgAspect, y: 0.5 - v, plx: g.plx });
+    }
+    return pts;
+  };
+  const runMatch = (pts, tol) => {
+    const used = new Uint8Array(n), pairs = [];
+    for (const g of pts) {
+      const i = nearest(g.x, g.y, used, tol);
+      if (i >= 0) { used[i] = 1; pairs.push({ i, g }); }
+    }
+    return pairs;
+  };
+
+  // Durchgang 1 (grob) für beide y-Konventionen, die bessere gewinnt
+  const ptsA = project(true), ptsB = project(false);
+  const pairsA = runMatch(ptsA, tolCoarse), pairsB = runMatch(ptsB, tolCoarse);
+  const pts = pairsA.length >= pairsB.length ? ptsA : ptsB;
+  let pairs = pairsA.length >= pairsB.length ? pairsA : pairsB;
+
+  // Durchgang 2: Affin-Korrektur schätzen und enger neu zuordnen; das
+  // Ergebnis zählt nur, wenn es mehr Treffer liefert
+  if (pairs.length >= 20) {
+    const fit = affineFit(pairs.map(({ i, g }) => [g.x, g.y, mask[i * 7], mask[i * 7 + 1]]));
+    if (fit) {
+      const warped = pts.map((g) => ({
+        x: fit.ax[0] * g.x + fit.ax[1] * g.y + fit.ax[2],
+        y: fit.ay[0] * g.x + fit.ay[1] * g.y + fit.ay[2],
+        plx: g.plx,
+      }));
+      const refined = runMatch(warped, tolFine);
+      if (refined.length > pairs.length) pairs = refined;
+    }
+  }
+  if (pairs.length < 5) return null;
+
+  // Entfernungen (pc) logarithmisch auf die Tiefenebenen mappen: nahe Sterne
+  // (10. Perzentil) -> vorn, ferne (90. Perzentil) -> hinten
+  const dists = pairs.map(({ g }) => 1000 / g.plx).sort((x, y) => x - y);
+  const p10 = Math.log(dists[Math.floor(dists.length * 0.1)]);
+  const p90 = Math.log(dists[Math.min(dists.length - 1, Math.floor(dists.length * 0.9))]);
+  const span = Math.max(0.2, p90 - p10);
+  const depth = new Float32Array(n).fill(-1);
+  for (const { i, g } of pairs) {
+    const t = Math.min(1, Math.max(0, (Math.log(1000 / g.plx) - p10) / span));
+    depth[i] = 0.98 - t * 0.93; // nah = 0.98, fern = 0.05
+  }
+  state.gaiaDepth = depth;
+  state.gaiaInfo = {
+    matched: pairs.length, total: n,
+    dMin: Math.round(Math.exp(p10) * 3.262), dMax: Math.round(Math.exp(p90) * 3.262), // Lichtjahre
+  };
+  uploadStars();
+  return state.gaiaInfo;
+}
+
+// ---------------------------------------------------------------- Stern-Generator
+
+/** Deterministischer Zufallsgenerator (für reproduzierbare Sternfelder). */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Erzeugt synthetische Sterne: Helligkeit nach Potenzgesetz (viele schwache,
+ * wenige helle), Farben entlang der Sternsequenz (blau-weiß bis rötlich),
+ * Positionen mit Rand über das Bild hinaus, damit beim seitlichen Flug und
+ * bei starker Parallaxe neue Sterne ins Bild nachrücken. Der 🎲-Button
+ * (Seed) würfelt eine neue Anordnung.
+ */
+function generateStars() {
+  const n = state.genStars;
+  if (n <= 0) return new Float32Array(0);
+  const imgAspect = state.starless
+    ? state.starless.width / state.starless.height
+    : (state.stars ? state.stars.width / state.stars.height : 16 / 9);
+  const rnd = mulberry32(Math.floor(state.seed * 65536) + 7);
+  const M = 1.3; // 30 % Rand jenseits der Bildkanten
+  const buf = new Float32Array(n * 7);
+  let o = 0;
+  for (let i = 0; i < n; i++) {
+    const x = (rnd() - 0.5) * imgAspect * M;
+    const y = (rnd() - 0.5) * M;
+    const bright = Math.pow(rnd(), 3.2) * 0.9 + 0.03;
+    const radiusPx = 0.8 + bright * 3.2 + rnd() * 0.9;
+    const pick = rnd();
+    let r, g, b;
+    if (pick < 0.22)      { r = 0.72; g = 0.80; b = 1.00; } // blau-weiß
+    else if (pick < 0.55) { r = 0.95; g = 0.95; b = 1.00; } // weiß
+    else if (pick < 0.78) { r = 1.00; g = 0.93; b = 0.80; } // gelblich-weiß
+    else if (pick < 0.93) { r = 1.00; g = 0.82; b = 0.62; } // orange
+    else                  { r = 1.00; g = 0.66; b = 0.48; } // rötlich
+    buf[o++] = x;
+    buf[o++] = y;
+    buf[o++] = bright;
+    buf[o++] = radiusPx / 1500; // Radius in Ebenen-Einheiten (nominale Höhe)
+    buf[o++] = r;
+    buf[o++] = g;
+    buf[o++] = b;
+  }
+  return buf;
+}
+
+/**
+ * Masken-Sterne + generierte Sterne in den GPU-Puffer laden.
+ * GPU-Layout: 8 Floats pro Stern [x, y, helligkeit, größe, r, g, b, gaia];
+ * gaia = echte Tiefe 0..1 (aus state.gaiaDepth) oder -1, wenn nicht zugeordnet.
+ */
+function uploadStars() {
+  const mask = state.maskStarFloats || new Float32Array(0);
+  const gen = generateStars();
+  const nMask = mask.length / 7, nGen = gen.length / 7;
+  const n = nMask + nGen;
+  state.starCount = n;
+  if (!n) return;
+
+  const buf = new Float32Array(n * 8);
+  for (let i = 0; i < nMask; i++) {
+    buf.set(mask.subarray(i * 7, i * 7 + 7), i * 8);
+    buf[i * 8 + 7] = state.gaiaDepth ? state.gaiaDepth[i] : -1;
+  }
+  for (let i = 0; i < nGen; i++) {
+    buf.set(gen.subarray(i * 7, i * 7 + 7), (nMask + i) * 8);
+    buf[(nMask + i) * 8 + 7] = -1;
+  }
+
+  gl.bindVertexArray(starVao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, starBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, buf, gl.STATIC_DRAW);
+  const stride = 8 * 4;
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, stride, 0);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 1, gl.FLOAT, false, stride, 8);
+  gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 1, gl.FLOAT, false, stride, 12);
+  gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 3, gl.FLOAT, false, stride, 16);
+  gl.enableVertexAttribArray(4); gl.vertexAttribPointer(4, 1, gl.FLOAT, false, stride, 28);
+  gl.bindVertexArray(null);
+}
+
+// ---------------------------------------------------------------- Kamera & Zeit
+
+function currentTime() {
+  if (!state.playing) return state.pausedAt;
+  return (performance.now() - state.t0) / 1000;
+}
+
+function smoothstep(x) {
+  x = Math.min(1, Math.max(0, x));
+  return x * x * (3 - 2 * x);
+}
+
+/**
+ * Kamerazustand zu einem Zeitpunkt (für Rendering und Bewegungsunschärfe).
+ * Ablauf: Rohzeit -> Loop-Dreieck (hin & zurück) -> Easing -> effektive
+ * Flugzeit te, aus der Zoom, Rotation, Ziel-Fahrt und Schwenk berechnet werden.
+ */
+function camAt(loopT) {
+  const D = state.duration;
+  const u = Math.min(1, Math.max(0, loopT / D));
+  const p = state.loopMode ? 1 - Math.abs(1 - 2 * u) : u;
+  let curve;
+  switch (state.easeMode) {
+    case "linear": curve = p; break;
+    case "in":     curve = p * p; break;
+    case "out":    curve = 1 - (1 - p) * (1 - p); break;
+    default:       curve = smoothstep(p); // sanft beschleunigen & abbremsen
+  }
+  const e = state.ease / 100;
+  const pe = p + (curve - p) * e;
+  const te = pe * D * (state.loopMode ? 0.5 : 1);
+
+  const rate = (state.speed / 100) * 0.09;
+  const angle = (state.orientation + state.rotationSpeed * te) * Math.PI / 180;
+
+  // Flugmodus: entweder in den Nebel zoomen oder seitlich übers Bild gleiten
+  let zoom, cx, cy, driftTX = 0, driftTY = 0;
+  if (state.flightMode === "lateral") {
+    // Konstanter Zoom; die Kamera fährt entlang der eingestellten Richtung
+    // durch das Ziel (Klickpunkt). Die Strecke ist so begrenzt, dass der
+    // Bildausschnitt nicht über den Rand hinausläuft.
+    zoom = state.zoomBase;
+    const viewAspect = state.aspect;
+    const imgAspect = state.starless
+      ? state.starless.width / state.starless.height : 16 / 9;
+    const cover = Math.max(viewAspect / imgAspect, 1) * 1.02;
+    const sc = cover * zoom;
+    const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.92;
+    const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.92;
+    const tx = Math.min(freeX, Math.max(-freeX, state.target.x + (state.frameX / 100) * freeX));
+    const ty = Math.min(freeY, Math.max(-freeY, state.target.y + (state.frameY / 100) * freeY));
+    const dir = state.driftDir * Math.PI / 180;
+    const ux = Math.cos(dir), uy = Math.sin(dir);
+    let half = Infinity;
+    if (Math.abs(ux) > 1e-6) half = Math.min(half, (freeX - Math.abs(tx)) / Math.abs(ux));
+    if (Math.abs(uy) > 1e-6) half = Math.min(half, (freeY - Math.abs(ty)) / Math.abs(uy));
+    if (!isFinite(half)) half = 0;
+    half *= state.speed / 100;
+    const off = (pe - 0.5) * 2 * half;
+    cx = tx + off * ux;
+    cy = ty + off * uy;
+    // Fahrt-Parallaxe: wirkt wie ein animiertes Kippen – nahe Bereiche und
+    // nahe Sterne ziehen schneller vorbei als ferne (Skalierung im Renderer)
+    driftTX = off * ux;
+    driftTY = off * uy;
+  } else {
+    zoom = state.zoomBase * Math.exp(rate * te);
+  }
+
+  // Schwenk-Animation: langsame elliptische Kippbewegung (Funktion von te,
+  // dadurch im Loop-Modus automatisch nahtlos)
+  let tiltAddX = 0, tiltAddY = 0;
+  const swayA = (state.swayAmp / 100) * 0.06;
+  if (swayA > 0) {
+    const period = 16 - (state.swayTempo / 100) * 12; // 16 s .. 4 s
+    const ph = te * 2 * Math.PI / period;
+    // Gerichtetes Pendeln entlang der eingestellten Richtung ...
+    const dir = state.swayDir * Math.PI / 180;
+    const lin = Math.sin(ph);
+    // ... gemischt mit dem zufälligen elliptischen Wackeln
+    const rnd = state.swayRandom / 100;
+    const ellX = Math.sin(ph);
+    const ellY = 0.7 * Math.sin(ph * 0.8 + 1.3);
+    tiltAddX = swayA * ((1 - rnd) * Math.cos(dir) * lin + rnd * ellX);
+    tiltAddY = swayA * ((1 - rnd) * Math.sin(dir) * lin + rnd * ellY);
+  }
+
+  // Gerichteter Kipp-Schwenk: die Kamera kippt über die gesamte Flugdauer
+  // langsam in eine Richtung (folgt der Beschleunigungskurve; basiert auf pe,
+  // das im Loop-Modus hin & zurück läuft -> nahtlos). Volle Stärke entspricht
+  // einer Fahrt des Kipp-Reglers von -100 nach +100, mittig neutral.
+  const rampA = (state.tiltRampAmp / 100) * 0.08;
+  if (rampA > 0) {
+    const rdir = state.tiltRampDir * Math.PI / 180;
+    const q = (pe - 0.5) * 2; // -1 .. +1 über die Flugdauer
+    tiltAddX += rampA * Math.cos(rdir) * q;
+    tiltAddY += rampA * Math.sin(rdir) * q;
+  }
+
+  // Kamerafahrt zum Zoomziel (nur Zoom-Modus): Die Kamera schwenkt über die
+  // gesamte Flugdauer langsam zum Ziel (folgt der Beschleunigungskurve, im
+  // Loop-Modus nahtlos hin & zurück). Startpunkt ist der per Regler
+  // verschiebbare Ausschnitt; beides wird an die Bildkanten geklemmt, damit
+  // nie über den Bildrand hinaus geschwenkt wird.
+  if (state.flightMode !== "lateral") {
+    const viewAspect = state.aspect;
+    const imgAspect = state.starless
+      ? state.starless.width / state.starless.height : 16 / 9;
+    const cover = Math.max(viewAspect / imgAspect, 1) * 1.02;
+    const sc = cover * zoom;
+    const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.98;
+    const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.98;
+    const fx = (state.frameX / 100) * freeX;
+    const fy = (state.frameY / 100) * freeY;
+    cx = Math.min(freeX, Math.max(-freeX, fx + (state.target.x - fx) * pe));
+    cy = Math.min(freeY, Math.max(-freeY, fy + (state.target.y - fy) * pe));
+  }
+  return { zoom, angle, rate, te, tiltAddX, tiltAddY, cx, cy, driftTX, driftTY };
+}
+
+function animParams(t) {
+  const loopT = state.exporting ? t : t % state.duration;
+  const cam = camAt(loopT);
+  let fade = 1;
+  const fadeDur = state.fade / 10;
+  if (!state.loopMode && fadeDur > 0) {
+    const fadeIn = Math.min(1, loopT / fadeDur);
+    const fadeOut = Math.min(1, Math.max(0, (state.duration - loopT) / fadeDur));
+    fade = Math.min(fadeIn, fadeOut);
+  }
+  return { loopT, cam, fade };
+}
+
+// ---------------------------------------------------------------- Rendering
+
+function render(forcedT) {
+  const w = canvas.width, h = canvas.height;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, w, h);
+  gl.clearColor(0, 0, 0, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  if (!texColor || !texDepth) return;
+
+  ensureFbos();
+
+  const t = forcedT !== undefined ? forcedT : currentTime();
+  const { loopT, cam, fade } = animParams(t);
+  const viewAspect = state.aspect;
+  const imgAspect = state.starless.width / state.starless.height;
+  const cover = Math.max(viewAspect / imgAspect, 1) * 1.02;
+  const parallax = state.parallax / 100;
+  const warp = state.warp / 100;
+  const depthRange = 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
+  const tiltX = (state.tiltX / 100) * 0.08 + cam.tiltAddX;
+  const tiltY = (state.tiltY / 100) * 0.08 + cam.tiltAddY;
+  // Seitlicher Flug: die Fahrt-Parallaxe nutzt den Kipp-Mechanismus
+  // (tiefenabhängige Verschiebung); Sterne reagieren wie beim Zoom stärker
+  const drK = parallax * depthRange;
+  const drKStar = drK * 2.6 * (state.starPar / 100);
+  const bgTiltX = tiltX + cam.driftTX * drK;
+  const bgTiltY = tiltY + cam.driftTY * drK;
+  const starTiltX = tiltX + cam.driftTX * drKStar;
+  const starTiltY = tiltY + cam.driftTY * drKStar;
+
+  // ---- Pass 1: Szene in FBO ----
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbScene.fb);
+  gl.viewport(0, 0, fbScene.w, fbScene.h);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  gl.disable(gl.BLEND);
+  gl.useProgram(bgProg);
+  gl.bindVertexArray(quadVao);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, texColor);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, texDepth);
+  gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, texSpinMask || texBlack);
+  gl.activeTexture(gl.TEXTURE0);
+  u1i(bgProg, "uColor", 0);
+  u1i(bgProg, "uDepth", 1);
+  u1i(bgProg, "uSpinMask", 2);
+  u1f(bgProg, "uViewAspect", viewAspect);
+  u1f(bgProg, "uImgAspect", imgAspect);
+  u1f(bgProg, "uZoom", cam.zoom);
+  u1f(bgProg, "uParallax", parallax);
+  u1f(bgProg, "uAngle", cam.angle);
+  u1f(bgProg, "uCover", cover);
+  u2f(bgProg, "uCenter", cam.cx, cam.cy);
+  u2f(bgProg, "uTilt", bgTiltX, bgTiltY);
+  u1f(bgProg, "uDepthRange", depthRange);
+  // Bikubisch abtasten, sobald die Textur vergrößert dargestellt wird
+  const texH = state.texColorH || 2048;
+  const magnify = (cover * cam.zoom * fbScene.h) / texH;
+  u2f(bgProg, "uColorTexel", 1 / (state.texColorW || 2048), 1 / texH);
+  u1f(bgProg, "uBicubic", magnify > 1.05 ? 1 : 0);
+  // Galaxien-Rotation (te-basiert -> im Loop-Modus nahtlos hin & zurück)
+  u1f(bgProg, "uSpinAngle", state.spinSpeed * Math.PI / 180 * cam.te);
+  u2f(bgProg, "uSpinCenter", state.spinCenter.x, state.spinCenter.y);
+  u1f(bgProg, "uSpinRadius", Math.max(0.02, (state.spinRadius / 100) * 0.75));
+  u1f(bgProg, "uSpinDiff", state.spinDiff / 100);
+  const spinTiltRad = state.spinTilt * Math.PI / 180;
+  u3f(bgProg, "uSpinEll", Math.cos(spinTiltRad), Math.sin(spinTiltRad), 1 - (state.spinFlat / 100) * 0.7);
+  // Masken-Vorschau nie im Export; im "Zentrum setzen"-Modus automatisch an
+  u1f(bgProg, "uSpinShow", (state.spinShow || state.spinPick) && !state.exporting ? 1 : 0);
+  u1f(bgProg, "uSpinMaskAmt", texSpinMask ? state.spinMaskAmt / 100 : 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // Bewegungsgrößen numerisch aus der Kamerakurve ableiten (für die
+  // Geschwindigkeits-Streifen der Sterne und die Composite-Unschärfe)
+  const dt = 0.05;
+  const cam2 = camAt(Math.min(loopT + dt, state.duration));
+
+  // "Nur Sterne"-Unschärfe: Sterne als Geschwindigkeits-Streifen in eine
+  // eigene Ebene rendern – Streifenlänge pro Stern nach seiner echten
+  // Bildschirmgeschwindigkeit (nahe Sterne lang, ferne fast punktförmig)
+  const splitBlur = state.mblurStars && state.mblur > 0 && state.starCount > 0;
+  const tilt2X = (state.tiltX / 100) * 0.08 + cam2.tiltAddX;
+  const tilt2Y = (state.tiltY / 100) * 0.08 + cam2.tiltAddY;
+  const starTilt2X = tilt2X + cam2.driftTX * drKStar;
+  const starTilt2Y = tilt2Y + cam2.driftTY * drKStar;
+
+  if (state.starCount > 0) {
+    if (splitBlur) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbStars.fb);
+      gl.viewport(0, 0, fbStars.w, fbStars.h);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+    }
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);
+    gl.useProgram(starProg);
+    gl.bindVertexArray(starVao);
+    u1f(starProg, "uViewAspect", viewAspect);
+    u1f(starProg, "uZoom", cam.zoom);
+    u1f(starProg, "uParallax", parallax);
+    u1f(starProg, "uAngle", cam.angle);
+    u1f(starProg, "uCover", cover);
+    u1f(starProg, "uPixelsY", fbScene.h);
+    u1f(starProg, "uTime", cam.te); // effektive Flugzeit: im Loop-Modus nahtlos
+    u1f(starProg, "uSeed", state.seed);
+    u1f(starProg, "uStarBase", state.starDist / 100);
+    u1f(starProg, "uSpread", (state.spread / 100) * 1.15);
+    u1f(starProg, "uLayers", state.starLayers);
+    u1f(starProg, "uStarPar", state.starPar / 100);
+    u1f(starProg, "uTwinkle", state.twinkle / 100);
+    u1f(starProg, "uTwSpeed", state.twinkleSpeed / 100);
+    u1f(starProg, "uWarp", warp);
+    u1f(starProg, "uDepthRange", depthRange);
+    u1f(starProg, "uStarSize", state.starSize / 100);
+    u1f(starProg, "uStarBright", state.starBright / 100);
+    u1f(starProg, "uStarSat", state.starSat / 100);
+    u2f(starProg, "uCenter", cam.cx, cam.cy);
+    u2f(starProg, "uTilt", starTiltX, starTiltY);
+    u1f(starProg, "uZoom2", cam2.zoom);
+    u1f(starProg, "uAngle2", cam2.angle);
+    u2f(starProg, "uCenter2", cam2.cx, cam2.cy);
+    u2f(starProg, "uTilt2", starTilt2X, starTilt2Y);
+    u1f(starProg, "uStreak", splitBlur ? (state.mblur / 100) / dt : 0);
+    u1f(starProg, "uGaiaAmt", state.gaiaAmt / 100);
+    u1f(starProg, "uGaiaOnly", state.gaiaOnly && state.gaiaDepth ? 1 : 0);
+    gl.drawArrays(gl.POINTS, 0, state.starCount);
+    gl.disable(gl.BLEND);
+  }
+
+  // ---- Pass 2: Bloom (Viertelauflösung) ----
+  // Sanfter als früher: die niedrigere Bright-Pass-Schwelle bringt die
+  // Empfindlichkeit, die Stärke bleibt zurückhaltend
+  const bloomStrength = (state.bloom / 100) * 0.7;
+  if (bloomStrength > 0) {
+    gl.bindVertexArray(quadVao);
+    gl.activeTexture(gl.TEXTURE0);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbBloomA.fb);
+    gl.viewport(0, 0, fbBloomA.w, fbBloomA.h);
+    gl.useProgram(brightProg);
+    gl.bindTexture(gl.TEXTURE_2D, fbScene.tex);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, splitBlur ? fbStars.tex : texBlack);
+    gl.activeTexture(gl.TEXTURE0);
+    u1i(brightProg, "uScene", 0);
+    u1i(brightProg, "uStarsTex", 1);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    gl.useProgram(blurProg);
+    u1i(blurProg, "uScene", 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbBloomB.fb);
+    gl.bindTexture(gl.TEXTURE_2D, fbBloomA.tex);
+    u2f(blurProg, "uDir", 1 / fbBloomA.w, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbBloomA.fb);
+    gl.bindTexture(gl.TEXTURE_2D, fbBloomB.tex);
+    u2f(blurProg, "uDir", 0, 1 / fbBloomA.h);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  // ---- Pass 2b: weichgezeichnete Szene für "Klarheit" (Viertelauflösung) ----
+  const clarity = (state.clarity / 100) * 0.8;
+  if (clarity !== 0) {
+    gl.bindVertexArray(quadVao);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.useProgram(blurProg);
+    u1i(blurProg, "uScene", 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbSoftA.fb);
+    gl.viewport(0, 0, fbSoftA.w, fbSoftA.h);
+    gl.bindTexture(gl.TEXTURE_2D, fbScene.tex);
+    u2f(blurProg, "uDir", 2 / fbSoftA.w, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbSoftB.fb);
+    gl.bindTexture(gl.TEXTURE_2D, fbSoftA.tex);
+    u2f(blurProg, "uDir", 0, 2 / fbSoftA.h);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  // ---- Pass 2c: mittel weichgezeichnete Szene für "Struktur" (halbe Auflösung) ----
+  const structure = (state.structure / 100) * 0.9;
+  if (structure !== 0) {
+    gl.bindVertexArray(quadVao);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.useProgram(blurProg);
+    u1i(blurProg, "uScene", 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbMedA.fb);
+    gl.viewport(0, 0, fbMedA.w, fbMedA.h);
+    gl.bindTexture(gl.TEXTURE_2D, fbScene.tex);
+    u2f(blurProg, "uDir", 1 / fbMedA.w, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbMedB.fb);
+    gl.bindTexture(gl.TEXTURE_2D, fbMedA.tex);
+    u2f(blurProg, "uDir", 0, 1 / fbMedA.h);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  // ---- Pass 3: Composite auf den Bildschirm ----
+  const zoomRate = Math.log(cam2.zoom / cam.zoom) / dt + warp * 0.6;
+  const rotRate = (cam2.angle - cam.angle) / dt;
+  // Fahrt zum Ziel: Inhalt wandert entgegen der Zielrichtung über den Schirm
+  const panX = -(cam2.cx - cam.cx) / dt * cover * cam.zoom;
+  const panY = -(cam2.cy - cam.cy) / dt * cover * cam.zoom;
+  // gleiche inverse Rotation wie im Stern-Shader (Bildebene -> Canvas)
+  const rc = Math.cos(cam.angle), rs = Math.sin(cam.angle);
+  const pvx = rc * panX - rs * panY;
+  const pvy = rs * panX + rc * panY;
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, w, h);
+  gl.useProgram(compProg);
+  gl.bindVertexArray(quadVao);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, fbScene.tex);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, fbBloomA.tex);
+  gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, clarity !== 0 ? fbSoftB.tex : fbScene.tex);
+  gl.activeTexture(gl.TEXTURE3);
+  gl.bindTexture(gl.TEXTURE_2D, structure !== 0 ? fbMedB.tex : fbScene.tex);
+  gl.activeTexture(gl.TEXTURE4);
+  gl.bindTexture(gl.TEXTURE_2D, splitBlur ? fbStars.tex : texBlack);
+  u1i(compProg, "uScene", 0);
+  u1i(compProg, "uBloom", 1);
+  u1i(compProg, "uSoft", 2);
+  u1i(compProg, "uMed", 3);
+  u1i(compProg, "uStarsTex", 4);
+  u1f(compProg, "uSplit", splitBlur ? 1 : 0);
+  u1f(compProg, "uViewAspect", viewAspect);
+  u1f(compProg, "uBloomStrength", bloomStrength);
+  u1f(compProg, "uShutter", (state.mblur / 100) * 1.5);
+  u1f(compProg, "uZoomRate", zoomRate);
+  u1f(compProg, "uRotRate", rotRate);
+  u2f(compProg, "uPanVel", pvx, pvy);
+  u1f(compProg, "uChroma", warp * 0.5);
+  u1f(compProg, "uVignette", state.vignette / 100);
+  u1f(compProg, "uFade", fade);
+  u1f(compProg, "uExposure", (state.exposure / 100) * 2);
+  u1f(compProg, "uContrast", 1 + (state.contrast / 100) * 0.6);
+  u1f(compProg, "uSaturation", 1 + state.saturation / 100);
+  u1f(compProg, "uClarity", clarity);
+  u1f(compProg, "uStructure", structure);
+  u1f(compProg, "uSharpen", (state.sharpen / 100) * 1.2);
+  u2f(compProg, "uTexel", 1 / fbScene.w, 1 / fbScene.h);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // Transport-UI
+  const prog = (loopT / state.duration) * 100;
+  $("timelineFill").style.width = prog + "%";
+  $("timecode").textContent = loopT.toFixed(1) + " s";
+}
+
+function frame() {
+  if (!state.offlineExport) render();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ---------------------------------------------------------------- Canvas-Größe
+
+function fitCanvas() {
+  if (state.exporting) return;
+  const wrap = $("canvasWrap");
+  // Mobil (schmale Bildschirme) nutzt die Vorschau immer die volle Fläche
+  const mobile = window.innerWidth <= 820;
+  const scaleView = (mobile ? 100 : state.viewScale) / 100;
+  const availW = (wrap.clientWidth - 36) * scaleView;
+  const availH = (wrap.clientHeight - 36) * scaleView;
+  let w = availW, h = w / state.aspect;
+  if (h > availH) { h = availH; w = h * state.aspect; }
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  canvas.style.width = Math.round(w) + "px";
+  canvas.style.height = Math.round(h) + "px";
+}
+window.addEventListener("resize", fitCanvas);
+fitCanvas();
+
+// ---------------------------------------------------------------- UI-Verdrahtung
+
+function bindSlider(id, outId, key, fmt) {
+  const el = $(id), out = $(outId);
+  el.addEventListener("input", () => {
+    const v = parseFloat(el.value);
+    state[key] = v;
+    out.textContent = fmt(v);
+  });
+  out.textContent = fmt(parseFloat(el.value));
+}
+
+const asInt = (v) => String(v);
+const asPct = (v) => v + " %";
+bindSlider("ctlZoom", "outZoom", "zoomBase", (v) => v.toFixed(2) + "×");
+bindSlider("ctlSpeed", "outSpeed", "speed", asInt);
+bindSlider("ctlEase", "outEase", "ease", asInt);
+bindSlider("ctlParallax", "outParallax", "parallax", asInt);
+bindSlider("ctlDepthBoost", "outDepthBoost", "depthBoost", asInt);
+bindSlider("ctlRotation", "outRotation", "rotationSpeed", (v) => v.toFixed(1) + " °/s");
+bindSlider("ctlOrient", "outOrient", "orientation", (v) => v + "°");
+bindSlider("ctlFrameX", "outFrameX", "frameX", asInt);
+bindSlider("ctlFrameY", "outFrameY", "frameY", asInt);
+bindSlider("ctlSpinSpeed", "outSpinSpeed", "spinSpeed", (v) => v.toFixed(1) + " °/s");
+bindSlider("ctlSpinRadius", "outSpinRadius", "spinRadius", asInt);
+bindSlider("ctlSpinDiff", "outSpinDiff", "spinDiff", asInt);
+bindSlider("ctlSpinFlat", "outSpinFlat", "spinFlat", asInt);
+bindSlider("ctlSpinTilt", "outSpinTilt", "spinTilt", (v) => v + "°");
+bindSlider("ctlSpinMaskAmt", "outSpinMaskAmt", "spinMaskAmt", asInt);
+
+let spinMaskTimer = null;
+$("ctlSpinMaskSmooth").addEventListener("input", () => {
+  state.spinMaskSmooth = parseInt($("ctlSpinMaskSmooth").value, 10);
+  $("outSpinMaskSmooth").textContent = state.spinMaskSmooth;
+  clearTimeout(spinMaskTimer);
+  spinMaskTimer = setTimeout(buildSpinMask, 200);
+});
+bindSlider("ctlTiltX", "outTiltX", "tiltX", asInt);
+bindSlider("ctlTiltY", "outTiltY", "tiltY", asInt);
+bindSlider("ctlSwayAmp", "outSwayAmp", "swayAmp", asInt);
+bindSlider("ctlSwayTempo", "outSwayTempo", "swayTempo", asInt);
+bindSlider("ctlDuration", "outDuration", "duration", (v) => v + " s");
+bindSlider("ctlSpread", "outSpread", "spread", asInt);
+bindSlider("ctlStarDist", "outStarDist", "starDist", asInt);
+bindSlider("ctlTwinkle", "outTwinkle", "twinkle", asInt);
+bindSlider("ctlTwinkleSpeed", "outTwinkleSpeed", "twinkleSpeed", asPct);
+bindSlider("ctlStarSize", "outStarSize", "starSize", asPct);
+bindSlider("ctlStarBright", "outStarBright", "starBright", asPct);
+bindSlider("ctlStarSat", "outStarSat", "starSat", asPct);
+bindSlider("ctlLayers", "outLayers", "starLayers", (v) => v === 0 ? "∞" : String(v));
+bindSlider("ctlStarPar", "outStarPar", "starPar", asPct);
+bindSlider("ctlSwayDir", "outSwayDir", "swayDir", (v) => v + "°");
+bindSlider("ctlSwayRandom", "outSwayRandom", "swayRandom", asInt);
+bindSlider("ctlTiltRamp", "outTiltRamp", "tiltRampAmp", asInt);
+bindSlider("ctlTiltRampDir", "outTiltRampDir", "tiltRampDir", (v) => v + "°");
+bindSlider("ctlFade", "outFade", "fade", (v) => (v / 10).toFixed(1) + " s");
+bindSlider("ctlDriftDir", "outDriftDir", "driftDir", (v) => v + "°");
+
+$("ctlEaseMode").addEventListener("change", () => {
+  state.easeMode = $("ctlEaseMode").value;
+});
+
+$("ctlFlightMode").addEventListener("change", () => {
+  state.flightMode = $("ctlFlightMode").value;
+  $("driftRow").hidden = state.flightMode !== "lateral";
+  state.t0 = performance.now();
+  state.pausedAt = 0;
+});
+
+let genTimer = null;
+$("ctlGenStars").addEventListener("input", () => {
+  state.genStars = parseInt($("ctlGenStars").value, 10);
+  $("outGenStars").textContent = String(state.genStars);
+  clearTimeout(genTimer);
+  genTimer = setTimeout(uploadStars, 120);
+});
+
+let stretchTimer = null;
+$("ctlStretch").addEventListener("input", () => {
+  state.stretchAmount = parseInt($("ctlStretch").value, 10);
+  $("outStretch").textContent = state.stretchAmount;
+  clearTimeout(stretchTimer);
+  stretchTimer = setTimeout(() => {
+    if (state.starsOriginal && !state.maskStretched) processStarMask();
+  }, 400);
+});
+bindSlider("ctlBloom", "outBloom", "bloom", asInt);
+bindSlider("ctlMblur", "outMblur", "mblur", asInt);
+bindSlider("ctlWarp", "outWarp", "warp", asInt);
+bindSlider("ctlVignette", "outVignette", "vignette", asInt);
+bindSlider("ctlExposure", "outExposure", "exposure", asInt);
+bindSlider("ctlContrast", "outContrast", "contrast", asInt);
+bindSlider("ctlSaturation", "outSaturation", "saturation", asInt);
+bindSlider("ctlClarity", "outClarity", "clarity", asInt);
+bindSlider("ctlStructure", "outStructure", "structure", asInt);
+bindSlider("ctlSharpen", "outSharpen", "sharpen", asInt);
+
+$("ctlMblurStars").addEventListener("change", () => {
+  state.mblurStars = $("ctlMblurStars").checked;
+});
+
+// Rotationszentrum der Galaxie: nächster Klick in die Vorschau setzt es
+$("ctlSpinShow").addEventListener("change", () => {
+  state.spinShow = $("ctlSpinShow").checked;
+});
+
+$("btnSpinCenter").addEventListener("click", () => {
+  state.spinPick = !state.spinPick;
+  $("btnSpinCenter").classList.toggle("active", state.spinPick);
+});
+
+$("ctlLoop").addEventListener("change", () => {
+  state.loopMode = $("ctlLoop").checked;
+  state.t0 = performance.now();
+  state.pausedAt = 0;
+});
+
+// ---- Cineastische Presets (Effekte + Look) ----
+
+const PRESET_SLIDERS = {
+  bloom: "ctlBloom", mblur: "ctlMblur", warp: "ctlWarp", vignette: "ctlVignette",
+  exposure: "ctlExposure", contrast: "ctlContrast", saturation: "ctlSaturation",
+  clarity: "ctlClarity", structure: "ctlStructure", sharpen: "ctlSharpen",
+};
+
+const PRESETS = {
+  // alles neutral / aus
+  neutral:   { bloom: 0,  mblur: 0,  warp: 0,  vignette: 0,  exposure: 0,   contrast: 0,  saturation: 0,    clarity: 0,   structure: 0,  sharpen: 0 },
+  // klassischer Kino-Look: sanfter Glow, Filmkorn-freier Kontrast, Vignette
+  kino:      { bloom: 35, mblur: 35, warp: 0,  vignette: 35, exposure: 5,   contrast: 18, saturation: 8,    clarity: 15,  structure: 10, sharpen: 10 },
+  // dunkel, entsättigt, hoher Kontrast – bedrohlich-episch
+  deepspace: { bloom: 25, mblur: 20, warp: 0,  vignette: 50, exposure: -12, contrast: 28, saturation: -18,  clarity: 25,  structure: 20, sharpen: 10 },
+  // träumerischer Orton-Glow, weiche Nebel, kräftige Farben
+  glow:      { bloom: 75, mblur: 30, warp: 0,  vignette: 25, exposure: 8,   contrast: -8, saturation: 15,   clarity: -35, structure: -10, sharpen: 0 },
+  // dramatisches Schwarzweiß
+  mono:      { bloom: 30, mblur: 25, warp: 0,  vignette: 45, exposure: 0,   contrast: 30, saturation: -100, clarity: 35,  structure: 25, sharpen: 15 },
+  // Hyperraum: Warp + starke Bewegungsunschärfe
+  hyper:     { bloom: 55, mblur: 65, warp: 70, vignette: 30, exposure: 5,   contrast: 12, saturation: 10,   clarity: 10,  structure: 5,  sharpen: 0 },
+};
+
+$("ctlPreset").addEventListener("change", () => {
+  const preset = PRESETS[$("ctlPreset").value];
+  if (!preset) return;
+  for (const [key, id] of Object.entries(PRESET_SLIDERS)) {
+    const el = $(id);
+    el.value = preset[key];
+    el.dispatchEvent(new Event("input"));
+  }
+});
+
+let smoothTimer = null;
+$("ctlSmooth").addEventListener("input", () => {
+  state.smooth = parseInt($("ctlSmooth").value, 10);
+  $("outSmooth").textContent = state.smooth;
+  clearTimeout(smoothTimer);
+  smoothTimer = setTimeout(buildDepthMap, 200);
+});
+$("ctlInvert").addEventListener("change", () => {
+  state.invertDepth = $("ctlInvert").checked;
+  buildDepthMap();
+});
+
+$("btnShuffle").addEventListener("click", () => {
+  state.seed = Math.random() * 1000;
+  if (state.genStars > 0) uploadStars(); // generierte Sterne neu würfeln
+});
+
+// Format
+$("aspectBtns").addEventListener("click", (e) => {
+  const btn = e.target.closest("button");
+  if (!btn) return;
+  for (const b of $("aspectBtns").children) b.classList.remove("active");
+  btn.classList.add("active");
+  const [aw, ah] = btn.dataset.aspect.split(":").map(Number);
+  state.aspect = aw / ah;
+  state.aspectName = btn.dataset.aspect;
+  fitCanvas();
+});
+
+// Zoomziel-Anzeige (sprachabhängig, wird bei Sprachwechsel aktualisiert)
+function updateTargetInfo() {
+  const el = $("targetInfo");
+  if (!state.starless || (state.target.x === 0 && state.target.y === 0)) {
+    el.setAttribute("data-i18n", "targetCenter");
+    el.textContent = t("targetCenter");
+  } else {
+    el.removeAttribute("data-i18n");
+    const imgAspect = state.starless.width / state.starless.height;
+    el.textContent = t("targetAt",
+      (state.target.x / imgAspect * 100 + 50).toFixed(0),
+      (50 - state.target.y * 100).toFixed(0));
+  }
+}
+I18N.onChange.push(updateTargetInfo);
+
+// ------------------------------------------ Echte Tiefen (Gaia): Bedienung
+
+bindSlider("ctlGaiaAmt", "outGaiaAmt", "gaiaAmt", (v) => v + " %");
+
+// Statuszeile: transienter Text (Laden/Fehler) oder Zustand aus state
+let gaiaTransient = null; // { key, args } | null
+function updateGaiaStatus() {
+  const el = $("gaiaStatus");
+  if (!el) return;
+  $("btnGaia").disabled = !(state.wcs && state.maskStarCount > 0);
+
+  // Wissenschafts-Modus erst ab 75 % Erkennungsrate freischalten
+  const g = state.gaiaDepth && state.gaiaInfo ? state.gaiaInfo : null;
+  const pct = g ? Math.round((g.matched / Math.max(1, g.total)) * 100) : 0;
+  const sciAllowed = pct >= 75;
+  $("ctlGaiaOnly").disabled = !sciAllowed;
+  if (!sciAllowed && state.gaiaOnly) {
+    state.gaiaOnly = false;
+    $("ctlGaiaOnly").checked = false;
+  }
+
+  if (gaiaTransient) { el.textContent = t(gaiaTransient.key, ...gaiaTransient.args); return; }
+  if (g) {
+    el.textContent = t("gaiaResult", g.matched, g.total, pct, g.dMin, g.dMax) +
+      (sciAllowed ? "" : " " + t("gaiaSciLocked"));
+  } else if (state.wcs) {
+    el.textContent = t("gaiaWcsOk", state.wcs._name || "WCS");
+  } else {
+    el.textContent = t("gaiaIdle");
+  }
+}
+I18N.onChange.push(updateGaiaStatus);
+
+$("btnGaiaHelp").addEventListener("click", () => {
+  $("gaiaHelp").hidden = !$("gaiaHelp").hidden;
+});
+
+$("ctlGaiaOnly").addEventListener("change", () => {
+  state.gaiaOnly = $("ctlGaiaOnly").checked;
+});
+
+$("btnWcs").addEventListener("click", () => $("fileWcs").click());
+$("fileWcs").addEventListener("change", async () => {
+  const file = $("fileWcs").files[0];
+  if (!file) return;
+  gaiaTransient = null;
+  try {
+    // Nur die ersten Header-Blöcke lesen (reicht für die WCS-Keywords)
+    const head = new Uint8Array(await file.slice(0, 57600).arrayBuffer());
+    const wcs = parseWcsHeader(head);
+    wcs._name = file.name;
+    state.wcs = wcs;
+    state.gaiaDepth = null; state.gaiaInfo = null;
+    uploadStars();
+  } catch (e) {
+    state.wcs = null;
+    gaiaTransient = { key: "gaiaWcsErr", args: [] };
+  }
+  updateGaiaStatus();
+  $("fileWcs").value = "";
+});
+
+$("btnGaia").addEventListener("click", async () => {
+  if (!state.wcs || !state.maskStarCount) return;
+  const wcs = state.wcs;
+  const nax1 = wcs.naxis1 || state.stars.width, nax2 = wcs.naxis2 || state.stars.height;
+  const c = wcsPix2Sky(wcs, nax1 / 2, nax2 / 2);
+  // Radius: halbe Bilddiagonale plus etwas Reserve
+  const corner = wcsPix2Sky(wcs, 1, 1);
+  const radius = Math.min(6, angSep(c.ra, c.dec, corner.ra, corner.dec) * 1.1 + 0.02);
+  gaiaTransient = { key: "gaiaQuerying", args: [] };
+  updateGaiaStatus();
+  $("btnGaia").disabled = true;
+  try {
+    const stars = await queryGaia(c.ra, c.dec, radius);
+    gaiaTransient = null;
+    const info = matchGaia(stars);
+    if (!info) gaiaTransient = { key: "gaiaNoMatch", args: [] };
+  } catch (e) {
+    gaiaTransient = { key: "gaiaNetErr", args: [] };
+  }
+  updateGaiaStatus();
+});
+
+// Zoomziel per Klick in die Vorschau
+canvas.addEventListener("click", (e) => {
+  if (!state.starless || state.exporting) return;
+  const rect = canvas.getBoundingClientRect();
+  const fx = (e.clientX - rect.left) / rect.width;
+  const fy = (e.clientY - rect.top) / rect.height;
+  // Canvas-Punkt -> Bildebene mit der aktuellen Kamera (neutrale Tiefe)
+  const { cam } = animParams(currentTime());
+  const px = (fx - 0.5) * state.aspect;
+  const py = (0.5 - fy);
+  const c = Math.cos(cam.angle), s = Math.sin(cam.angle);
+  const rx = c * px + s * py;   // R(a) wie im Shader (mat2 ist spaltenweise)
+  const ry = -s * px + c * py;
+  const imgAspect = state.starless.width / state.starless.height;
+  const cover = Math.max(state.aspect / imgAspect, 1) * 1.02;
+  // Fixpunkt-Iteration wie im Shader: die Tiefe des angeklickten Objekts
+  // bestimmt seine effektive Zoomrate, sonst trifft der Klick daneben
+  const parallax = state.parallax / 100;
+  const depthRange = 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
+  let qx = cam.cx + rx / (cover * cam.zoom);
+  let qy = cam.cy + ry / (cover * cam.zoom);
+  for (let i = 0; i < 3; i++) {
+    const d = depthAtPlane(qx, qy, imgAspect);
+    const exD = 1 + parallax * (d - 0.45) * depthRange;
+    const sc = cover * Math.pow(cam.zoom, exD);
+    qx = cam.cx + rx / sc;
+    qy = cam.cy + ry / sc;
+  }
+  const clampedX = Math.min(imgAspect * 0.475, Math.max(-imgAspect * 0.475, qx));
+  const clampedY = Math.min(0.475, Math.max(-0.475, qy));
+  const wasSpinPick = state.spinPick;
+  if (state.spinPick) {
+    state.spinCenter = { x: clampedX, y: clampedY };
+    state.spinPick = false;
+    $("btnSpinCenter").classList.remove("active");
+  } else {
+    state.target.x = clampedX;
+    state.target.y = clampedY;
+    updateTargetInfo();
+  }
+
+  // Marker kurz einblenden
+  const marker = $("targetMarker");
+  marker.textContent = wasSpinPick ? "🌀" : "🎯";
+  marker.hidden = false;
+  marker.style.left = (canvas.offsetLeft + fx * rect.width) + "px";
+  marker.style.top = (canvas.offsetTop + fy * rect.height) + "px";
+  marker.style.animation = "none";
+  void marker.offsetWidth; // Animation neu starten
+  marker.style.animation = "";
+});
+canvas.addEventListener("dblclick", () => {
+  state.target.x = 0;
+  state.target.y = 0;
+  updateTargetInfo();
+});
+
+// Transport
+$("btnPlay").addEventListener("click", () => {
+  if (state.playing) {
+    state.pausedAt = currentTime();
+    state.playing = false;
+    $("btnPlay").textContent = "▶";
+  } else {
+    state.t0 = performance.now() - state.pausedAt * 1000;
+    state.playing = true;
+    $("btnPlay").textContent = "⏸";
+  }
+});
+$("btnRestart").addEventListener("click", () => {
+  state.t0 = performance.now();
+  state.pausedAt = 0;
+});
+$("timeline").addEventListener("click", (e) => {
+  const rect = $("timeline").getBoundingClientRect();
+  const f = (e.clientX - rect.left) / rect.width;
+  const t = f * state.duration;
+  state.t0 = performance.now() - t * 1000;
+  state.pausedAt = t;
+});
+
+// ---------------------------------------------------------------- Dateien laden
+
+async function loadFile(which, file) {
+  const status = $("loadStatus");
+  status.classList.remove("error");
+  status.textContent = t("loading", file.name);
+  try {
+    const img = await decodeFile(file);
+    if (which === "starless") {
+      state.starless = img;
+      $("nameStarless").removeAttribute("data-i18n");
+      $("nameStarless").textContent = `${file.name} (${img.width}×${img.height})`;
+      $("dropStarless").classList.add("loaded");
+      if (texColor) gl.deleteTexture(texColor);
+      const colSrc = downscale(img, 4096);
+      texColor = makeTexture(colSrc);
+      state.texColorW = colSrc.width;
+      state.texColorH = colSrc.height;
+      buildDepthMap();
+      buildSpinMask();
+      // generierte Sterne nutzen das Seitenverhältnis des Starless-Bildes
+      if (state.genStars > 0) uploadStars();
+      // Export-Dateiname vom Bildnamen ableiten (bleibt überschreibbar)
+      $("ctlFilename").placeholder = deriveExportName();
+    } else {
+      state.starsOriginal = img;
+      $("nameStars").removeAttribute("data-i18n");
+      $("nameStars").textContent = `${file.name} (${img.width}×${img.height})`;
+      $("dropStars").classList.add("loaded");
+      processStarMask();
+    }
+    if (state.starless) {
+      $("placeholder").style.display = "none";
+      $("btnExport").disabled = false;
+      state.t0 = performance.now();
+      if (which === "starless") status.textContent = t("starlessLoaded");
+    }
+  } catch (err) {
+    console.error(err);
+    status.classList.add("error");
+    status.textContent = t("loadFailed", file.name, err.message);
+  }
+}
+
+// Demo-Bilder (Orionnebel, aufgenommen von Michael Döhler) aus dem Repo laden –
+// so kann jeder die App sofort ausprobieren, auch ohne eigene Dateien
+$("btnDemo").addEventListener("click", async () => {
+  const status = $("loadStatus");
+  status.classList.remove("error");
+  status.textContent = t("demoLoading");
+  $("btnDemo").disabled = true;
+  try {
+    const fetchImg = async (url, name) => {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return new File([await r.blob()], name, { type: "image/jpeg" });
+    };
+    const starless = await fetchImg("demo/orion_starless.jpg", "orion_demo.jpg");
+    const stars = await fetchImg("demo/orion_starmask.jpg", "orion_demo_starmask.jpg");
+    await loadFile("starless", starless);
+    await loadFile("stars", stars);
+    status.textContent = t("demoLoaded", state.starCount);
+  } catch (err) {
+    console.error(err);
+    status.classList.add("error");
+    status.textContent = location.protocol === "file:"
+      ? t("demoNeedsHttp") : t("demoFailed", err.message);
+  } finally {
+    $("btnDemo").disabled = false;
+  }
+});
+
+$("fileStarless").addEventListener("change", (e) => {
+  if (e.target.files[0]) loadFile("starless", e.target.files[0]);
+});
+$("fileStars").addEventListener("change", (e) => {
+  if (e.target.files[0]) loadFile("stars", e.target.files[0]);
+});
+
+// Drag & Drop auf die Buttons und die Bühne
+for (const [zone, which] of [["dropStarless", "starless"], ["dropStars", "stars"]]) {
+  const el = $(zone);
+  el.addEventListener("dragover", (e) => { e.preventDefault(); el.classList.add("dragover"); });
+  el.addEventListener("dragleave", () => el.classList.remove("dragover"));
+  el.addEventListener("drop", (e) => {
+    e.preventDefault();
+    el.classList.remove("dragover");
+    if (e.dataTransfer.files[0]) loadFile(which, e.dataTransfer.files[0]);
+  });
+}
+const stage = $("stage");
+stage.addEventListener("dragover", (e) => e.preventDefault());
+stage.addEventListener("drop", (e) => {
+  e.preventDefault();
+  const files = [...e.dataTransfer.files];
+  if (files[0]) loadFile("starless", files[0]);
+  if (files[1]) loadFile("stars", files[1]);
+});
+
+// ---------------------------------------------------------------- Export
+
+function exportDims() {
+  const base = parseInt($("ctlRes").value, 10); // kurze Kante
+  let w, h;
+  if (state.aspect >= 1) { h = base; w = Math.round(base * state.aspect); }
+  else { w = base; h = Math.round(base / state.aspect); }
+  return [w & ~1, h & ~1];
+}
+
+function pickMime() {
+  if (typeof MediaRecorder === "undefined") return "";
+  const candidates = [
+    "video/mp4;codecs=avc1",
+    "video/mp4",
+    "video/webm;codecs=vp9",
+    "video/webm;codecs=vp8",
+    "video/webm",
+  ];
+  for (const m of candidates) {
+    if (MediaRecorder.isTypeSupported(m)) return m;
+  }
+  return "";
+}
+
+function saveBlob(blob, filename) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 30_000);
+}
+
+function beginExport(w, h) {
+  state.exporting = true;
+  canvas.width = w;
+  canvas.height = h;
+  $("btnExport").disabled = true;
+  $("exportProgressWrap").hidden = false;
+  $("exportProgress").style.width = "0%";
+}
+
+function endExport(message) {
+  state.exporting = false;
+  state.offlineExport = false;
+  $("btnExport").disabled = false;
+  $("exportProgressWrap").hidden = true;
+  fitCanvas();
+  state.t0 = performance.now();
+  $("exportStatus").textContent = message;
+}
+
+/** Basisnamen aus dem Starless-Dateinamen ableiten ("orion_starless.tif" -> "orion"). */
+function deriveExportName() {
+  const n = (state.starless && state.starless.name) || "";
+  let base = n.replace(/\.[a-z0-9]+(\s*×3)?$/i, "");
+  base = base.replace(/star_?less|sternlos/gi, "");
+  base = base.replace(/[-_ .]{2,}/g, "_").replace(/^[-_ .]+|[-_ .]+$/g, "");
+  return base || "astrofly";
+}
+
+function exportFilename(ext) {
+  const custom = $("ctlFilename").value.trim().replace(/[\\/:*?"<>|]/g, "");
+  const base = custom || deriveExportName();
+  return `${base}_${state.aspectName.replace(":", "x")}_${state.duration}s.${ext}`;
+}
+
+/**
+ * Bevorzugter Weg: deterministischer Offline-Export über WebCodecs.
+ * Jedes Frame wird einzeln gerendert und kodiert – das Ergebnis ist auch
+ * dann flüssig (30 fps), wenn der Rechner nicht in Echtzeit rendern kann.
+ * Gibt false zurück, wenn WebCodecs/H.264 nicht verfügbar ist.
+ */
+// Safari/WebKit: Der WebCodecs-Export erzeugt dort MP4s mit fehlerhaften
+// Metadaten (Schnitt-Apps wie Instagram Edits zeigen nur ein Standbild) und
+// kann die Seite sogar zum Absturz bringen. Safari nimmt deshalb immer den
+// bewährten MediaRecorder-Weg – der liefert dort saubere H.264-MP4s.
+const IS_SAFARI = /apple/i.test(navigator.vendor || "") &&
+  !/crios|fxios|chrome|edg/i.test(navigator.userAgent);
+
+// In-App-Browser (Instagram, Facebook, TikTok & Co.): deren WebView kann
+// Blob-Downloads nicht speichern – der Export liefe am Ende ins Leere
+// ("Seite kann nicht geladen werden"). Wir warnen früh und blocken den Export.
+const IS_INAPP = /instagram|fban|fbav|fbios|fb_iab|tiktok|musical_ly|snapchat|line\//i
+  .test(navigator.userAgent);
+
+async function exportOffline(w, h, fps) {
+  if (typeof VideoEncoder === "undefined" || IS_SAFARI) return false;
+
+  // Codec-Kandidaten: H.264 in MP4 (Chrome/Edge), sonst VP9/VP8 in WebM
+  const bitrate = Math.min(50_000_000, Math.round(w * h * fps * 0.12));
+  const candidates = [];
+  if (typeof Mp4Muxer !== "undefined") {
+    candidates.push({ codec: (w > 1920 || h > 1920) ? "avc1.640033" : "avc1.640028", container: "mp4" });
+  }
+  if (typeof WebMMuxer !== "undefined") {
+    candidates.push({ codec: "vp09.00.41.08", container: "webm" });
+    candidates.push({ codec: "vp8", container: "webm" });
+  }
+
+  let config = null, container = null;
+  for (const cand of candidates) {
+    const c = {
+      codec: cand.codec, width: w, height: h, framerate: fps,
+      bitrate, latencyMode: "quality",
+    };
+    try {
+      const support = await VideoEncoder.isConfigSupported(c);
+      if (support.supported) { config = c; container = cand.container; break; }
+    } catch { /* Kandidat nicht unterstützt */ }
+  }
+  if (!config) return false;
+
+  beginExport(w, h);
+  state.offlineExport = true;
+  const status = $("exportStatus");
+  status.textContent = t("renderingOffline", w, h, state.duration);
+
+  const muxer = container === "mp4"
+    ? new Mp4Muxer.Muxer({
+        target: new Mp4Muxer.ArrayBufferTarget(),
+        video: { codec: "avc", width: w, height: h },
+        fastStart: "in-memory",
+      })
+    : new WebMMuxer.Muxer({
+        target: new WebMMuxer.ArrayBufferTarget(),
+        video: { codec: config.codec.startsWith("vp09") ? "V_VP9" : "V_VP8", width: w, height: h, frameRate: fps },
+      });
+  let encodeError = null;
+  const encoder = new VideoEncoder({
+    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+    error: (e) => { encodeError = e; },
+  });
+  encoder.configure(config);
+
+  const totalFrames = Math.round(state.duration * fps);
+  try {
+    for (let i = 0; i < totalFrames; i++) {
+      const t = i / fps;
+      render(t);
+      const vf = new VideoFrame(canvas, {
+        timestamp: Math.round(i * 1e6 / fps),
+        duration: Math.round(1e6 / fps),
+      });
+      encoder.encode(vf, { keyFrame: i % (fps * 3) === 0 });
+      vf.close();
+      if (encodeError) throw encodeError;
+
+      // Encoder nicht fluten und UI am Leben halten
+      while (encoder.encodeQueueSize > 8) {
+        await new Promise((r) => setTimeout(r, 4));
+      }
+      if (i % 3 === 0) {
+        $("exportProgress").style.width = ((i + 1) / totalFrames * 100).toFixed(1) + "%";
+        await new Promise((r) => setTimeout(r));
+      }
+    }
+    status.textContent = t("finalizing");
+    await encoder.flush();
+    muxer.finalize();
+    const blob = new Blob([muxer.target.buffer], { type: "video/" + container });
+    const name = exportFilename(container);
+    saveBlob(blob, name);
+    endExport(t("doneFps", name, (blob.size / 1e6).toFixed(1)));
+  } catch (err) {
+    console.error(err);
+    try { encoder.close(); } catch { /* bereits geschlossen */ }
+    endExport(t("exportFailed", err.message));
+  }
+  return true;
+}
+
+/** Fallback: Echtzeit-Aufnahme über MediaRecorder (WebM/MP4). */
+function exportRealtime(w, h, fps) {
+  const status = $("exportStatus");
+  const mime = pickMime();
+  if (!mime || typeof MediaRecorder === "undefined") {
+    status.textContent = t("noExportSupport");
+    return;
+  }
+
+  beginExport(w, h);
+  state.playing = true;
+  state.t0 = performance.now();
+  status.textContent = t("renderingRealtime", w, h, state.duration);
+
+  const stream = canvas.captureStream(fps);
+  const rec = new MediaRecorder(stream, {
+    mimeType: mime,
+    videoBitsPerSecond: Math.min(60_000_000, Math.round(w * h * fps * 0.15)),
+  });
+  const chunks = [];
+  rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+  rec.onstop = () => {
+    const ext = mime.startsWith("video/mp4") ? "mp4" : "webm";
+    const blob = new Blob(chunks, { type: mime.split(";")[0] });
+    const name = exportFilename(ext);
+    saveBlob(blob, name);
+    endExport(t("done", name, (blob.size / 1e6).toFixed(1)));
+  };
+
+  rec.start(250);
+  const tick = () => {
+    const t = (performance.now() - state.t0) / 1000;
+    $("exportProgress").style.width = Math.min(100, (t / state.duration) * 100) + "%";
+    if (t >= state.duration) rec.stop();
+    else if (state.exporting) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+$("btnExport").addEventListener("click", async () => {
+  if (state.exporting || !texColor) return;
+  if (IS_INAPP) {
+    // Nicht rendern lassen und dann am Speichern scheitern - klar sagen, warum
+    $("exportStatus").textContent = t("inappExport");
+    return;
+  }
+  const [w, h] = exportDims();
+  const fps = 30;
+  const usedOffline = await exportOffline(w, h, fps);
+  if (!usedOffline) exportRealtime(w, h, fps);
+});
+
+// Browser-Hinweis im Export-Panel: Safari nutzt den Kompatibilitätsmodus,
+// reine WebM-Browser (z. B. Firefox) bekommen eine MP4-Warnung
+(async () => {
+  const hint = $("exportBrowserHint");
+  if (IS_INAPP) {
+    hint.setAttribute("data-i18n", "inappExport");
+    hint.textContent = t("inappExport");
+    hint.hidden = false;
+    const banner = $("inappBanner");
+    banner.setAttribute("data-i18n", "inappExport");
+    banner.textContent = t("inappExport");
+    banner.hidden = false;
+    return;
+  }
+  if (IS_SAFARI) {
+    hint.setAttribute("data-i18n", "safariExport");
+    hint.textContent = t("safariExport");
+    hint.hidden = false;
+    return;
+  }
+  let mp4 = false;
+  if (typeof VideoEncoder !== "undefined" && typeof Mp4Muxer !== "undefined") {
+    try {
+      const s = await VideoEncoder.isConfigSupported({
+        codec: "avc1.640028", width: 1920, height: 1080, framerate: 30, bitrate: 8_000_000,
+      });
+      mp4 = !!s.supported;
+    } catch { /* bleibt false */ }
+  }
+  if (!mp4 && typeof MediaRecorder !== "undefined") {
+    mp4 = MediaRecorder.isTypeSupported("video/mp4;codecs=avc1") ||
+      MediaRecorder.isTypeSupported("video/mp4");
+  }
+  if (!mp4) {
+    hint.setAttribute("data-i18n", "webmExport");
+    hint.textContent = t("webmExport");
+    hint.hidden = false;
+  }
+})();
+
+// ---------------------------------------------------------------- Feedback
+
+const FEEDBACK_REPO = "https://github.com/michaeld1988/AstroFly";
+const FEEDBACK_MAIL = "mail@michaeldoehler.com";
+const INSTAGRAM_URL = "https://www.instagram.com/astrofly_app/";
+
+/** Technische Angaben für Bug-Reports (nur was der Browser ohnehin preisgibt). */
+function feedbackDiagnostics() {
+  let gpu = "unknown";
+  try {
+    const ext = gl.getExtension("WEBGL_debug_renderer_info");
+    if (ext) gpu = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
+  } catch { /* optional */ }
+  return [
+    "App: AstroFly (" + location.host + ")",
+    "Browser: " + navigator.userAgent,
+    "GPU: " + gpu,
+    "Language: " + I18N.lang,
+    "Screen: " + screen.width + "×" + screen.height,
+  ].join("\n");
+}
+
+$("btnFeedbackGithub").addEventListener("click", () => {
+  const body = t("feedbackBodyIntro") + "\n---\n" + feedbackDiagnostics();
+  const url = FEEDBACK_REPO + "/issues/new?title=" +
+    encodeURIComponent("[Feedback] ") + "&body=" + encodeURIComponent(body);
+  window.open(url, "_blank", "noopener");
+});
+
+$("btnInstagram").addEventListener("click", () => {
+  window.open(INSTAGRAM_URL, "_blank", "noopener");
+});
+
+$("btnFeedbackMail").addEventListener("click", () => {
+  const body = t("feedbackMailIntro") + "---\n" + feedbackDiagnostics();
+  location.href = "mailto:" + FEEDBACK_MAIL +
+    "?subject=" + encodeURIComponent("AstroFly Feedback") +
+    "&body=" + encodeURIComponent(body);
+});
+
+// ---------------------------------------------------------------- Hilfen
+
+/** Tiefe (0..1) an einem Punkt der Bildebene, aus der CPU-Kopie der Tiefenkarte. */
+function depthAtPlane(qx, qy, imgAspect) {
+  const dd = state.depthData;
+  if (!dd) return 0.45;
+  const u = Math.min(1, Math.max(0, qx / imgAspect + 0.5));
+  const v = Math.min(1, Math.max(0, qy + 0.5)); // Ebene ist y-up
+  const col = Math.round(u * (dd.w - 1));
+  const row = Math.round((1 - v) * (dd.h - 1));
+  return dd.data[(row * dd.w + col) * 4] / 255;
+}
+
+// Vorschaugröße (wird gespeichert)
+{
+  const saved = parseInt(localStorage.getItem("astrofly-viewscale"), 10);
+  if (saved >= 40 && saved <= 100) state.viewScale = saved;
+  const el = $("ctlViewSize");
+  el.value = state.viewScale;
+  el.addEventListener("input", () => {
+    state.viewScale = parseInt(el.value, 10);
+    localStorage.setItem("astrofly-viewscale", el.value);
+    fitCanvas();
+  });
+  fitCanvas();
+}
+
+// ---------------------------------------------------------------- Sternmasken-Streckung
+
+/**
+ * Iterative, farberhaltende Asinh-Streckung für lineare Sternmasken.
+ * Pro Durchgang wird die Luminanz moderat gestreckt (asinh) und RGB
+ * proportional skaliert, sodass die Sternfarben exakt erhalten bleiben.
+ * Gestoppt wird, sobald das 99,9-Perzentil der Luminanz das Ziel erreicht –
+ * bereits gestreckte Masken bleiben dadurch praktisch unverändert.
+ */
+function stretchStarMask(srcCanvas) {
+  const w = srcCanvas.width, h = srcCanvas.height;
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const cx = c.getContext("2d", { willReadFrequently: true });
+  cx.drawImage(srcCanvas, 0, 0);
+  const id = cx.getImageData(0, 0, w, h);
+  const d = id.data;
+  const n = w * h;
+
+  const K = 10;                    // moderate Stärke pro Durchgang
+  const denom = Math.asinh(K);
+  // Ziel-Perzentil aus der eingestellten Intensität (0..100 -> 0.12..0.6)
+  const TARGET = 0.12 + 0.0048 * state.stretchAmount;
+  const MAX_PASSES = 14;
+
+  let passes = 0;
+  while (passes < MAX_PASSES) {
+    const hist = new Uint32Array(256);
+    for (let j = 0; j < d.length; j += 4) {
+      hist[(d[j] * 77 + d[j + 1] * 150 + d[j + 2] * 29) >> 8]++;
+    }
+    let cum = 0, p999 = 1;
+    const cut = n * 0.999;
+    for (let v = 0; v < 256; v++) {
+      cum += hist[v];
+      if (cum >= cut) { p999 = v / 255; break; }
+    }
+    if (p999 >= TARGET) break;
+
+    for (let j = 0; j < d.length; j += 4) {
+      const L = (0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2]) / 255;
+      if (L <= 0) continue;
+      const scale = Math.asinh(K * L) / denom / L;
+      d[j]     = Math.min(255, d[j] * scale);
+      d[j + 1] = Math.min(255, d[j + 1] * scale);
+      d[j + 2] = Math.min(255, d[j + 2] * scale);
+    }
+    passes++;
+  }
+  if (passes > 0) cx.putImageData(id, 0, 0);
+  return { canvas: c, passes };
+}
+
+/** Sternmaske (neu) verarbeiten: optional strecken, dann Sterne extrahieren. */
+function processStarMask() {
+  const orig = state.starsOriginal;
+  if (!orig) return;
+  const status = $("loadStatus");
+  // Auf Arbeitsgröße verkleinern (dort findet auch die Sternerkennung statt)
+  const work = downscale(orig, 3000);
+  let passes = 0;
+  let canvas = work;
+  if (!state.maskStretched) {
+    const res = stretchStarMask(work);
+    canvas = res.canvas;
+    passes = res.passes;
+  }
+  state.stars = { canvas, width: canvas.width, height: canvas.height, name: orig.name };
+  buildStarBuffer();
+  status.classList.remove("error");
+  status.textContent = t("starsDetected", state.maskStarCount) +
+    (passes > 0 ? " " + t("stretchInfo", passes) : "");
+}
+
+$("ctlMaskStretched").addEventListener("change", () => {
+  state.maskStretched = $("ctlMaskStretched").checked;
+  if (state.starsOriginal) processStarMask();
+});
+
+// ---------------------------------------------------------------- Panel-Menüs
+
+// Sektionen einklappbar machen (Zustand wird gespeichert)
+for (const [i, sec] of document.querySelectorAll("#panel section").entries()) {
+  const h2 = sec.querySelector("h2");
+  if (!h2) continue;
+  const body = document.createElement("div");
+  body.className = "secbody";
+  while (h2.nextSibling) body.appendChild(h2.nextSibling);
+  sec.appendChild(body);
+  const key = "astrofly-sec-" + (h2.dataset.i18n || i);
+  const saved = localStorage.getItem(key);
+  const defaultOpen = i === 0 || i === 2; // Bilder laden + Kamera offen
+  const open = saved === null ? defaultOpen : saved === "1";
+  sec.classList.toggle("collapsed", !open);
+  h2.addEventListener("click", () => {
+    const collapsed = sec.classList.toggle("collapsed");
+    localStorage.setItem(key, collapsed ? "0" : "1");
+  });
+}
