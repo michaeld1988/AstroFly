@@ -218,6 +218,13 @@
         <span><span data-i18n="spinMaskSmooth">Brightness mask smoothing</span> <output id="outSpinMaskSmooth">6</output></span>
         <input type="range" id="ctlSpinMaskSmooth" min="2" max="60" step="1" value="6">
       </label>
+      <label class="check">
+        <input type="checkbox" id="ctlSpinStars">
+        <span data-i18n="spinStars">Rotate stars inside the spin region</span>
+      </label>
+      <p class="tip" data-i18n="spinStarsHint">Stars inside the spin area follow the galaxy's
+      rotation and stay locked to its structure. Note: foreground stars that just happen to sit
+      in front of the galaxy will rotate too – toggle as it suits your image.</p>
       <p class="tip" data-i18n="gaiaHint">⭐ Real star distances (Gaia): load a plate-solved
       version of your image (FITS from ASTAP, PixInsight or Siril, or a .wcs file from
       astrometry.net) – AstroFly then matches your detected stars against the ESA Gaia

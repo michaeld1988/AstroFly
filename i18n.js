@@ -66,6 +66,8 @@ const I18N = {
       spinTilt: "Ellipse angle",
       spinMaskAmt: "Brightness mask influence",
       spinMaskSmooth: "Brightness mask smoothing",
+      spinStars: "Rotate stars inside the spin region",
+      spinStarsHint: "Stars inside the spin area follow the galaxy's rotation and stay locked to its structure. Note: foreground stars that just happen to sit in front of the galaxy will rotate too – toggle as it suits your image.",
       gaiaHint: "⭐ Real star distances (Gaia): load a plate-solved version of your image (FITS from ASTAP, PixInsight or Siril, or a .wcs file from astrometry.net) – AstroFly then matches your detected stars against the ESA Gaia catalog and assigns each one its real measured distance. The 3D layers follow the actual depth of the sky. Requires an internet connection for the catalog query; only sky coordinates are transferred, never your image.",
       gaiaHelpBtn: "❓ Where do I get a plate-solved file?",
       gaiaHelpText: "A plate-solved file is your image with its sky position stored in the header – most astrophotographers already have one:<br><br>" +
@@ -216,6 +218,8 @@ const I18N = {
       spinTilt: "Ellipsen-Winkel",
       spinMaskAmt: "Helligkeitsmaske einbeziehen",
       spinMaskSmooth: "Glättung der Helligkeitsmaske",
+      spinStars: "Sterne im Rotationsbereich mitdrehen",
+      spinStarsHint: "Sterne im Rotationsbereich folgen der Galaxien-Drehung und bleiben an ihrer Stelle in der Struktur. Hinweis: Auch Vordergrundsterne, die nur zufällig vor der Galaxie stehen, drehen dann mit – je nach Bild ein- oder ausschalten.",
       gaiaHint: "⭐ Echte Sternentfernungen (Gaia): Lade eine geplatesolvte Version deines Bildes (FITS aus ASTAP, PixInsight oder Siril, oder eine .wcs-Datei von astrometry.net) – AstroFly gleicht die erkannten Sterne dann mit dem ESA-Gaia-Katalog ab und weist jedem seine echte gemessene Entfernung zu. Die 3D-Ebenen folgen der tatsächlichen Tiefe des Himmels. Für die Katalog-Abfrage ist eine Internetverbindung nötig; übertragen werden nur Himmelskoordinaten, nie dein Bild.",
       gaiaHelpBtn: "❓ Woher bekomme ich eine geplatesolvte Datei?",
       gaiaHelpText: "Eine geplatesolvte Datei ist dein Bild mit seiner Himmelsposition im Header – die meisten Astrofotografen haben sie schon:<br><br>" +

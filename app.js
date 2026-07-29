@@ -46,6 +46,7 @@ const state = {
   spinShow: false,       // Rotationsbereich als rote Maske einblenden
   spinMaskAmt: 0,        // Helligkeitsmaske einbeziehen 0..100 (0 = nur Kreis/Ellipse)
   spinMaskSmooth: 6,     // eigene Glättung der Spin-Helligkeitsmaske
+  spinStars: false,      // Sterne im Rotationsbereich mitdrehen
   tiltX: 0,              // -100..100
   tiltY: 0,
   swayAmp: 0,            // Schwenk-Animation Stärke 0..100
@@ -331,12 +332,48 @@ uniform vec2 uTilt2;
 uniform float uStreak;    // Belichtungszeit / dt (0 = keine Streifen)
 uniform float uGaiaAmt;   // Mischung Zufallstiefe -> echte Gaia-Tiefe (0..1)
 uniform float uGaiaOnly;  // 1 = Wissenschafts-Modus: nur Sterne mit Gaia-Tiefe
+// Sterne rotieren mit der Galaxie (gleiche Formeln wie spinWarp im Hintergrund;
+// Vorzeichen invertiert, weil dort die Abtastung statt des Inhalts gedreht wird)
+uniform float uSpinStars;   // 1 = Sterne im Rotationsbereich mitdrehen
+uniform float uSpinAngleS;  // akkumulierter Winkel zum Zeitpunkt t
+uniform float uSpinAngleS2; // Winkel kurz danach (für die Streifen)
+uniform vec2 uSpinCenterS;
+uniform float uSpinRadiusS;
+uniform float uSpinDiffS;
+uniform vec3 uSpinEllS;
+uniform sampler2D uSpinMaskS;
+uniform float uSpinMaskAmtS;
+uniform float uImgAspectS;
 out vec3 vColor;
 out float vAlpha;
 out vec2 vDir;    // Streifen-Richtung in Pixeln (normiert)
 out float vLen;   // Streifen-Länge in px
 out float vBase;  // Stern-Durchmesser in px
 out float vSize;  // gl_PointSize (für gl_PointCoord -> px)
+
+// Sternposition mit der Galaxien-Rotation mitdrehen (identische Falloff-,
+// Differenzial- und Masken-Logik wie im Hintergrund-Shader)
+vec2 spinStar(vec2 p, float angle) {
+  if (uSpinStars < 0.5 || angle == 0.0) return p;
+  vec2 d = p - uSpinCenterS;
+  float c = uSpinEllS.x, s = uSpinEllS.y;
+  vec2 e = mat2(c, -s, s, c) * d;
+  e.y /= uSpinEllS.z;
+  float r = length(e) / uSpinRadiusS;
+  if (r >= 1.0) return p;
+  float fall = smoothstep(1.0, 0.55, r);
+  float diffW = mix(1.0, 0.25 / (0.25 + 0.75 * r), uSpinDiffS);
+  float mw = 1.0;
+  if (uSpinMaskAmtS > 0.0) {
+    float m = textureLod(uSpinMaskS, vec2(p.x / uImgAspectS, p.y) + 0.5, 0.0).r;
+    mw = mix(1.0, m, uSpinMaskAmtS);
+  }
+  float a = -angle * fall * diffW * mw; // Inhalt dreht entgegen der Abtastung
+  float ca = cos(a), sa = sin(a);
+  e = mat2(ca, -sa, sa, ca) * e;
+  e.y *= uSpinEllS.z;
+  return uSpinCenterS + mat2(c, s, -s, c) * e;
+}
 
 void main() {
   // Reproduzierbare Zufalls-Tiefe pro Stern; "Neu mischen" ändert den Seed
@@ -367,7 +404,8 @@ void main() {
   // Ferne Sterne nie rückwärts fliegen lassen (Exponent bliebe sonst negativ)
   ex = max(ex, 0.12);
   float scale = uCover * pow(uZoom, ex);
-  vec2 pr = (aPos - uCenter - uTilt * (depth - 0.45)) * scale;
+  vec2 sp1 = spinStar(aPos, uSpinAngleS);
+  vec2 pr = (sp1 - uCenter - uTilt * (depth - 0.45)) * scale;
   float c = cos(uAngle), s = sin(uAngle);
   // Inverse der Hintergrund-Rotation, damit Sterne auf dem Bild liegen bleiben
   vec2 p = mat2(c, s, -s, c) * pr;
@@ -384,7 +422,7 @@ void main() {
   vec2 clipMid = clip;
   if (uStreak > 0.0) {
     float scale2 = uCover * pow(uZoom2, ex);
-    vec2 pr2 = (aPos - uCenter2 - uTilt2 * (depth - 0.45)) * scale2;
+    vec2 pr2 = (spinStar(aPos, uSpinAngleS2) - uCenter2 - uTilt2 * (depth - 0.45)) * scale2;
     float c2 = cos(uAngle2), s2 = sin(uAngle2);
     vec2 p2 = mat2(c2, s2, -s2, c2) * pr2;
     vec2 clip2 = vec2(p2.x * 2.0 / uViewAspect, p2.y * 2.0);
@@ -1473,6 +1511,20 @@ function render(forcedT) {
     u1f(starProg, "uStreak", splitBlur ? (state.mblur / 100) / dt : 0);
     u1f(starProg, "uGaiaAmt", state.gaiaAmt / 100);
     u1f(starProg, "uGaiaOnly", state.gaiaOnly && state.gaiaDepth ? 1 : 0);
+    // Sterne mit der Galaxien-Rotation mitdrehen (gleiche Parameter wie bgFS)
+    u1f(starProg, "uSpinStars", state.spinStars ? 1 : 0);
+    u1f(starProg, "uSpinAngleS", state.spinSpeed * Math.PI / 180 * cam.te);
+    u1f(starProg, "uSpinAngleS2", state.spinSpeed * Math.PI / 180 * cam2.te);
+    u2f(starProg, "uSpinCenterS", state.spinCenter.x, state.spinCenter.y);
+    u1f(starProg, "uSpinRadiusS", Math.max(0.02, (state.spinRadius / 100) * 0.75));
+    u1f(starProg, "uSpinDiffS", state.spinDiff / 100);
+    u3f(starProg, "uSpinEllS", Math.cos(spinTiltRad), Math.sin(spinTiltRad), 1 - (state.spinFlat / 100) * 0.7);
+    u1f(starProg, "uSpinMaskAmtS", texSpinMask ? state.spinMaskAmt / 100 : 0);
+    u1f(starProg, "uImgAspectS", imgAspect);
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, texSpinMask || texBlack);
+    gl.activeTexture(gl.TEXTURE0);
+    u1i(starProg, "uSpinMaskS", 5);
     gl.drawArrays(gl.POINTS, 0, state.starCount);
     gl.disable(gl.BLEND);
   }
@@ -1864,6 +1916,10 @@ $("btnGaiaHelp").addEventListener("click", () => {
 
 $("ctlGaiaOnly").addEventListener("change", () => {
   state.gaiaOnly = $("ctlGaiaOnly").checked;
+});
+
+$("ctlSpinStars").addEventListener("change", () => {
+  state.spinStars = $("ctlSpinStars").checked;
 });
 
 $("btnWcs").addEventListener("click", () => $("fileWcs").click());
