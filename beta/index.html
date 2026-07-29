@@ -19,6 +19,11 @@
     </div>
     <p class="sub" data-i18n="subtitle">3D camera flight from starless image + star mask</p>
 
+    <div class="langrow" id="modeRow" style="margin: 2px 0 10px;">
+      <button id="modeSimple" data-i18n="modeSimple">✨ Easy</button>
+      <button id="modePro" data-i18n="modePro">🛠 Pro</button>
+    </div>
+
     <p class="tip" id="inappBanner" hidden
        style="border: 1.5px solid #e8b34b; border-radius: 10px; padding: 10px 14px;
               background: rgba(232,179,75,0.12); color: #f2d9a0;"></p>
@@ -47,6 +52,34 @@
         <input type="range" id="ctlStretch" min="0" max="100" step="1" value="50">
       </label>
       <div id="loadStatus"></div>
+    </section>
+
+    <section id="simpleSection" hidden>
+      <h2 data-i18n="secSimple">2 · Choose a style</h2>
+      <p class="tip" data-i18n="simpleHint">Pick what's in your image – each preset sets camera,
+      stars and look in one go. Click the preview to choose the flight target. You can
+      fine-tune everything later in Pro mode.</p>
+      <div class="pgroup" data-i18n="pgNebula">🌫️ Nebulae</div>
+      <div class="pgrid">
+        <button class="pcard" data-preset="nebGentle"><b data-i18n="pNebGentle">Gentle approach</b><small data-i18n="pNebGentleD">calm flight into the nebula</small></button>
+        <button class="pcard" data-preset="nebDrift"><b data-i18n="pNebDrift">Lateral drift</b><small data-i18n="pNebDriftD">gliding past with star streaks</small></button>
+        <button class="pcard" data-preset="nebHyper"><b data-i18n="pNebHyper">Hyperspace</b><small data-i18n="pNebHyperD">fast dive, stars race past</small></button>
+      </div>
+      <div class="pgroup" data-i18n="pgGalaxy">🌌 Galaxies</div>
+      <div class="pgrid">
+        <button class="pcard" data-preset="galMajestic"><b data-i18n="pGalMajestic">Majestic approach</b><small data-i18n="pGalMajesticD">slow, the galaxy stays rigid</small></button>
+        <button class="pcard" data-preset="galSpin"><b data-i18n="pGalSpin">Living galaxy</b><small data-i18n="pGalSpinD">gentle rotation – click the core first</small></button>
+        <button class="pcard" data-preset="galFlyby"><b data-i18n="pGalFlyby">Fly-by</b><small data-i18n="pGalFlybyD">sweeping pass with tilt</small></button>
+      </div>
+      <div class="pgroup" data-i18n="pgCluster">✨ Star clusters</div>
+      <div class="pgrid">
+        <button class="pcard" data-preset="clusterDive"><b data-i18n="pClusterDive">Into the cluster</b><small data-i18n="pClusterDiveD">deep dive through the stars</small></button>
+        <button class="pcard" data-preset="clusterSparkle"><b data-i18n="pClusterSparkle">Sparkling drift</b><small data-i18n="pClusterSparkleD">calm, twinkling – great for loops</small></button>
+      </div>
+      <label class="slider">
+        <span><span data-i18n="duration">Duration</span> <output id="outSimpleDuration">20 s</output></span>
+        <input type="range" id="ctlSimpleDuration" min="5" max="60" step="1" value="20">
+      </label>
     </section>
 
     <section>
@@ -218,6 +251,13 @@
         <span><span data-i18n="spinMaskSmooth">Brightness mask smoothing</span> <output id="outSpinMaskSmooth">6</output></span>
         <input type="range" id="ctlSpinMaskSmooth" min="2" max="60" step="1" value="6">
       </label>
+      <label class="check">
+        <input type="checkbox" id="ctlSpinStars">
+        <span data-i18n="spinStars">Rotate stars inside the spin region</span>
+      </label>
+      <p class="tip" data-i18n="spinStarsHint">Stars inside the spin area follow the galaxy's
+      rotation and stay locked to its structure. Note: foreground stars that just happen to sit
+      in front of the galaxy will rotate too – toggle as it suits your image.</p>
       <p class="tip" data-i18n="gaiaHint">⭐ Real star distances (Gaia): load a plate-solved
       version of your image (FITS from ASTAP, PixInsight or Siril, or a .wcs file from
       astrometry.net) – AstroFly then matches your detected stars against the ESA Gaia
@@ -239,6 +279,44 @@
         <input type="checkbox" id="ctlGaiaOnly" disabled>
         <span data-i18n="gaiaOnly">🔬 Scientifically accurate distances (Gaia stars only)</span>
       </label>
+      <label class="check">
+        <input type="checkbox" id="ctlGaiaColors" disabled>
+        <span data-i18n="gaiaColors">🎨 True star colors from the Gaia catalog</span>
+      </label>
+      <p class="tip" data-i18n="gaiaColorsHint">Matched stars get their physically correct hue
+      from the measured Gaia color index (blue-white = hot, orange-red = cool) – brightness
+      still comes from your photo. Great for narrowband images, where star colors are never
+      real. Unmatched stars keep their photo color.</p>
+      <label class="slider">
+        <span><span data-i18n="gaiaPm">⏩ Proper-motion time lapse (years)</span> <output id="outGaiaPm">0</output></span>
+        <input type="range" id="ctlGaiaPm" min="0" max="500000" step="5000" value="0">
+      </label>
+      <p class="tip" data-i18n="gaiaPmHint">Matched stars drift along their real measured
+      trajectories (Gaia proper motion) over the course of the video – e.g. 200,000 years
+      of stellar motion compressed into your clip. 0 = off.</p>
+      <label class="check">
+        <input type="checkbox" id="ctlObjFar">
+        <span data-i18n="objFar">🌌 Object at true depth (behind all stars)</span>
+      </label>
+      <p class="tip" data-i18n="objFarHint">Physically, a galaxy or nebula sits far behind
+      every foreground star. This option treats the image as one rigid, distant object: it
+      barely reacts to the flight while all stars pass in front – the most scientifically
+      accurate 3D behavior. The depth-map parallax inside the image is disabled while active.</p>
+      <p class="tip" data-i18n="objHint">🔭 Object info &amp; field labels: with a plate-solve
+      solution loaded, AstroFly can identify the objects in your image via the SIMBAD
+      database (CDS) and render an info card (distance, size, stars, age for popular
+      objects) plus labeled markers into the video. Only sky coordinates are transferred.</p>
+      <button id="btnObjects" class="secondary" disabled data-i18n="objDetectBtn">🔭 Detect objects in the field (internet)</button>
+      <label class="check">
+        <input type="checkbox" id="ctlShowInfo" checked>
+        <span data-i18n="objShowInfo">Render object info card into the video</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="ctlShowLabels" checked>
+        <span data-i18n="objShowLabels">Render field labels into the video</span>
+      </label>
+      <div id="objList"></div>
+      <p class="tip" id="objStatus"></p>
       <p class="tip" data-i18n="gaiaOnlyHint">Shows only stars with a real Gaia distance, at their
       real depth – detected stars without a catalog match and generated stars are hidden.
       Unlocks at a match rate of 75 % or higher, so the star field doesn't thin out too much.</p>
@@ -417,6 +495,7 @@
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
 <script src="i18n.js"></script>
+<script src="objectinfo.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

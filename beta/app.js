@@ -46,6 +46,7 @@ const state = {
   spinShow: false,       // Rotationsbereich als rote Maske einblenden
   spinMaskAmt: 0,        // Helligkeitsmaske einbeziehen 0..100 (0 = nur Kreis/Ellipse)
   spinMaskSmooth: 6,     // eigene Glättung der Spin-Helligkeitsmaske
+  spinStars: false,      // Sterne im Rotationsbereich mitdrehen
   tiltX: 0,              // -100..100
   tiltY: 0,
   swayAmp: 0,            // Schwenk-Animation Stärke 0..100
@@ -74,6 +75,15 @@ const state = {
   gaiaAmt: 100,          // Einfluss der echten Tiefen 0..100
   gaiaInfo: null,        // { matched, total, dMin, dMax } für die Statuszeile
   gaiaOnly: false,       // Wissenschafts-Modus: nur Sterne mit echter Tiefe
+  gaiaColorRGB: null,    // echte Katalogfarben je Masken-Stern (RGB, -1 = keine)
+  gaiaColors: false,     // Katalogfarben statt Fotofarben verwenden
+  gaiaPM: null,          // Eigenbewegung je Masken-Stern (Ebene/Jahr)
+  gaiaPmYears: 0,        // Zeitraffer-Spanne in Jahren (0 = aus)
+  objFar: false,         // Objekt einheitlich in die Ferne (hinter alle Sterne)
+  objInfo: null,         // erkanntes Hauptobjekt { id, facts, otype }
+  labels: null,          // Feld-Beschriftungen [{ id, x, y, sizePlane, otype, on }]
+  showInfo: true,        // Infokarte ins Video einblenden
+  showLabels: true,      // Feld-Beschriftungen ins Video einblenden
   twinkleSpeed: 100,     // Funkel-Tempo in %
   starSize: 100,         // % Sterngröße
   starBright: 100,       // % Sternhelligkeit
@@ -173,6 +183,7 @@ uniform sampler2D uColor;
 uniform sampler2D uDepth;
 uniform vec2 uColorTexel;   // 1 Texel der Farbtextur in UV
 uniform float uBicubic;     // 1 = bikubisch abtasten (beim Hineinzoomen)
+uniform float uObjFar;      // 1 = Objekt einheitlich in die Ferne legen
 uniform float uViewAspect;  // Breite/Höhe des Ausgabeformats
 uniform float uImgAspect;   // Breite/Höhe des Bildes
 uniform float uZoom;        // aktueller Gesamtzoom
@@ -245,6 +256,9 @@ void main() {
   vec2 uv = imgUv(spinWarp(q));
   for (int i = 0; i < 3; i++) {
     float d = texture(uDepth, uv).r;
+    // "Objekt in echte Tiefe": das Bild verhält sich wie ein fernes, starres
+    // Objekt (einheitlich weit hinten) - alle Sterne ziehen davor vorbei
+    d = mix(d, 0.02, uObjFar);
     float ex = 1.0 + uParallax * (d - 0.45) * uDepthRange;
     float scale = uCover * pow(uZoom, ex);
     q = uCenter + pr / scale + uTilt * (d - 0.45);
@@ -301,6 +315,7 @@ layout(location=1) in float aBright;// 0..1 (Helligkeit/Fluss)
 layout(location=2) in float aSize;  // Radius in Ebenen-Einheiten
 layout(location=3) in vec3 aColor;
 layout(location=4) in float aGaia;  // echte Tiefe 0..1 aus Gaia (-1 = keine)
+layout(location=5) in vec2 aPm;     // Eigenbewegung in Ebenen-Einheiten/Jahr
 uniform float uViewAspect;
 uniform float uZoom;
 uniform float uParallax;
@@ -331,12 +346,50 @@ uniform vec2 uTilt2;
 uniform float uStreak;    // Belichtungszeit / dt (0 = keine Streifen)
 uniform float uGaiaAmt;   // Mischung Zufallstiefe -> echte Gaia-Tiefe (0..1)
 uniform float uGaiaOnly;  // 1 = Wissenschafts-Modus: nur Sterne mit Gaia-Tiefe
+// Sterne rotieren mit der Galaxie (gleiche Formeln wie spinWarp im Hintergrund;
+// Vorzeichen invertiert, weil dort die Abtastung statt des Inhalts gedreht wird)
+uniform float uSpinStars;   // 1 = Sterne im Rotationsbereich mitdrehen
+uniform float uSpinAngleS;  // akkumulierter Winkel zum Zeitpunkt t
+uniform float uSpinAngleS2; // Winkel kurz danach (für die Streifen)
+uniform vec2 uSpinCenterS;
+uniform float uSpinRadiusS;
+uniform float uSpinDiffS;
+uniform vec3 uSpinEllS;
+uniform sampler2D uSpinMaskS;
+uniform float uSpinMaskAmtS;
+uniform float uImgAspectS;
+uniform float uPmYears;   // Zeitraffer: verstrichene Jahre zum Zeitpunkt t
+uniform float uPmYears2;  // ... und kurz danach (für die Streifen)
 out vec3 vColor;
 out float vAlpha;
 out vec2 vDir;    // Streifen-Richtung in Pixeln (normiert)
 out float vLen;   // Streifen-Länge in px
 out float vBase;  // Stern-Durchmesser in px
 out float vSize;  // gl_PointSize (für gl_PointCoord -> px)
+
+// Sternposition mit der Galaxien-Rotation mitdrehen (identische Falloff-,
+// Differenzial- und Masken-Logik wie im Hintergrund-Shader)
+vec2 spinStar(vec2 p, float angle) {
+  if (uSpinStars < 0.5 || angle == 0.0) return p;
+  vec2 d = p - uSpinCenterS;
+  float c = uSpinEllS.x, s = uSpinEllS.y;
+  vec2 e = mat2(c, -s, s, c) * d;
+  e.y /= uSpinEllS.z;
+  float r = length(e) / uSpinRadiusS;
+  if (r >= 1.0) return p;
+  float fall = smoothstep(1.0, 0.55, r);
+  float diffW = mix(1.0, 0.25 / (0.25 + 0.75 * r), uSpinDiffS);
+  float mw = 1.0;
+  if (uSpinMaskAmtS > 0.0) {
+    float m = textureLod(uSpinMaskS, vec2(p.x / uImgAspectS, p.y) + 0.5, 0.0).r;
+    mw = mix(1.0, m, uSpinMaskAmtS);
+  }
+  float a = -angle * fall * diffW * mw; // Inhalt dreht entgegen der Abtastung
+  float ca = cos(a), sa = sin(a);
+  e = mat2(ca, -sa, sa, ca) * e;
+  e.y *= uSpinEllS.z;
+  return uSpinCenterS + mat2(c, s, -s, c) * e;
+}
 
 void main() {
   // Reproduzierbare Zufalls-Tiefe pro Stern; "Neu mischen" ändert den Seed
@@ -367,7 +420,8 @@ void main() {
   // Ferne Sterne nie rückwärts fliegen lassen (Exponent bliebe sonst negativ)
   ex = max(ex, 0.12);
   float scale = uCover * pow(uZoom, ex);
-  vec2 pr = (aPos - uCenter - uTilt * (depth - 0.45)) * scale;
+  vec2 sp1 = spinStar(aPos + aPm * uPmYears, uSpinAngleS);
+  vec2 pr = (sp1 - uCenter - uTilt * (depth - 0.45)) * scale;
   float c = cos(uAngle), s = sin(uAngle);
   // Inverse der Hintergrund-Rotation, damit Sterne auf dem Bild liegen bleiben
   vec2 p = mat2(c, s, -s, c) * pr;
@@ -384,7 +438,7 @@ void main() {
   vec2 clipMid = clip;
   if (uStreak > 0.0) {
     float scale2 = uCover * pow(uZoom2, ex);
-    vec2 pr2 = (aPos - uCenter2 - uTilt2 * (depth - 0.45)) * scale2;
+    vec2 pr2 = (spinStar(aPos + aPm * uPmYears2, uSpinAngleS2) - uCenter2 - uTilt2 * (depth - 0.45)) * scale2;
     float c2 = cos(uAngle2), s2 = sin(uAngle2);
     vec2 p2 = mat2(c2, s2, -s2, c2) * pr2;
     vec2 clip2 = vec2(p2.x * 2.0 / uViewAspect, p2.y * 2.0);
@@ -871,6 +925,8 @@ function buildStarBuffer() {
   state.maskStarFloats = buf;
   // Neue Maske -> alte Gaia-Zuordnung passt nicht mehr
   state.gaiaDepth = null;
+  state.gaiaColorRGB = null;
+  state.gaiaPM = null;
   if (typeof updateGaiaStatus === "function") updateGaiaStatus();
   uploadStars();
 }
@@ -970,7 +1026,7 @@ function angSep(ra1, dec1, ra2, dec2) {
 
 /** Gaia DR3 über die VizieR-TAP-API abfragen (CSV, CORS-frei). */
 async function queryGaia(ra, dec, radiusDeg) {
-  const adql = `SELECT TOP 30000 RA_ICRS,DE_ICRS,Gmag,Plx FROM "I/355/gaiadr3" ` +
+  const adql = `SELECT TOP 30000 RA_ICRS,DE_ICRS,Gmag,Plx,"BP-RP",pmRA,pmDE FROM "I/355/gaiadr3" ` +
     `WHERE 1=CONTAINS(POINT('ICRS',RA_ICRS,DE_ICRS),` +
     `CIRCLE('ICRS',${ra.toFixed(6)},${dec.toFixed(6)},${radiusDeg.toFixed(4)})) ` +
     `AND Plx>0.05 ORDER BY Gmag`;
@@ -984,9 +1040,34 @@ async function queryGaia(ra, dec, radiusDeg) {
     const p = lines[i].split(",");
     if (p.length < 4) continue;
     const ra_ = +p[0], dec_ = +p[1], plx = +p[3];
-    if (isFinite(ra_) && isFinite(dec_) && plx > 0) out.push({ ra: ra_, dec: dec_, plx });
+    const bprp = p.length > 4 && p[4] !== "" ? +p[4] : NaN;
+    const pmra = p.length > 5 && p[5] !== "" ? +p[5] : NaN;  // mas/Jahr (inkl. cos δ)
+    const pmde = p.length > 6 && p[6] !== "" ? +p[6] : NaN;
+    if (isFinite(ra_) && isFinite(dec_) && plx > 0) out.push({ ra: ra_, dec: dec_, plx, bprp, pmra, pmde });
   }
   return out;
+}
+
+/**
+ * Gaia-Farbindex BP-RP -> RGB-Farbton: Näherung der Farbtemperatur
+ * (Ballesteros-Formel über B-V) und daraus die Schwarzkörperfarbe.
+ * Zurückgegeben wird der auf max=1 normierte Farbton (Helligkeit kommt
+ * weiterhin aus dem Foto).
+ */
+function bprpToRgb(bprp) {
+  const bv = Math.min(2.0, Math.max(-0.4, 0.8 * bprp - 0.03));
+  let t = 4600 * (1 / (0.92 * bv + 1.7) + 1 / (0.92 * bv + 0.62)); // Kelvin
+  t = Math.min(30000, Math.max(2200, t)) / 100;
+  let r, g, b;
+  if (t <= 66) { r = 255; } else { r = 329.7 * Math.pow(t - 60, -0.1332); }
+  if (t <= 66) { g = 99.47 * Math.log(t) - 161.12; } else { g = 288.1 * Math.pow(t - 60, -0.0755); }
+  if (t >= 66) { b = 255; } else if (t <= 19) { b = 0; } else { b = 138.52 * Math.log(t - 10) - 305.04; }
+  const m = Math.max(r, g, b, 1);
+  return [
+    Math.min(1, Math.max(0, r / m)),
+    Math.min(1, Math.max(0, g / m)),
+    Math.min(1, Math.max(0, b / m)),
+  ];
 }
 
 /** 3x3-Gleichungssystem lösen (für die Affin-Anpassung). */
@@ -1071,7 +1152,7 @@ function matchGaia(gaiaStars) {
       if (!p) continue;
       const u = p.px / nax1, v = flipY ? 1 - p.py / nax2 : p.py / nax2;
       if (u < -0.03 || u > 1.03 || v < -0.03 || v > 1.03) continue;
-      pts.push({ x: (u - 0.5) * imgAspect, y: 0.5 - v, plx: g.plx });
+      pts.push({ ...g, x: (u - 0.5) * imgAspect, y: 0.5 - v });
     }
     return pts;
   };
@@ -1087,8 +1168,10 @@ function matchGaia(gaiaStars) {
   // Durchgang 1 (grob) für beide y-Konventionen, die bessere gewinnt
   const ptsA = project(true), ptsB = project(false);
   const pairsA = runMatch(ptsA, tolCoarse), pairsB = runMatch(ptsB, tolCoarse);
-  const pts = pairsA.length >= pairsB.length ? ptsA : ptsB;
-  let pairs = pairsA.length >= pairsB.length ? pairsA : pairsB;
+  const flipUsed = pairsA.length >= pairsB.length;
+  const pts = flipUsed ? ptsA : ptsB;
+  let pairs = flipUsed ? pairsA : pairsB;
+  let fitUsed = null;
 
   // Durchgang 2: Affin-Korrektur schätzen und enger neu zuordnen; das
   // Ergebnis zählt nur, wenn es mehr Treffer liefert
@@ -1096,15 +1179,30 @@ function matchGaia(gaiaStars) {
     const fit = affineFit(pairs.map(({ i, g }) => [g.x, g.y, mask[i * 7], mask[i * 7 + 1]]));
     if (fit) {
       const warped = pts.map((g) => ({
+        ...g,
         x: fit.ax[0] * g.x + fit.ax[1] * g.y + fit.ax[2],
         y: fit.ay[0] * g.x + fit.ay[1] * g.y + fit.ay[2],
-        plx: g.plx,
       }));
       const refined = runMatch(warped, tolFine);
-      if (refined.length > pairs.length) pairs = refined;
+      if (refined.length > pairs.length) { pairs = refined; fitUsed = fit; }
     }
   }
   if (pairs.length < 5) return null;
+
+  // Himmelskoordinate -> Ebenen-Position unter der Gewinner-Transformation
+  // (für die Eigenbewegungs-Vektoren)
+  const planeOf = (ra, dec) => {
+    const p = wcsSky2Pix(wcs, ra, dec);
+    if (!p) return null;
+    const u = p.px / nax1, v = flipUsed ? 1 - p.py / nax2 : p.py / nax2;
+    let x = (u - 0.5) * imgAspect, y = 0.5 - v;
+    if (fitUsed) {
+      const nx = fitUsed.ax[0] * x + fitUsed.ax[1] * y + fitUsed.ax[2];
+      const ny = fitUsed.ay[0] * x + fitUsed.ay[1] * y + fitUsed.ay[2];
+      x = nx; y = ny;
+    }
+    return { x, y };
+  };
 
   // Entfernungen (pc) logarithmisch auf die Tiefenebenen mappen: nahe Sterne
   // (10. Perzentil) -> vorn, ferne (90. Perzentil) -> hinten
@@ -1113,17 +1211,60 @@ function matchGaia(gaiaStars) {
   const p90 = Math.log(dists[Math.min(dists.length - 1, Math.floor(dists.length * 0.9))]);
   const span = Math.max(0.2, p90 - p10);
   const depth = new Float32Array(n).fill(-1);
+  const colors = new Float32Array(n * 3).fill(-1);
+  const pm = new Float32Array(n * 2); // Ebenen-Einheiten pro Jahr (0 = keine)
+  const K = 20000; // Jahre für den Differenzenquotienten
   for (const { i, g } of pairs) {
     const t = Math.min(1, Math.max(0, (Math.log(1000 / g.plx) - p10) / span));
     depth[i] = 0.98 - t * 0.93; // nah = 0.98, fern = 0.05
+    if (isFinite(g.bprp)) {
+      const [cr, cg, cb] = bprpToRgb(g.bprp);
+      colors[i * 3] = cr; colors[i * 3 + 1] = cg; colors[i * 3 + 2] = cb;
+    }
+    // Eigenbewegung (mas/Jahr, pmRA inkl. cos δ) -> Ebenen-Vektor pro Jahr
+    if (isFinite(g.pmra) && isFinite(g.pmde) && Math.hypot(g.pmra, g.pmde) < 10000) {
+      const cosd = Math.max(0.05, Math.cos(g.dec * D2R));
+      const p0 = planeOf(g.ra, g.dec);
+      const p1 = planeOf(g.ra + (g.pmra / 3.6e6) * K / cosd, g.dec + (g.pmde / 3.6e6) * K);
+      if (p0 && p1) { pm[i * 2] = (p1.x - p0.x) / K; pm[i * 2 + 1] = (p1.y - p0.y) / K; }
+    }
   }
   state.gaiaDepth = depth;
+  state.gaiaColorRGB = colors;
+  state.gaiaPM = pm;
+  // Gewinner-Transformation merken (für Objekt-Beschriftungen)
+  state.wcsFlip = flipUsed;
+  state.wcsFit = fitUsed;
   state.gaiaInfo = {
     matched: pairs.length, total: n,
     dMin: Math.round(Math.exp(p10) * 3.262), dMax: Math.round(Math.exp(p90) * 3.262), // Lichtjahre
   };
   uploadStars();
   return state.gaiaInfo;
+}
+
+/**
+ * Himmelskoordinate -> Ebenen-Position mit der aktuell bekannten Transformation
+ * (y-Konvention und Affin-Korrektur aus dem Gaia-Abgleich, sonst Standard).
+ */
+function planeOfSky(ra, dec) {
+  const wcs = state.wcs;
+  const img = state.starless || state.stars;
+  if (!wcs || !img) return null;
+  const nax1 = wcs.naxis1 || img.width, nax2 = wcs.naxis2 || img.height;
+  const imgAspect = img.width / img.height;
+  const p = wcsSky2Pix(wcs, ra, dec);
+  if (!p) return null;
+  const flip = state.wcsFlip !== false; // Standard: FITS-Zeile 1 unten
+  const u = p.px / nax1, v = flip ? 1 - p.py / nax2 : p.py / nax2;
+  let x = (u - 0.5) * imgAspect, y = 0.5 - v;
+  const fit = state.wcsFit;
+  if (fit) {
+    const nx = fit.ax[0] * x + fit.ax[1] * y + fit.ax[2];
+    const ny = fit.ay[0] * x + fit.ay[1] * y + fit.ay[2];
+    x = nx; y = ny;
+  }
+  return { x, y };
 }
 
 // ---------------------------------------------------------------- Stern-Generator
@@ -1191,26 +1332,197 @@ function uploadStars() {
   state.starCount = n;
   if (!n) return;
 
-  const buf = new Float32Array(n * 8);
+  const F = 10; // [x, y, hell, größe, r, g, b, gaia, pmx, pmy]
+  const buf = new Float32Array(n * F);
+  const gcol = state.gaiaColors && state.gaiaColorRGB ? state.gaiaColorRGB : null;
+  const gpm = state.gaiaPM;
   for (let i = 0; i < nMask; i++) {
-    buf.set(mask.subarray(i * 7, i * 7 + 7), i * 8);
-    buf[i * 8 + 7] = state.gaiaDepth ? state.gaiaDepth[i] : -1;
+    buf.set(mask.subarray(i * 7, i * 7 + 7), i * F);
+    buf[i * F + 7] = state.gaiaDepth ? state.gaiaDepth[i] : -1;
+    // Echte Katalogfarbe (nur Farbton) statt Fotofarbe, wenn aktiviert
+    if (gcol && gcol[i * 3] >= 0) {
+      buf[i * F + 4] = 0.35 + 0.65 * gcol[i * 3];
+      buf[i * F + 5] = 0.35 + 0.65 * gcol[i * 3 + 1];
+      buf[i * F + 6] = 0.35 + 0.65 * gcol[i * 3 + 2];
+    }
+    if (gpm) { buf[i * F + 8] = gpm[i * 2]; buf[i * F + 9] = gpm[i * 2 + 1]; }
   }
   for (let i = 0; i < nGen; i++) {
-    buf.set(gen.subarray(i * 7, i * 7 + 7), (nMask + i) * 8);
-    buf[(nMask + i) * 8 + 7] = -1;
+    buf.set(gen.subarray(i * 7, i * 7 + 7), (nMask + i) * F);
+    buf[(nMask + i) * F + 7] = -1;
   }
 
   gl.bindVertexArray(starVao);
   gl.bindBuffer(gl.ARRAY_BUFFER, starBuf);
   gl.bufferData(gl.ARRAY_BUFFER, buf, gl.STATIC_DRAW);
-  const stride = 8 * 4;
+  const stride = F * 4;
   gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, stride, 0);
   gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 1, gl.FLOAT, false, stride, 8);
   gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 1, gl.FLOAT, false, stride, 12);
   gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 3, gl.FLOAT, false, stride, 16);
   gl.enableVertexAttribArray(4); gl.vertexAttribPointer(4, 1, gl.FLOAT, false, stride, 28);
+  gl.enableVertexAttribArray(5); gl.vertexAttribPointer(5, 2, gl.FLOAT, false, stride, 32);
   gl.bindVertexArray(null);
+}
+
+// ------------------------------------------ Objekt-Overlay (Infokarte + Labels)
+
+function overlayActive() {
+  return (state.showLabels && state.labels && state.labels.some((l) => l.on)) ||
+    (state.showInfo && state.objInfo);
+}
+
+/**
+ * Zeichnet Infokarte und Feld-Beschriftungen in einen 2D-Kontext –
+ * auflösungsunabhängig (alles relativ zur Höhe H), identisch für Vorschau
+ * und Export. Die Labels folgen der Kamerafahrt (neutrale Tiefe).
+ */
+function drawOverlayTo(ctx, W, H, loopT, cam) {
+  if (!state.starless || !overlayActive()) return;
+  const lang = I18N.lang === "de" ? "de" : "en";
+  const viewAspect = state.aspect;
+  const imgAspect = state.starless.width / state.starless.height;
+  const cover = Math.max(viewAspect / imgAspect, 1) * 1.02;
+  const scale = cover * cam.zoom;
+  const rc = Math.cos(cam.angle), rs = Math.sin(cam.angle);
+  const toScreen = (P) => {
+    const prx = (P.x - cam.cx) * scale, pry = (P.y - cam.cy) * scale;
+    const px = rc * prx - rs * pry, py = rs * prx + rc * pry;
+    return { x: (px / viewAspect + 0.5) * W, y: (1 - (py + 0.5)) * H };
+  };
+  const u = H / 1000; // Skalierungseinheit (1000er-Referenzhöhe)
+  const ACC = "rgba(157,184,255,";
+  ctx.save();
+  ctx.textBaseline = "alphabetic";
+
+  // ---- Feld-Beschriftungen ----
+  if (state.showLabels && state.labels) {
+    for (const L of state.labels) {
+      if (!L.on) continue;
+      const sp = toScreen(L);
+      if (sp.x < -80 * u || sp.x > W + 80 * u || sp.y < -80 * u || sp.y > H + 80 * u) continue;
+      const r = Math.max(16 * u, (L.sizePlane * scale * H) / 2);
+      ctx.strokeStyle = ACC + "0.75)";
+      ctx.lineWidth = 1.6 * u;
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, r, 0, Math.PI * 2);
+      ctx.stroke();
+      // Chip rechts vom Ring, bei Platzmangel links
+      const facts = OBJECT_FACTS[normObjId(L.id)];
+      const name = L.id;
+      const sub = facts
+        ? `${facts[lang].name} · ${facts[lang].dist || ""}`.replace(/ · $/, "")
+        : (OTYPE_NAMES[lang][L.otype] || L.otype);
+      ctx.font = `700 ${15 * u}px system-ui, sans-serif`;
+      const wName = ctx.measureText(name).width;
+      ctx.font = `${11.5 * u}px system-ui, sans-serif`;
+      const wSub = ctx.measureText(sub).width;
+      const chipW = Math.max(wName, wSub) + 24 * u;
+      const chipH = 40 * u;
+      const right = sp.x + r + 14 * u + chipW < W - 8 * u;
+      const cx0 = right ? sp.x + r + 14 * u : sp.x - r - 14 * u - chipW;
+      const cy0 = Math.min(Math.max(sp.y - chipH / 2, 8 * u), H - chipH - 8 * u);
+      ctx.strokeStyle = ACC + "0.7)";
+      ctx.lineWidth = 1.4 * u;
+      ctx.beginPath();
+      ctx.moveTo(right ? sp.x + r : sp.x - r, sp.y);
+      ctx.lineTo(right ? cx0 : cx0 + chipW, cy0 + chipH / 2);
+      ctx.stroke();
+      ctx.fillStyle = "rgba(8,10,16,0.72)";
+      ctx.strokeStyle = ACC + "0.55)";
+      ctx.beginPath();
+      ctx.roundRect(cx0, cy0, chipW, chipH, 8 * u);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#e8eeff";
+      ctx.font = `700 ${15 * u}px system-ui, sans-serif`;
+      ctx.fillText(name, cx0 + 12 * u, cy0 + 17 * u);
+      ctx.fillStyle = "#aab8d8";
+      ctx.font = `${11.5 * u}px system-ui, sans-serif`;
+      ctx.fillText(sub, cx0 + 12 * u, cy0 + 32 * u);
+    }
+  }
+
+  // ---- Infokarte (blendet ein und wieder aus) ----
+  if (state.showInfo && state.objInfo) {
+    const outStart = Math.min(7, state.duration - 2);
+    const a = Math.min(1, Math.max(0, (loopT - 0.8) / 0.8)) *
+      Math.min(1, Math.max(0, (outStart + 1 - loopT) / 1));
+    if (a > 0.01) {
+      ctx.globalAlpha = a;
+      const info = state.objInfo;
+      const f = info.facts ? info.facts[lang] : null;
+      const title = f ? `${info.id} · ${f.name}` : info.id;
+      const typeLine = f ? f.type : (OTYPE_NAMES[lang][info.otype] || "");
+      const facts = [];
+      if (f) {
+        const LBL = lang === "de"
+          ? { dist: "Entfernung", size: "Durchmesser", stars: "Sterne", age: "Alter" }
+          : { dist: "Distance", size: "Diameter", stars: "Stars", age: "Age" };
+        for (const k of ["dist", "size", "stars", "age"]) {
+          if (f[k]) facts.push([LBL[k], f[k]]);
+        }
+      }
+      const pad = 20 * u, colW = 195 * u;
+      const cardW = Math.min(W - 40 * u, Math.max(300 * u, 2 * colW + 2 * pad));
+      const rows = Math.ceil(facts.length / 2);
+      const cardH = (56 + (typeLine ? 20 : 0) + rows * 40 + 14) * u;
+      const x0 = 24 * u, y0 = H - cardH - 24 * u;
+      ctx.fillStyle = "rgba(8,10,16,0.74)";
+      ctx.strokeStyle = ACC + "0.5)";
+      ctx.lineWidth = 1.6 * u;
+      ctx.beginPath();
+      ctx.roundRect(x0, y0, cardW, cardH, 14 * u);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#eef2ff";
+      ctx.font = `800 ${22 * u}px system-ui, sans-serif`;
+      ctx.fillText(title, x0 + pad, y0 + 33 * u, cardW - 2 * pad);
+      if (typeLine) {
+        ctx.fillStyle = "#aab8d8";
+        ctx.font = `${13 * u}px system-ui, sans-serif`;
+        ctx.fillText(typeLine, x0 + pad, y0 + 52 * u, cardW - 2 * pad);
+      }
+      facts.forEach(([k, v], i) => {
+        const fx = x0 + pad + (i % 2) * colW;
+        const fy = y0 + (typeLine ? 76 : 58) * u + Math.floor(i / 2) * 40 * u;
+        ctx.fillStyle = "#ffffff";
+        ctx.font = `700 ${13.5 * u}px system-ui, sans-serif`;
+        ctx.fillText(k, fx, fy);
+        ctx.fillStyle = "#c6cfe4";
+        ctx.font = `${13.5 * u}px system-ui, sans-serif`;
+        ctx.fillText(v, fx, fy + 17 * u, colW - 14 * u);
+      });
+      // Datenquelle dezent unter der Karte
+      ctx.globalAlpha = a * 0.8;
+      ctx.fillStyle = ACC + "0.75)";
+      ctx.font = `${10.5 * u}px system-ui, sans-serif`;
+      ctx.fillText("Data: SIMBAD/CDS · ESA Gaia DR3", x0 + 2 * u, y0 + cardH + 15 * u);
+      ctx.globalAlpha = 1;
+    }
+  }
+  ctx.restore();
+}
+
+// Transparente Overlay-Ebene über der Vorschau
+const overlayCanvas = document.createElement("canvas");
+overlayCanvas.id = "overlayCanvas";
+overlayCanvas.style.cssText = "position:absolute; pointer-events:none; left:0; top:0;";
+canvas.parentElement.style.position = "relative";
+canvas.parentElement.appendChild(overlayCanvas);
+const overlayCtx = overlayCanvas.getContext("2d");
+
+function drawPreviewOverlay(loopT, cam) {
+  if (overlayCanvas.width !== canvas.width || overlayCanvas.height !== canvas.height) {
+    overlayCanvas.width = canvas.width;
+    overlayCanvas.height = canvas.height;
+  }
+  overlayCanvas.style.left = canvas.offsetLeft + "px";
+  overlayCanvas.style.top = canvas.offsetTop + "px";
+  overlayCanvas.style.width = canvas.clientWidth + "px";
+  overlayCanvas.style.height = canvas.clientHeight + "px";
+  overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+  drawOverlayTo(overlayCtx, overlayCanvas.width, overlayCanvas.height, loopT, cam);
 }
 
 // ---------------------------------------------------------------- Kamera & Zeit
@@ -1409,6 +1721,7 @@ function render(forcedT) {
   const magnify = (cover * cam.zoom * fbScene.h) / texH;
   u2f(bgProg, "uColorTexel", 1 / (state.texColorW || 2048), 1 / texH);
   u1f(bgProg, "uBicubic", magnify > 1.05 ? 1 : 0);
+  u1f(bgProg, "uObjFar", state.objFar ? 1 : 0);
   // Galaxien-Rotation (te-basiert -> im Loop-Modus nahtlos hin & zurück)
   u1f(bgProg, "uSpinAngle", state.spinSpeed * Math.PI / 180 * cam.te);
   u2f(bgProg, "uSpinCenter", state.spinCenter.x, state.spinCenter.y);
@@ -1473,6 +1786,24 @@ function render(forcedT) {
     u1f(starProg, "uStreak", splitBlur ? (state.mblur / 100) / dt : 0);
     u1f(starProg, "uGaiaAmt", state.gaiaAmt / 100);
     u1f(starProg, "uGaiaOnly", state.gaiaOnly && state.gaiaDepth ? 1 : 0);
+    // Sterne mit der Galaxien-Rotation mitdrehen (gleiche Parameter wie bgFS)
+    u1f(starProg, "uSpinStars", state.spinStars ? 1 : 0);
+    u1f(starProg, "uSpinAngleS", state.spinSpeed * Math.PI / 180 * cam.te);
+    u1f(starProg, "uSpinAngleS2", state.spinSpeed * Math.PI / 180 * cam2.te);
+    u2f(starProg, "uSpinCenterS", state.spinCenter.x, state.spinCenter.y);
+    u1f(starProg, "uSpinRadiusS", Math.max(0.02, (state.spinRadius / 100) * 0.75));
+    u1f(starProg, "uSpinDiffS", state.spinDiff / 100);
+    u3f(starProg, "uSpinEllS", Math.cos(spinTiltRad), Math.sin(spinTiltRad), 1 - (state.spinFlat / 100) * 0.7);
+    u1f(starProg, "uSpinMaskAmtS", texSpinMask ? state.spinMaskAmt / 100 : 0);
+    u1f(starProg, "uImgAspectS", imgAspect);
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, texSpinMask || texBlack);
+    gl.activeTexture(gl.TEXTURE0);
+    u1i(starProg, "uSpinMaskS", 5);
+    // Eigenbewegungs-Zeitraffer: Jahre wachsen mit der Flugzeit (loop-sicher)
+    const pmSpan = state.duration * (state.loopMode ? 0.5 : 1);
+    u1f(starProg, "uPmYears", state.gaiaPmYears * (cam.te / pmSpan));
+    u1f(starProg, "uPmYears2", state.gaiaPmYears * (cam2.te / pmSpan));
     gl.drawArrays(gl.POINTS, 0, state.starCount);
     gl.disable(gl.BLEND);
   }
@@ -1593,6 +1924,9 @@ function render(forcedT) {
   u1f(compProg, "uSharpen", (state.sharpen / 100) * 1.2);
   u2f(compProg, "uTexel", 1 / fbScene.w, 1 / fbScene.h);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // Objekt-Overlay (Infokarte + Labels) über der Vorschau
+  drawPreviewOverlay(loopT, cam);
 
   // Transport-UI
   const prog = (loopT / state.duration) * 100;
@@ -1780,6 +2114,94 @@ $("ctlPreset").addEventListener("change", () => {
   $("ctlMblurStars").dispatchEvent(new Event("change"));
 });
 
+// ------------------------------------------------ Einfach-Modus & Flug-Presets
+
+// Neutralwerte, auf die jedes Flug-Preset zuerst zurücksetzt
+const SIMPLE_DEFAULTS = {
+  ctlZoom: 1, ctlSpeed: 40, ctlEase: 60, ctlParallax: 60, ctlDepthBoost: 33,
+  ctlRotation: 0, ctlOrient: 0, ctlFrameX: 0, ctlFrameY: 0, ctlTiltX: 0,
+  ctlTiltY: 0, ctlSwayAmp: 0, ctlSwayTempo: 40, ctlSwayDir: 0, ctlSwayRandom: 0,
+  ctlTiltRamp: 0, ctlTiltRampDir: 0, ctlFade: 0, ctlDriftDir: 90,
+  ctlSpinSpeed: 0, ctlSpinRadius: 40, ctlSpinDiff: 40, ctlSpinFlat: 0,
+  ctlSpinTilt: 0, ctlSpinMaskAmt: 0,
+  ctlSpread: 70, ctlStarDist: 55, ctlLayers: 0, ctlStarPar: 100,
+  ctlTwinkle: 25, ctlTwinkleSpeed: 100, ctlStarSize: 100, ctlStarBright: 100,
+  ctlStarSat: 100, ctlGenStars: 0,
+};
+
+// 8 Objekt-Presets: 3 Nebel, 3 Galaxien, 2 Sternhaufen. "look" wählt den
+// Look-Preset aus Sektion 5 mit; "set"/"checks" überschreiben danach gezielt.
+const FLIGHT_PRESETS = {
+  nebGentle:      { look: "neutral", set: { ctlSpeed: 30, ctlParallax: 60, ctlDepthBoost: 40, ctlStarPar: 250, ctlBloom: 15 } },
+  nebDrift:       { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.4, ctlSpeed: 60, ctlStarPar: 300, ctlGenStars: 1000, ctlMblur: 25, ctlBloom: 15 }, checks: { ctlMblurStars: true } },
+  nebHyper:       { look: "hyper", set: { ctlSpeed: 75, ctlStarPar: 300, ctlTwinkleSpeed: 150 } },
+  galMajestic:    { look: "neutral", set: { ctlSpeed: 25, ctlParallax: 40, ctlDepthBoost: 30, ctlStarPar: 350, ctlTiltRamp: 25, ctlBloom: 15 } },
+  galSpin:        { look: "neutral", set: { ctlSpeed: 15, ctlSpinSpeed: 0.8, ctlSpinRadius: 65, ctlSpinDiff: 40, ctlSpinMaskAmt: 50, ctlBloom: 12 } },
+  galFlyby:       { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.5, ctlSpeed: 70, ctlTiltRamp: 35, ctlTiltRampDir: 90, ctlStarPar: 400, ctlMblur: 30, ctlBloom: 15 }, checks: { ctlMblurStars: true } },
+  clusterDive:    { look: "neutral", set: { ctlSpeed: 55, ctlSpread: 90, ctlStarPar: 500, ctlTwinkle: 35, ctlBloom: 25 } },
+  clusterSparkle: { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.3, ctlSpeed: 30, ctlTwinkle: 45, ctlTwinkleSpeed: 160, ctlSwayAmp: 20, ctlSwayRandom: 40, ctlBloom: 20 } },
+};
+
+function setCtl(id, value) {
+  const el = $(id);
+  if (!el) return;
+  el.value = value;
+  el.dispatchEvent(new Event("input"));
+}
+
+function applyFlightPreset(name) {
+  const p = FLIGHT_PRESETS[name];
+  if (!p) return;
+  // Erst alles auf neutral, dann das Preset darüber
+  $("ctlFlightMode").value = p.flightMode || "zoom";
+  $("ctlFlightMode").dispatchEvent(new Event("change"));
+  $("ctlEaseMode").value = "linear";
+  $("ctlEaseMode").dispatchEvent(new Event("change"));
+  $("ctlLoop").checked = false;
+  $("ctlLoop").dispatchEvent(new Event("change"));
+  for (const [id, v] of Object.entries(SIMPLE_DEFAULTS)) setCtl(id, v);
+  $("ctlPreset").value = p.look;
+  $("ctlPreset").dispatchEvent(new Event("change")); // setzt Look + mblurStars
+  for (const [id, v] of Object.entries(p.set || {})) setCtl(id, v);
+  for (const [id, v] of Object.entries(p.checks || {})) {
+    $(id).checked = v;
+    $(id).dispatchEvent(new Event("change"));
+  }
+  for (const card of document.querySelectorAll(".pcard")) {
+    card.classList.toggle("active", card.dataset.preset === name);
+  }
+}
+
+for (const card of document.querySelectorAll(".pcard")) {
+  card.addEventListener("click", () => applyFlightPreset(card.dataset.preset));
+}
+
+// Dauer-Regler im Einfach-Modus spiegelt den echten Dauer-Regler
+$("ctlSimpleDuration").addEventListener("input", () => {
+  const v = $("ctlSimpleDuration").value;
+  $("outSimpleDuration").textContent = v + " s";
+  setCtl("ctlDuration", v);
+});
+
+// Einfach/Profi-Umschaltung: im Einfach-Modus bleiben nur Laden, Presets,
+// Seitenverhältnis, Export und Feedback sichtbar
+state.uiMode = localStorage.getItem("astrofly-mode") || "simple";
+const SIMPLE_VISIBLE = ["sec1", "secSimple", "sec6", "sec7", "sec8"];
+
+function applyUiMode() {
+  const simple = state.uiMode === "simple";
+  $("modeSimple").classList.toggle("active", simple);
+  $("modePro").classList.toggle("active", !simple);
+  for (const sec of document.querySelectorAll("#panel section")) {
+    const key = sec.querySelector('[data-i18n^="sec"]')?.dataset.i18n;
+    sec.hidden = simple ? !SIMPLE_VISIBLE.includes(key) : key === "secSimple";
+  }
+  localStorage.setItem("astrofly-mode", state.uiMode);
+}
+$("modeSimple").addEventListener("click", () => { state.uiMode = "simple"; applyUiMode(); });
+$("modePro").addEventListener("click", () => { state.uiMode = "pro"; applyUiMode(); });
+applyUiMode();
+
 let smoothTimer = null;
 $("ctlSmooth").addEventListener("input", () => {
   state.smooth = parseInt($("ctlSmooth").value, 10);
@@ -1828,6 +2250,7 @@ I18N.onChange.push(updateTargetInfo);
 // ------------------------------------------ Echte Tiefen (Gaia): Bedienung
 
 bindSlider("ctlGaiaAmt", "outGaiaAmt", "gaiaAmt", (v) => v + " %");
+bindSlider("ctlGaiaPm", "outGaiaPm", "gaiaPmYears", (v) => v.toLocaleString());
 
 // Statuszeile: transienter Text (Laden/Fehler) oder Zustand aus state
 let gaiaTransient = null; // { key, args } | null
@@ -1841,6 +2264,8 @@ function updateGaiaStatus() {
   const pct = g ? Math.round((g.matched / Math.max(1, g.total)) * 100) : 0;
   const sciAllowed = pct >= 75;
   $("ctlGaiaOnly").disabled = !sciAllowed;
+  $("ctlGaiaColors").disabled = !state.gaiaDepth;
+  $("btnObjects").disabled = !(state.wcs && state.starless);
   if (!sciAllowed && state.gaiaOnly) {
     state.gaiaOnly = false;
     $("ctlGaiaOnly").checked = false;
@@ -1866,6 +2291,90 @@ $("ctlGaiaOnly").addEventListener("change", () => {
   state.gaiaOnly = $("ctlGaiaOnly").checked;
 });
 
+$("ctlSpinStars").addEventListener("change", () => {
+  state.spinStars = $("ctlSpinStars").checked;
+});
+
+$("ctlGaiaColors").addEventListener("change", () => {
+  state.gaiaColors = $("ctlGaiaColors").checked;
+  uploadStars(); // Farben stecken im Vertex-Puffer
+});
+
+$("ctlObjFar").addEventListener("change", () => {
+  state.objFar = $("ctlObjFar").checked;
+});
+
+// --------------------------- Objekt-Erkennung (SIMBAD) & Overlay-Bedienung
+
+function rebuildObjList() {
+  const box = $("objList");
+  box.innerHTML = "";
+  if (!state.labels) return;
+  for (const L of state.labels) {
+    const lab = document.createElement("label");
+    lab.className = "check";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = L.on;
+    cb.addEventListener("change", () => { L.on = cb.checked; });
+    const span = document.createElement("span");
+    const facts = OBJECT_FACTS[normObjId(L.id)];
+    const lang = I18N.lang === "de" ? "de" : "en";
+    span.textContent = facts ? `${L.id} – ${facts[lang].name}` : L.id;
+    lab.appendChild(cb);
+    lab.appendChild(span);
+    box.appendChild(lab);
+  }
+}
+I18N.onChange.push(rebuildObjList);
+
+$("ctlShowInfo").addEventListener("change", () => { state.showInfo = $("ctlShowInfo").checked; });
+$("ctlShowLabels").addEventListener("change", () => { state.showLabels = $("ctlShowLabels").checked; });
+
+$("btnObjects").addEventListener("click", async () => {
+  if (!state.wcs || !state.starless) return;
+  const wcs = state.wcs;
+  const img = state.starless;
+  const nax1 = wcs.naxis1 || img.width, nax2 = wcs.naxis2 || img.height;
+  const c = wcsPix2Sky(wcs, nax1 / 2, nax2 / 2);
+  const corner = wcsPix2Sky(wcs, 1, 1);
+  const radius = Math.min(6, angSep(c.ra, c.dec, corner.ra, corner.dec) * 1.05 + 0.02);
+  $("objStatus").textContent = t("objDetecting");
+  $("btnObjects").disabled = true;
+  try {
+    const objs = await querySimbad(c.ra, c.dec, radius);
+    const imgAspect = img.width / img.height;
+    const degPerPx = Math.sqrt(Math.abs(wcs.cd[0] * wcs.cd[3] - wcs.cd[1] * wcs.cd[2]));
+    const items = [];
+    for (const o of objs) {
+      if (!INTERESTING_OTYPES.has(o.otype)) continue;
+      // Nur die bekannten Kataloge beschriften (keine kryptischen Survey-Ids)
+      if (!/^(M|NGC|IC)\d/.test(normObjId(o.id))) continue;
+      const p = planeOfSky(o.ra, o.dec);
+      if (!p) continue;
+      if (Math.abs(p.x) > imgAspect / 2 || Math.abs(p.y) > 0.5) continue;
+      const sizePlane = (o.sizeArcmin / 60) / degPerPx / nax2;
+      items.push({ id: prettyObjId(o.id), otype: o.otype, x: p.x, y: p.y, sizePlane });
+    }
+    if (!items.length) {
+      state.objInfo = null; state.labels = null;
+      $("objStatus").textContent = t("objNone");
+    } else {
+      items.sort((a, b) => b.sizePlane - a.sizePlane);
+      const main = items[0];
+      state.objInfo = { id: main.id, facts: OBJECT_FACTS[normObjId(main.id)] || null, otype: main.otype };
+      // Hauptobjekt nur beschriften, wenn es nicht das halbe Bild füllt
+      const labels = items.filter((it, idx) => idx > 0 || it.sizePlane < 0.35).slice(0, 6);
+      state.labels = labels.map((it) => ({ ...it, on: true }));
+      rebuildObjList();
+      $("objStatus").textContent = t("objFound", items.length, main.id);
+    }
+  } catch (e) {
+    $("objStatus").textContent = t("objNetErr");
+  }
+  $("btnObjects").disabled = !state.wcs;
+});
+
 $("btnWcs").addEventListener("click", () => $("fileWcs").click());
 $("fileWcs").addEventListener("change", async () => {
   const file = $("fileWcs").files[0];
@@ -1877,7 +2386,7 @@ $("fileWcs").addEventListener("change", async () => {
     const wcs = parseWcsHeader(head);
     wcs._name = file.name;
     state.wcs = wcs;
-    state.gaiaDepth = null; state.gaiaInfo = null;
+    state.gaiaDepth = null; state.gaiaInfo = null; state.gaiaColorRGB = null; state.gaiaPM = null;
     uploadStars();
   } catch (e) {
     state.wcs = null;
@@ -2225,11 +2734,26 @@ async function exportOffline(w, h, fps) {
   encoder.configure(config);
 
   const totalFrames = Math.round(state.duration * fps);
+  // Overlay (Infokarte/Labels) wird über einen 2D-Zwischenpuffer eingebrannt
+  const burnOverlay = overlayActive();
+  let compCanvas = null, compCtx = null;
+  if (burnOverlay) {
+    compCanvas = document.createElement("canvas");
+    compCanvas.width = w; compCanvas.height = h;
+    compCtx = compCanvas.getContext("2d");
+  }
   try {
     for (let i = 0; i < totalFrames; i++) {
       const t = i / fps;
       render(t);
-      const vf = new VideoFrame(canvas, {
+      let src = canvas;
+      if (burnOverlay) {
+        compCtx.drawImage(canvas, 0, 0, w, h);
+        const ap = animParams(t);
+        drawOverlayTo(compCtx, w, h, ap.loopT, ap.cam);
+        src = compCanvas;
+      }
+      const vf = new VideoFrame(src, {
         timestamp: Math.round(i * 1e6 / fps),
         duration: Math.round(1e6 / fps),
       });
@@ -2275,7 +2799,15 @@ function exportRealtime(w, h, fps) {
   state.t0 = performance.now();
   status.textContent = t("renderingRealtime", w, h, state.duration);
 
-  const stream = canvas.captureStream(fps);
+  // Overlay einbrennen: Stream kommt dann aus einem 2D-Zwischenpuffer
+  const burnOverlay = overlayActive();
+  let compCanvas = null, compCtx = null;
+  if (burnOverlay) {
+    compCanvas = document.createElement("canvas");
+    compCanvas.width = w; compCanvas.height = h;
+    compCtx = compCanvas.getContext("2d");
+  }
+  const stream = (burnOverlay ? compCanvas : canvas).captureStream(fps);
   const rec = new MediaRecorder(stream, {
     mimeType: mime,
     videoBitsPerSecond: Math.min(60_000_000, Math.round(w * h * fps * 0.15)),
@@ -2293,6 +2825,11 @@ function exportRealtime(w, h, fps) {
   rec.start(250);
   const tick = () => {
     const t = (performance.now() - state.t0) / 1000;
+    if (burnOverlay) {
+      compCtx.drawImage(canvas, 0, 0, w, h);
+      const ap = animParams(Math.min(t, state.duration));
+      drawOverlayTo(compCtx, w, h, ap.loopT, ap.cam);
+    }
     $("exportProgress").style.width = Math.min(100, (t / state.duration) * 100) + "%";
     if (t >= state.duration) rec.stop();
     else if (state.exporting) requestAnimationFrame(tick);
@@ -2509,9 +3046,11 @@ for (const [i, sec] of document.querySelectorAll("#panel section").entries()) {
   body.className = "secbody";
   while (h2.nextSibling) body.appendChild(h2.nextSibling);
   sec.appendChild(body);
-  const key = "astrofly-sec-" + (h2.dataset.i18n || i);
+  const keyName = h2.dataset.i18n || h2.querySelector("[data-i18n]")?.dataset.i18n || i;
+  const key = "astrofly-sec-" + keyName;
   const saved = localStorage.getItem(key);
-  const defaultOpen = i === 0 || i === 2; // Bilder laden + Kamera offen
+  // Bilder laden, Einfach-Presets und Kamera standardmäßig offen
+  const defaultOpen = ["sec1", "secSimple", "sec3"].includes(keyName);
   const open = saved === null ? defaultOpen : saved === "1";
   sec.classList.toggle("collapsed", !open);
   h2.addEventListener("click", () => {
