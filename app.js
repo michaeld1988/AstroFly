@@ -1423,10 +1423,23 @@ function drawOverlayTo(ctx, W, H, loopT, cam) {
   const cover = Math.max(viewAspect / imgAspect, 1) * 1.02;
   const scale = cover * cam.zoom;
   const rc = Math.cos(cam.angle), rs = Math.sin(cam.angle);
+  // Marker exakt auf das Objekt pinnen: dieselbe tiefenabhängige
+  // Transformation wie der Hintergrund-Shader (Parallaxe-Exponent + Kippen).
+  // Eine tiefenneutrale Projektion würde beim Zoomen/Schwenken sichtbar
+  // gegen das Objekt driften ("die Schrift springt").
+  const parallax = state.parallax / 100;
+  const depthRange = 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
+  const drK = parallax * depthRange;
+  const bgTiltX = (state.tiltX / 100) * 0.08 + cam.tiltAddX + cam.driftTX * drK;
+  const bgTiltY = (state.tiltY / 100) * 0.08 + cam.tiltAddY + cam.driftTY * drK;
   const toScreen = (P) => {
-    const prx = (P.x - cam.cx) * scale, pry = (P.y - cam.cy) * scale;
+    const d = state.objFar ? 0.02 : depthAtPlane(P.x, P.y, imgAspect);
+    const ex = 1 + parallax * (d - 0.45) * depthRange;
+    const scaleD = cover * Math.pow(cam.zoom, ex);
+    const prx = (P.x - cam.cx - bgTiltX * (d - 0.45)) * scaleD;
+    const pry = (P.y - cam.cy - bgTiltY * (d - 0.45)) * scaleD;
     const px = rc * prx - rs * pry, py = rs * prx + rc * pry;
-    return { x: (px / viewAspect + 0.5) * W, y: (1 - (py + 0.5)) * H };
+    return { x: (px / viewAspect + 0.5) * W, y: (1 - (py + 0.5)) * H, scaleD };
   };
   const u = H / 1000; // Skalierungseinheit (1000er-Referenzhöhe)
   const ACC = "rgba(157,184,255,";
@@ -1439,7 +1452,7 @@ function drawOverlayTo(ctx, W, H, loopT, cam) {
       if (!L.on) continue;
       const sp = toScreen(L);
       if (sp.x < -80 * u || sp.x > W + 80 * u || sp.y < -80 * u || sp.y > H + 80 * u) continue;
-      const r = Math.max(16 * u, (L.sizePlane * scale * H) / 2);
+      const r = Math.max(16 * u, (L.sizePlane * sp.scaleD * H) / 2);
       ctx.strokeStyle = ACC + "0.75)";
       ctx.lineWidth = 1.6 * u;
       ctx.beginPath();
