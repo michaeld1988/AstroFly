@@ -480,6 +480,10 @@ void main() {
     // y negiert: gl_PointCoord zählt nach unten, der Clip-Space nach oben
     vec2 velPx = velClip * 0.5 * vec2(uPixelsY * uViewAspect, -uPixelsY);
     float rawLen = length(velPx);
+    // Langsame Sterne bleiben perfekt runde Punkte: Erst wenn die Bewegung
+    // deutlich über einen Sterndurchmesser hinausgeht, wächst der Schweif
+    // weich an - sonst wirken alle Sterne leicht "eiförmig" verformt
+    rawLen *= smoothstep(base * 0.4, base * 1.3, rawLen);
     // Nie größer werden als die GPU-Punktgröße erlaubt (sonst kappt der
     // Treiber das Sprite und der Sternkopf wird sichtbar "halbiert"),
     // plus 4 px Rand, damit der Kopf nie exakt auf der Sprite-Kante liegt
