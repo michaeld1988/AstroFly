@@ -80,6 +80,7 @@ const state = {
   gaiaPM: null,          // Eigenbewegung je Masken-Stern (Ebene/Jahr)
   gaiaPmYears: 0,        // Zeitraffer-Spanne in Jahren (0 = aus)
   objFar: false,         // Objekt einheitlich in die Ferne (hinter alle Sterne)
+  occlude: 0,            // Nebel verdeckt dahinterliegende Sterne (0 = aus)
   objInfo: null,         // erkanntes Hauptobjekt { id, facts, otype }
   labels: null,          // Feld-Beschriftungen [{ id, x, y, sizePlane, otype, on }]
   showInfo: true,        // Infokarte ins Video einblenden
@@ -360,6 +361,12 @@ uniform float uSpinMaskAmtS;
 uniform float uImgAspectS;
 uniform float uPmYears;   // Zeitraffer: verstrichene Jahre zum Zeitpunkt t
 uniform float uPmYears2;  // ... und kurz danach (für die Streifen)
+// Nebel-Okklusion: Nebelschwaden, die VOR einem Stern liegen, verdecken ihn
+uniform float uOcclude;    // Stärke 0..1 (0 = aus)
+uniform float uObjFarS;    // 1 = Objekt liegt einheitlich weit hinten
+uniform vec2 uTiltB;       // Kipp-Parallaxe des Hintergrunds (nicht der Sterne)
+uniform sampler2D uDepthS; // Tiefenkarte des Nebels
+uniform sampler2D uColorS; // Starless-Bild (Dichte der Nebelschwaden)
 out vec3 vColor;
 out float vAlpha;
 out vec2 vDir;    // Streifen-Richtung in Pixeln (normiert)
@@ -427,6 +434,32 @@ void main() {
   vec2 p = mat2(c, s, -s, c) * pr;
   vec2 clip = vec2(p.x * 2.0 / uViewAspect, p.y * 2.0);
 
+  // Nebel-Okklusion: Welcher Nebel-Punkt liegt an der Bildschirmposition
+  // dieses Sterns? Gleiche Fixpunkt-Iteration wie im Hintergrund-Shader;
+  // liegt der Nebel dort NÄHER an der Kamera als der Stern, schluckt seine
+  // Dichte (Helligkeit des Starless-Bilds) das Sternlicht
+  float occ = 0.0;
+  if (uOcclude > 0.0) {
+    vec2 qn = uCenter + pr / (uCover * uZoom);
+    vec2 uvN = vec2(qn.x / uImgAspectS, qn.y) + 0.5;
+    float dN = 0.02;
+    for (int i = 0; i < 3; i++) {
+      dN = textureLod(uDepthS, uvN, 0.0).r;
+      dN = mix(dN, 0.02, uObjFarS);
+      float exN = 1.0 + uParallax * (dN - 0.45) * uDepthRange;
+      float scaleN = uCover * pow(uZoom, exN);
+      qn = uCenter + pr / scaleN + uTiltB * (dN - 0.45);
+      uvN = vec2(qn.x / uImgAspectS, qn.y) + 0.5;
+    }
+    if (uvN.x > 0.0 && uvN.x < 1.0 && uvN.y > 0.0 && uvN.y < 1.0) {
+      vec3 cN = textureLod(uColorS, uvN, 0.0).rgb;
+      float lum = dot(cN, vec3(0.299, 0.587, 0.114));
+      float front = smoothstep(0.02, 0.14, dN - depth);
+      float dens = smoothstep(0.04, 0.45, lum);
+      occ = uOcclude * front * dens;
+    }
+  }
+
   float px = aSize * 2.0 * scale * uPixelsY * uStarSize;
   float base = clamp(px, 1.2, 500.0);
 
@@ -469,6 +502,7 @@ void main() {
   // Wurzel statt linear (und eine Untergrenze), damit lange Streifen sichtbar
   // bleiben statt physikalisch korrekt im Nichts zu verschwinden.
   vAlpha *= max(sqrt(vBase / vSize), 0.25);
+  vAlpha *= 1.0 - occ;
   float lumS = dot(aColor, vec3(0.299, 0.587, 0.114));
   vColor = max(mix(vec3(lumS), aColor, uStarSat), 0.0) * uStarBright;
 }`;
@@ -1804,6 +1838,17 @@ function render(forcedT) {
     const pmSpan = state.duration * (state.loopMode ? 0.5 : 1);
     u1f(starProg, "uPmYears", state.gaiaPmYears * (cam.te / pmSpan));
     u1f(starProg, "uPmYears2", state.gaiaPmYears * (cam2.te / pmSpan));
+    // Nebel-Okklusion: Tiefe + Dichte des Nebels an der Sternposition
+    u1f(starProg, "uOcclude", state.occlude / 100);
+    u1f(starProg, "uObjFarS", state.objFar ? 1 : 0);
+    u2f(starProg, "uTiltB", bgTiltX, bgTiltY);
+    gl.activeTexture(gl.TEXTURE6);
+    gl.bindTexture(gl.TEXTURE_2D, texDepth);
+    gl.activeTexture(gl.TEXTURE7);
+    gl.bindTexture(gl.TEXTURE_2D, texColor);
+    gl.activeTexture(gl.TEXTURE0);
+    u1i(starProg, "uDepthS", 6);
+    u1i(starProg, "uColorS", 7);
     gl.drawArrays(gl.POINTS, 0, state.starCount);
     gl.disable(gl.BLEND);
   }
@@ -2251,6 +2296,7 @@ I18N.onChange.push(updateTargetInfo);
 
 bindSlider("ctlGaiaAmt", "outGaiaAmt", "gaiaAmt", (v) => v + " %");
 bindSlider("ctlGaiaPm", "outGaiaPm", "gaiaPmYears", (v) => v.toLocaleString());
+bindSlider("ctlOcclude", "outOcclude", "occlude", (v) => v + " %");
 
 // Statuszeile: transienter Text (Laden/Fehler) oder Zustand aus state
 let gaiaTransient = null; // { key, args } | null
@@ -2490,6 +2536,15 @@ $("btnPlay").addEventListener("click", () => {
 $("btnRestart").addEventListener("click", () => {
   state.t0 = performance.now();
   state.pausedAt = 0;
+});
+// Leertaste = Play/Pause - außer wenn gerade ein Bedienelement den Fokus hat
+// (Slider/Buttons reagieren selbst auf die Leertaste, Textfelder tippen)
+document.addEventListener("keydown", (e) => {
+  if (e.code !== "Space" || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+  const el = document.activeElement;
+  if (el && /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(el.tagName)) return;
+  e.preventDefault();
+  $("btnPlay").click();
 });
 $("timeline").addEventListener("click", (e) => {
   const rect = $("timeline").getBoundingClientRect();

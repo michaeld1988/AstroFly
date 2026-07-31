@@ -117,11 +117,16 @@ All panel sections are collapsible – click a heading to open or close it
 
    More experimental options: stars inside the galaxy-spin region can
    **rotate along with the galaxy**; **object at true depth** treats the
-   image as one rigid distant object so all stars pass in front of it; and
+   image as one rigid distant object so all stars pass in front of it;
+   **nebula hides stars behind it** dims stars that sit deeper than the
+   nebula by its local density, so they visibly disappear behind clouds and
+   re-emerge during a flyby; and
    with a plate-solve solution loaded, AstroFly can **identify the objects
    in your field via SIMBAD** (CDS) and render an info card (distance, size,
    stars, age for popular objects) plus labeled markers that follow the
-   camera directly into the exported video.
+   camera directly into the exported video – objects known mainly by their
+   proper name (like the North America Nebula) are resolved to their catalog
+   number automatically.
 
    **Zoom target:** simply **click** the preview – the camera pans slowly
    toward that point over the whole flight while zooming in (following the
@@ -130,7 +135,8 @@ All panel sections are collapsible – click a heading to open or close it
    Double-click resets the target to the image center.
 
    **Preview size:** the 🔍 slider below the preview scales the viewport
-   (40–100 %); your choice is remembered.
+   (40–100 %); your choice is remembered. The **spacebar** starts and stops
+   the preview playback.
 4. **Stars**
    | Control | Effect |
    |---|---|
