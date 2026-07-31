@@ -258,6 +258,14 @@
       <p class="tip" data-i18n="spinStarsHint">Stars inside the spin area follow the galaxy's
       rotation and stay locked to its structure. Note: foreground stars that just happen to sit
       in front of the galaxy will rotate too – toggle as it suits your image.</p>
+      <label class="slider">
+        <span><span data-i18n="occlude">🌫️ Nebula hides stars behind it</span> <output id="outOcclude">0 %</output></span>
+        <input type="range" id="ctlOcclude" min="0" max="100" step="1" value="0">
+      </label>
+      <p class="tip" data-i18n="occludeHint">Stars whose depth places them BEHIND the nebula
+      are dimmed by the nebula's density (bright, dense regions swallow more starlight than
+      thin wisps) – during a flyby, stars visibly disappear behind clouds and re-emerge.
+      Stars in front of the nebula are unaffected. 0 = off.</p>
       <p class="tip" data-i18n="gaiaHint">⭐ Real star distances (Gaia): load a plate-solved
       version of your image (FITS from ASTAP, PixInsight or Siril, or a .wcs file from
       astrometry.net) – AstroFly then matches your detected stars against the ESA Gaia

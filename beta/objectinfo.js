@@ -98,36 +98,63 @@ function prettyObjId(id) {
   return m ? `${m[1]} ${m[2]}` : id.replace(/\s+/g, " ").trim();
 }
 
-/** SIMBAD-Kegelabfrage: größere Objekte im Feld (CSV, CORS-frei). */
+/** Eine CSV-Zeile in Felder zerlegen (Anführungszeichen überall erlaubt). */
+function csvFields(line) {
+  const out = [];
+  let i = 0;
+  while (i <= line.length) {
+    if (line[i] === '"') {
+      let end = i + 1;
+      while (end < line.length && line[end] !== '"') end++;
+      out.push(line.slice(i + 1, end));
+      i = end + 2; // schließendes " + Komma
+    } else {
+      let end = line.indexOf(",", i);
+      if (end === -1) end = line.length;
+      out.push(line.slice(i, end));
+      i = end + 1;
+    }
+  }
+  return out;
+}
+
+/**
+ * SIMBAD-Kegelabfrage: größere Objekte im Feld (CSV, CORS-frei).
+ * Viele bekannte Objekte heißen in SIMBAD primär nach ihrem Eigennamen
+ * (NGC 7000 = "NAME North America Nebula") - deshalb wird die Katalog-
+ * Nummer über die Alias-Tabelle (ident) mitgeliefert und pro Objekt der
+ * beste Katalogname gewählt (Messier vor NGC vor IC).
+ */
 async function querySimbad(ra, dec, radiusDeg) {
-  const adql = `SELECT TOP 40 main_id, ra, dec, otype_txt, galdim_majaxis FROM basic ` +
-    `WHERE 1=CONTAINS(POINT('ICRS',ra,dec),` +
+  const adql = `SELECT TOP 120 b.main_id, b.ra, b.dec, b.otype_txt, b.galdim_majaxis, i.id ` +
+    `FROM basic AS b JOIN ident AS i ON i.oidref = b.oid ` +
+    `WHERE 1=CONTAINS(POINT('ICRS',b.ra,b.dec),` +
     `CIRCLE('ICRS',${ra.toFixed(6)},${dec.toFixed(6)},${radiusDeg.toFixed(4)})) ` +
-    `AND galdim_majaxis IS NOT NULL ORDER BY galdim_majaxis DESC`;
+    `AND b.galdim_majaxis IS NOT NULL ` +
+    `AND (i.id LIKE 'M %' OR i.id LIKE 'NGC %' OR i.id LIKE 'IC %') ` +
+    `ORDER BY b.galdim_majaxis DESC`;
   const url = "https://simbad.cds.unistra.fr/simbad/sim-tap/sync?REQUEST=doQuery&LANG=ADQL&FORMAT=csv&QUERY=" +
     encodeURIComponent(adql);
   const resp = await fetch(url);
   if (!resp.ok) throw new Error("HTTP " + resp.status);
   const lines = (await resp.text()).trim().split("\n");
-  const out = [];
+  const CAT_RANK = { M: 0, NGC: 1, IC: 2 };
+  const byMain = new Map(); // main_id -> Objekt mit bestem Katalog-Alias
   for (let i = 1; i < lines.length; i++) {
-    // Einfaches CSV: erstes Feld kann in Anführungszeichen stehen
-    let rest = lines[i], id = "";
-    if (rest.startsWith('"')) {
-      const end = rest.indexOf('"', 1);
-      id = rest.slice(1, end);
-      rest = rest.slice(end + 2);
-    } else {
-      const c = rest.indexOf(",");
-      id = rest.slice(0, c);
-      rest = rest.slice(c + 1);
-    }
-    const p = rest.split(",");
-    if (p.length < 4) continue;
-    const oRa = +p[0], oDec = +p[1], size = +p[3];
-    let otype = p[2].replace(/"/g, "");
+    const f = csvFields(lines[i]);
+    if (f.length < 6) continue;
+    const mainId = f[0].trim(), alias = f[5].trim();
+    const oRa = +f[1], oDec = +f[2], size = +f[4];
+    const otype = f[3].replace(/"/g, "");
     if (!isFinite(oRa) || !isFinite(oDec)) continue;
-    out.push({ id: id.trim(), ra: oRa, dec: oDec, otype, sizeArcmin: isFinite(size) ? size : 0 });
+    const m = normObjId(alias).match(/^(M|NGC|IC)\d/);
+    if (!m) continue;
+    const rank = CAT_RANK[m[1]];
+    const prev = byMain.get(mainId);
+    if (prev && prev.rank <= rank) continue;
+    byMain.set(mainId, { id: alias, rank, ra: oRa, dec: oDec, otype, sizeArcmin: isFinite(size) ? size : 0 });
   }
+  const out = [...byMain.values()];
+  out.sort((a, b) => b.sizeArcmin - a.sizeArcmin);
   return out;
 }
