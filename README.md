@@ -45,8 +45,12 @@ Switch to **Pro mode** anytime for every individual control.
 Download the repository and open `index.html` in your browser – that's it,
 no build step required.
 
-All panel sections are collapsible – click a heading to open or close it
-(the state is remembered).
+The control panel is organized into **six tabs** (Images · Camera · Stars ·
+Look · Science · Export) in Pro mode – each tab shows a handful of core
+controls, everything else sits behind "Advanced" expanders, and explanation
+texts open on demand via the small "?" buttons. The active tab and the
+Easy/Pro choice are remembered. Running catalog queries (Gaia/SIMBAD) are
+shown as a status overlay on the preview.
 
 ## Usage
 
