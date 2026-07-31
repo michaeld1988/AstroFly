@@ -2205,16 +2205,27 @@ const SIMPLE_DEFAULTS = {
 
 // 8 Objekt-Presets: 3 Nebel, 3 Galaxien, 2 Sternhaufen. "look" wählt den
 // Look-Preset aus Sektion 5 mit; "set"/"checks" überschreiben danach gezielt.
+// Nach Michaels Beta-Test deutlich gezähmt - die Effektstärke skaliert
+// die Bewegungs-Parameter zusätzlich (50 = wie hier definiert)
 const FLIGHT_PRESETS = {
   nebGentle:      { look: "neutral", set: { ctlSpeed: 30, ctlParallax: 60, ctlDepthBoost: 40, ctlStarPar: 250, ctlBloom: 15 } },
-  nebDrift:       { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.4, ctlSpeed: 60, ctlStarPar: 300, ctlGenStars: 1000, ctlMblur: 25, ctlBloom: 15 }, checks: { ctlMblurStars: true } },
-  nebHyper:       { look: "hyper", set: { ctlSpeed: 75, ctlStarPar: 300, ctlTwinkleSpeed: 150 } },
-  galMajestic:    { look: "neutral", set: { ctlSpeed: 25, ctlParallax: 40, ctlDepthBoost: 30, ctlStarPar: 350, ctlTiltRamp: 25, ctlBloom: 15 } },
+  nebDrift:       { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.35, ctlSpeed: 55, ctlStarPar: 260, ctlGenStars: 1000, ctlMblur: 18, ctlBloom: 15 }, checks: { ctlMblurStars: true } },
+  nebHyper:       { look: "hyper", set: { ctlSpeed: 65, ctlStarPar: 300, ctlTwinkleSpeed: 150 } },
+  galMajestic:    { look: "neutral", set: { ctlSpeed: 25, ctlParallax: 40, ctlDepthBoost: 30, ctlStarPar: 300, ctlTiltRamp: 12, ctlBloom: 15 } },
   galSpin:        { look: "neutral", set: { ctlSpeed: 15, ctlSpinSpeed: 0.8, ctlSpinRadius: 65, ctlSpinDiff: 40, ctlSpinMaskAmt: 50, ctlBloom: 12 } },
-  galFlyby:       { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.5, ctlSpeed: 70, ctlTiltRamp: 35, ctlTiltRampDir: 90, ctlStarPar: 400, ctlMblur: 30, ctlBloom: 15 }, checks: { ctlMblurStars: true } },
-  clusterDive:    { look: "neutral", set: { ctlSpeed: 55, ctlSpread: 90, ctlStarPar: 500, ctlTwinkle: 35, ctlBloom: 25 } },
+  galFlyby:       { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.35, ctlSpeed: 55, ctlTiltRamp: 15, ctlTiltRampDir: 90, ctlStarPar: 280, ctlMblur: 18, ctlBloom: 15 }, checks: { ctlMblurStars: true } },
+  clusterDive:    { look: "neutral", set: { ctlSpeed: 50, ctlSpread: 90, ctlStarPar: 380, ctlTwinkle: 35, ctlBloom: 25 } },
   clusterSparkle: { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.3, ctlSpeed: 30, ctlTwinkle: 45, ctlTwinkleSpeed: 160, ctlSwayAmp: 20, ctlSwayRandom: 40, ctlBloom: 20 } },
 };
+
+// Effektstärke im Einfach-Modus: skaliert die Bewegungs-Parameter eines
+// Presets um ihre Neutralwerte herum (50 = Preset wie definiert)
+const FX_SCALED = { ctlSpeed: 40, ctlTiltRamp: 0, ctlSwayAmp: 0, ctlMblur: 0, ctlWarp: 0, ctlSpinSpeed: 0, ctlStarPar: 100 };
+state.simpleFx = (() => {
+  const v = parseInt(localStorage.getItem("astrofly-simplefx"), 10);
+  return v >= 10 && v <= 100 ? v : 50;
+})();
+state.activePreset = null;
 
 function setCtl(id, value) {
   const el = $(id);
@@ -2236,15 +2247,38 @@ function applyFlightPreset(name) {
   for (const [id, v] of Object.entries(SIMPLE_DEFAULTS)) setCtl(id, v);
   $("ctlPreset").value = p.look;
   $("ctlPreset").dispatchEvent(new Event("change")); // setzt Look + mblurStars
-  for (const [id, v] of Object.entries(p.set || {})) setCtl(id, v);
+  const k = state.simpleFx / 50;
+  for (const [id, v] of Object.entries(p.set || {})) {
+    const base = FX_SCALED[id];
+    setCtl(id, base === undefined ? v : base + (v - base) * k);
+  }
   for (const [id, v] of Object.entries(p.checks || {})) {
     $(id).checked = v;
     $(id).dispatchEvent(new Event("change"));
   }
+  // Richtungswahl nur bei seitlichen Flügen anbieten und anwenden
+  const lateral = p.flightMode === "lateral";
+  $("simpleDirRow").hidden = !lateral;
+  if (lateral) setCtl("ctlDriftDir", $("ctlSimpleDir").value);
+  state.activePreset = name;
   for (const card of document.querySelectorAll(".pcard")) {
     card.classList.toggle("active", card.dataset.preset === name);
   }
 }
+
+// Effektstärke + Richtung wirken sofort auf das aktive Preset
+$("ctlSimpleFx").value = state.simpleFx;
+$("outSimpleFx").textContent = state.simpleFx + " %";
+$("ctlSimpleFx").addEventListener("input", () => {
+  state.simpleFx = parseInt($("ctlSimpleFx").value, 10);
+  $("outSimpleFx").textContent = state.simpleFx + " %";
+  localStorage.setItem("astrofly-simplefx", state.simpleFx);
+  if (state.activePreset) applyFlightPreset(state.activePreset);
+});
+$("ctlSimpleDir").addEventListener("input", () => {
+  $("outSimpleDir").textContent = $("ctlSimpleDir").value + "°";
+  setCtl("ctlDriftDir", $("ctlSimpleDir").value);
+});
 
 for (const card of document.querySelectorAll(".pcard")) {
   card.addEventListener("click", () => applyFlightPreset(card.dataset.preset));
