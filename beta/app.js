@@ -2228,23 +2228,38 @@ $("ctlSimpleDuration").addEventListener("input", () => {
   setCtl("ctlDuration", v);
 });
 
-// Einfach/Profi-Umschaltung: im Einfach-Modus bleiben nur Laden, Presets,
-// Seitenverhältnis, Export und Feedback sichtbar
+// Einfach/Profi-Umschaltung + Tab-Navigation: Jede Sektion trägt data-tab
+// (ihren Profi-Tab) und optional data-easy (im Einfach-Modus sichtbar).
+// Im Einfach-Modus werden die data-easy-Sektionen gestapelt angezeigt,
+// im Profi-Modus nur die Sektionen des aktiven Tabs.
 state.uiMode = localStorage.getItem("astrofly-mode") || "simple";
-const SIMPLE_VISIBLE = ["sec1", "secSimple", "sec6", "sec7", "sec8"];
+state.activeTab = localStorage.getItem("astrofly-tab") || "bilder";
 
 function applyUiMode() {
   const simple = state.uiMode === "simple";
   $("modeSimple").classList.toggle("active", simple);
   $("modePro").classList.toggle("active", !simple);
+  $("proTabs").hidden = simple;
+  for (const b of document.querySelectorAll("#proTabs button")) {
+    b.classList.toggle("active", b.dataset.tab === state.activeTab);
+  }
   for (const sec of document.querySelectorAll("#panel section")) {
-    const key = sec.querySelector('[data-i18n^="sec"]')?.dataset.i18n;
-    sec.hidden = simple ? !SIMPLE_VISIBLE.includes(key) : key === "secSimple";
+    if (sec.id === "simpleSection") { sec.hidden = !simple; continue; }
+    sec.hidden = simple ? !sec.hasAttribute("data-easy")
+                        : sec.dataset.tab !== state.activeTab;
   }
   localStorage.setItem("astrofly-mode", state.uiMode);
+  localStorage.setItem("astrofly-tab", state.activeTab);
 }
 $("modeSimple").addEventListener("click", () => { state.uiMode = "simple"; applyUiMode(); });
 $("modePro").addEventListener("click", () => { state.uiMode = "pro"; applyUiMode(); });
+for (const b of document.querySelectorAll("#proTabs button")) {
+  b.addEventListener("click", () => {
+    state.activeTab = b.dataset.tab;
+    $("panelbody").scrollTop = 0;
+    applyUiMode();
+  });
+}
 applyUiMode();
 
 let smoothTimer = null;
@@ -2298,6 +2313,16 @@ bindSlider("ctlGaiaAmt", "outGaiaAmt", "gaiaAmt", (v) => v + " %");
 bindSlider("ctlGaiaPm", "outGaiaPm", "gaiaPmYears", (v) => v.toLocaleString());
 bindSlider("ctlOcclude", "outOcclude", "occlude", (v) => v + " %");
 
+// Laufende Katalog-Abfragen prominent über der Vorschau anzeigen -
+// die kleine Statuszeile im Panel übersieht man leicht
+function stageToast(text) {
+  const el = $("stageToast");
+  if (!el) return;
+  if (!text) { el.hidden = true; return; }
+  $("stageToastText").textContent = text;
+  el.hidden = false;
+}
+
 // Statuszeile: transienter Text (Laden/Fehler) oder Zustand aus state
 let gaiaTransient = null; // { key, args } | null
 function updateGaiaStatus() {
@@ -2317,6 +2342,7 @@ function updateGaiaStatus() {
     $("ctlGaiaOnly").checked = false;
   }
 
+  stageToast(gaiaTransient && gaiaTransient.key === "gaiaQuerying" ? t("gaiaQuerying") : null);
   if (gaiaTransient) { el.textContent = t(gaiaTransient.key, ...gaiaTransient.args); return; }
   if (g) {
     el.textContent = t("gaiaResult", g.matched, g.total, pct, g.dMin, g.dMax) +
@@ -2386,6 +2412,7 @@ $("btnObjects").addEventListener("click", async () => {
   const corner = wcsPix2Sky(wcs, 1, 1);
   const radius = Math.min(6, angSep(c.ra, c.dec, corner.ra, corner.dec) * 1.05 + 0.02);
   $("objStatus").textContent = t("objDetecting");
+  stageToast(t("objDetecting"));
   $("btnObjects").disabled = true;
   try {
     const objs = await querySimbad(c.ra, c.dec, radius);
@@ -2418,6 +2445,7 @@ $("btnObjects").addEventListener("click", async () => {
   } catch (e) {
     $("objStatus").textContent = t("objNetErr");
   }
+  stageToast(null);
   $("btnObjects").disabled = !state.wcs;
 });
 
@@ -3093,23 +3121,13 @@ $("ctlMaskStretched").addEventListener("change", () => {
 
 // ---------------------------------------------------------------- Panel-Menüs
 
-// Sektionen einklappbar machen (Zustand wird gespeichert)
-for (const [i, sec] of document.querySelectorAll("#panel section").entries()) {
-  const h2 = sec.querySelector("h2");
-  if (!h2) continue;
-  const body = document.createElement("div");
-  body.className = "secbody";
-  while (h2.nextSibling) body.appendChild(h2.nextSibling);
-  sec.appendChild(body);
-  const keyName = h2.dataset.i18n || h2.querySelector("[data-i18n]")?.dataset.i18n || i;
-  const key = "astrofly-sec-" + keyName;
-  const saved = localStorage.getItem(key);
-  // Bilder laden, Einfach-Presets und Kamera standardmäßig offen
-  const defaultOpen = ["sec1", "secSimple", "sec3"].includes(keyName);
-  const open = saved === null ? defaultOpen : saved === "1";
-  sec.classList.toggle("collapsed", !open);
-  h2.addEventListener("click", () => {
-    const collapsed = sec.classList.toggle("collapsed");
-    localStorage.setItem(key, collapsed ? "0" : "1");
-  });
-}
+// ?-Hilfen: Erklärtexte erscheinen erst auf Klick aufs Fragezeichen.
+// stopPropagation, damit der Klick in einem <label> nicht die Checkbox schaltet
+document.addEventListener("click", (e) => {
+  const qm = e.target.closest(".qm");
+  if (!qm || !qm.dataset.help) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const el = $(qm.dataset.help);
+  if (el) el.hidden = !el.hidden;
+});
