@@ -7,193 +7,226 @@
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
-  --bg: #0b0d12; --panel: #12151d; --panel2: #1a1e29; --panel3: #202636;
-  --border: #262b3a; --text: #dbe1ee; --muted: #8a93a8;
-  --accent: #7aa2ff; --accent2: #b07aff;
+  --bg: #07090e; --panel: #0e1118; --panel2: #151923; --panel3: #1b2130;
+  --border: #232938; --border2: #2e3547;
+  --text: #d7dce8; --muted: #7d8598; --faint: #565e72;
+  --accent: #8fb0ff; --accent-dim: #5d7dc4;
+  --glow: rgba(143,176,255,0.25);
 }
 html, body { height: 100%; }
 body {
   background: var(--bg); color: var(--text);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
   font-size: 14px; overflow: hidden;
 }
+.num { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 11.5px; letter-spacing: 0; }
+svg.ic { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+svg.ic.sm { width: 15px; height: 15px; }
+
 #mocknote {
   position: fixed; top: 0; left: 0; right: 0; z-index: 50;
-  background: linear-gradient(90deg, #2a3b66, #3b2a66);
-  color: #fff; font-size: 12px; text-align: center; padding: 5px 10px;
+  background: #10141d; border-bottom: 1px solid var(--border);
+  color: var(--muted); font-size: 11px; letter-spacing: 0.4px; text-align: center; padding: 6px 10px;
 }
-#app { display: flex; height: 100vh; padding-top: 26px; }
+#mocknote b { color: var(--accent); font-weight: 600; }
+#app { display: flex; height: 100vh; padding-top: 27px; }
 
 /* ---------- Panel ---------- */
 #panel {
-  width: 370px; min-width: 370px; background: var(--panel);
+  width: 372px; min-width: 372px; background: var(--panel);
   border-right: 1px solid var(--border);
   display: flex; flex-direction: column; overflow: hidden;
 }
-.panelhead { padding: 14px 16px 10px; }
+.panelhead { padding: 16px 18px 12px; }
 .headrow { display: flex; align-items: center; justify-content: space-between; }
-.headrow h1 { font-size: 19px; letter-spacing: 0.5px; }
-.mode { display: flex; background: var(--panel2); border: 1px solid var(--border); border-radius: 20px; padding: 2px; }
+.brand { display: flex; align-items: center; gap: 9px; }
+.brand svg { width: 26px; height: 26px; stroke: var(--accent); fill: none; stroke-width: 1.4; }
+.brand h1 { font-size: 17px; font-weight: 600; letter-spacing: 2.5px; text-transform: uppercase; }
+.brand h1 span { color: var(--accent); }
+.mode { display: flex; background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 2px; }
 .mode button {
-  border: 0; background: transparent; color: var(--muted); font-size: 12px;
-  font-weight: 600; padding: 5px 13px; border-radius: 16px; cursor: pointer;
+  border: 0; background: transparent; color: var(--muted); font-size: 11px;
+  font-weight: 600; letter-spacing: 1.2px; text-transform: uppercase;
+  padding: 6px 14px; border-radius: 6px; cursor: pointer;
 }
-.mode button.active { background: linear-gradient(135deg, #2a3b66, #3b2a66); color: #fff; }
+.mode button.active { background: var(--panel3); color: var(--text); box-shadow: inset 0 0 0 1px var(--border2); }
 
 /* Tab-Leiste */
-#tabs {
-  display: flex; gap: 2px; padding: 8px 10px 0; border-bottom: 1px solid var(--border);
-}
+#tabs { display: flex; padding: 4px 12px 0; border-bottom: 1px solid var(--border); }
 #tabs button {
-  flex: 1; background: transparent; border: 0; color: var(--muted); cursor: pointer;
-  font-size: 17px; padding: 7px 2px 8px; border-bottom: 2px solid transparent;
-  border-radius: 8px 8px 0 0; line-height: 1.15; position: relative;
+  flex: 1; background: transparent; border: 0; color: var(--faint); cursor: pointer;
+  padding: 9px 2px 10px; border-bottom: 2px solid transparent; position: relative;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
 }
-#tabs button small { display: block; font-size: 9px; letter-spacing: 0.3px; margin-top: 2px; }
-#tabs button:hover { background: var(--panel2); }
-#tabs button.active { color: var(--text); border-bottom-color: var(--accent); background: var(--panel2); }
+#tabs button small { font-size: 9px; letter-spacing: 1.2px; text-transform: uppercase; font-weight: 600; }
+#tabs button:hover { color: var(--muted); }
+#tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
+#tabs button.active small { color: var(--text); }
 #tabs button .dot {
-  position: absolute; top: 4px; right: 8px; width: 7px; height: 7px; border-radius: 50%;
-  background: var(--accent2); box-shadow: 0 0 6px var(--accent2); display: none;
+  position: absolute; top: 6px; right: 14px; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 8px var(--accent); display: none;
 }
 #tabs button.notify .dot { display: block; }
 
 /* Tab-Inhalt */
-#tabbody { flex: 1; overflow-y: auto; padding: 14px 16px 40px; }
+#tabbody { flex: 1; overflow-y: auto; padding: 16px 18px 44px; }
+#tabbody::-webkit-scrollbar { width: 8px; }
+#tabbody::-webkit-scrollbar-thumb { background: var(--panel3); border-radius: 4px; }
 .tabpane { display: none; }
 .tabpane.active { display: block; }
-.group { margin-bottom: 18px; }
+.group { margin-bottom: 22px; }
 .group > h3 {
-  font-size: 12px; text-transform: uppercase; letter-spacing: 1px;
-  color: var(--accent); margin-bottom: 10px; display: flex; align-items: center; gap: 6px;
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 2px; font-weight: 600;
+  color: var(--muted); margin-bottom: 12px; display: flex; align-items: center; gap: 7px;
+  padding-bottom: 7px; border-bottom: 1px solid var(--border);
 }
+.group > h3 .ln { flex: 1; }
 .badge {
-  font-size: 9.5px; text-transform: none; letter-spacing: 0; font-weight: 600;
-  background: rgba(176,122,255,0.15); color: var(--accent2);
-  border: 1px solid rgba(176,122,255,0.4); padding: 1px 7px; border-radius: 10px;
+  font-size: 8.5px; letter-spacing: 1px; font-weight: 600;
+  color: var(--accent-dim); border: 1px solid var(--border2);
+  padding: 2px 7px; border-radius: 3px; white-space: nowrap; flex: none;
 }
-.badge.ok { background: rgba(90,200,140,0.12); color: #7fd8a8; border-color: rgba(90,200,140,0.4); }
+.badge.ok { color: #7fd8a8; border-color: rgba(90,200,140,0.4); }
 
 /* Regler-Zeile */
-.row { display: flex; align-items: center; gap: 8px; margin: 9px 0; }
-.row label { flex: 1; color: var(--text); font-size: 13px; display: flex; align-items: center; gap: 6px; }
-.row output { color: var(--muted); font-size: 12px; min-width: 44px; text-align: right; }
-input[type=range] { flex: 1.2; accent-color: var(--accent); height: 18px; }
-input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; }
+.row { display: flex; align-items: center; gap: 9px; margin: 10px 0; }
+.row label { flex: 1; color: var(--text); font-size: 12.5px; display: flex; align-items: center; gap: 6px; }
+.row output { color: var(--accent); min-width: 48px; text-align: right; }
+input[type=range] { flex: 1.15; accent-color: var(--accent-dim); height: 16px; }
+input[type=checkbox] { accent-color: var(--accent-dim); width: 14px; height: 14px; }
 select, input[type=text] {
   background: var(--panel2); color: var(--text); border: 1px solid var(--border);
-  border-radius: 7px; padding: 6px 8px; font-size: 13px; width: 100%;
+  border-radius: 6px; padding: 7px 9px; font-size: 12.5px; width: 100%;
 }
-.checkrow { display: flex; align-items: center; gap: 8px; margin: 9px 0; font-size: 13px; }
+.checkrow { display: flex; align-items: center; gap: 9px; margin: 10px 0; font-size: 12.5px; }
 
-/* ❓-Hilfe */
+/* ?-Hilfe */
 .qm {
-  width: 17px; height: 17px; border-radius: 50%; border: 1px solid var(--border);
-  background: var(--panel2); color: var(--muted); font-size: 10.5px; cursor: pointer;
-  flex: none; line-height: 1;
+  width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--border2);
+  background: transparent; color: var(--faint); font-size: 10px; cursor: pointer;
+  flex: none; line-height: 1; font-family: inherit;
 }
 .qm:hover { border-color: var(--accent); color: var(--accent); }
 .hint {
-  display: none; background: var(--panel2); border-left: 3px solid var(--accent);
-  border-radius: 0 8px 8px 0; color: var(--muted); font-size: 12px;
-  padding: 8px 10px; margin: 4px 0 10px; line-height: 1.45;
+  display: none; border-left: 2px solid var(--border2);
+  color: var(--muted); font-size: 11.5px;
+  padding: 6px 10px; margin: 4px 0 10px; line-height: 1.5;
 }
 .hint.open { display: block; }
 
 /* Erweitert-Expander */
 .adv > summary {
-  cursor: pointer; color: var(--muted); font-size: 12.5px; font-weight: 600;
-  padding: 7px 0; list-style: none; user-select: none;
+  cursor: pointer; color: var(--muted); font-size: 11px; font-weight: 600;
+  letter-spacing: 1.2px; text-transform: uppercase;
+  padding: 9px 0; list-style: none; user-select: none;
+  display: flex; align-items: center; gap: 8px;
 }
-.adv > summary::before { content: "⌄ "; color: var(--accent); }
-.adv[open] > summary::before { content: "⌃ "; }
+.adv > summary::before {
+  content: ""; width: 7px; height: 7px; border-right: 1.5px solid var(--faint);
+  border-bottom: 1.5px solid var(--faint); transform: rotate(45deg) translateY(-2px);
+  transition: transform 0.15s; flex: none;
+}
+.adv[open] > summary::before { transform: rotate(225deg) translateY(-1px); }
 .adv > summary:hover { color: var(--text); }
-.adv { border-top: 1px dashed var(--border); margin-top: 6px; }
+.adv { border-top: 1px solid var(--border); margin-top: 8px; }
 
 /* Buttons */
 .btn {
-  display: block; width: 100%; text-align: center; background: var(--panel2);
-  border: 1px solid var(--border); color: var(--text); border-radius: 9px;
-  padding: 9px 10px; font-size: 13px; cursor: pointer; margin: 7px 0;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; background: var(--panel2);
+  border: 1px solid var(--border2); color: var(--text); border-radius: 7px;
+  padding: 9px 10px; font-size: 12.5px; cursor: pointer; margin: 8px 0;
 }
-.btn:hover { border-color: var(--accent); }
+.btn:hover { border-color: var(--accent-dim); }
 .btn.primary {
-  background: linear-gradient(135deg, #2a3b66, #3b2a66);
-  border-color: var(--accent); font-weight: 600; font-size: 14px;
+  background: linear-gradient(180deg, var(--panel3), var(--panel2));
+  border-color: var(--accent-dim); font-weight: 600; letter-spacing: 0.6px;
+  box-shadow: 0 0 18px rgba(143,176,255,0.12);
 }
+.btn.ghost { border-style: dashed; color: var(--faint); border-color: var(--border); }
+.btn[disabled] { opacity: 0.4; cursor: default; }
 .filegrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .filecard {
-  border: 1.5px dashed var(--border); border-radius: 10px; padding: 14px 8px;
-  text-align: center; cursor: pointer; font-size: 12.5px; color: var(--muted);
+  border: 1px dashed var(--border2); border-radius: 8px; padding: 13px 8px;
+  text-align: center; cursor: pointer; font-size: 11px; color: var(--faint);
 }
-.filecard:hover { border-color: var(--accent); color: var(--text); }
-.filecard.loaded { border-style: solid; border-color: #4a9d6f; color: var(--text); }
-.filecard b { display: block; font-size: 13px; color: var(--text); margin-bottom: 3px; }
+.filecard:hover { border-color: var(--accent-dim); }
+.filecard.loaded { border-style: solid; border-color: rgba(127,216,168,0.45); color: var(--muted); }
+.filecard b { display: block; font-size: 12px; color: var(--text); margin-bottom: 3px; font-weight: 600; }
 
-/* Stil-Karten (Einfach-Modus) */
-.pgrid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin: 8px 0 14px; }
+/* Stil-Karten */
+.pgroup { font-size: 9.5px; letter-spacing: 1.8px; text-transform: uppercase; color: var(--faint); margin: 12px 0 6px; }
+.pgrid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 7px; }
 .pcard {
-  background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
-  color: var(--text); padding: 10px 8px; cursor: pointer; text-align: left; font-size: 12px;
+  background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+  color: var(--text); padding: 10px 9px; cursor: pointer; text-align: left;
 }
-.pcard b { display: block; font-size: 12.5px; margin-bottom: 3px; }
-.pcard small { color: var(--muted); font-size: 10.5px; line-height: 1.3; display: block; }
-.pcard:hover, .pcard.active { border-color: var(--accent); background: var(--panel3); }
-.pcard .tune { color: var(--accent); font-size: 10.5px; display: inline-block; margin-top: 5px; }
+.pcard b { display: block; font-size: 12px; margin-bottom: 3px; font-weight: 600; }
+.pcard small { color: var(--faint); font-size: 10px; line-height: 1.35; display: block; }
+.pcard:hover { border-color: var(--border2); }
+.pcard.active { border-color: var(--accent-dim); box-shadow: inset 0 0 0 1px var(--accent-dim), 0 0 14px rgba(143,176,255,0.08); }
+.pcard .tune { color: var(--accent-dim); font-size: 10px; display: inline-block; margin-top: 6px; letter-spacing: 0.5px; }
 
-/* Look-Preset-Chips */
+/* Chips */
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
 .chip {
-  background: var(--panel2); border: 1px solid var(--border); border-radius: 15px;
-  color: var(--muted); font-size: 12px; padding: 5px 12px; cursor: pointer;
+  background: transparent; border: 1px solid var(--border2); border-radius: 6px;
+  color: var(--muted); font-size: 11.5px; padding: 5px 12px; cursor: pointer;
 }
-.chip:hover, .chip.active { border-color: var(--accent); color: var(--text); }
+.chip:hover { color: var(--text); }
+.chip.active { border-color: var(--accent-dim); color: var(--accent); background: rgba(143,176,255,0.06); }
 
 /* Wissenschaft */
 .scicard {
-  background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
-  padding: 12px; margin-bottom: 12px; font-size: 12.5px; color: var(--muted);
+  background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px; margin-bottom: 12px; font-size: 12px; color: var(--muted);
 }
-.scicard .strow { display: flex; align-items: center; gap: 8px; }
-.steps { display: flex; gap: 4px; margin: 10px 0 2px; }
-.steps span { flex: 1; height: 4px; border-radius: 2px; background: var(--border); }
-.steps span.done { background: linear-gradient(90deg, var(--accent), var(--accent2)); }
-.objlist { margin: 8px 0; }
-.objlist .checkrow { margin: 5px 0; }
+.scicard .strow { display: flex; align-items: center; gap: 9px; }
+.scicard .strow svg { color: var(--accent); flex: none; }
+.steps { display: flex; gap: 4px; margin: 11px 0 2px; }
+.steps span { flex: 1; height: 3px; border-radius: 2px; background: var(--border2); }
+.steps span.done { background: var(--accent-dim); box-shadow: 0 0 6px var(--glow); }
+.sublist { padding-left: 23px; }
+.sublist .checkrow { margin: 5px 0; color: var(--muted); }
 
 /* ---------- Vorschau ---------- */
-#stage { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 20px; position: relative; }
-#previewwrap { position: relative; width: min(92%, 860px); }
+#stage { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 20px; }
+#previewwrap { position: relative; width: min(92%, 880px); }
 #preview {
-  width: 100%; aspect-ratio: 16/9; border-radius: 12px; border: 1px solid var(--border);
+  width: 100%; aspect-ratio: 16/9; border-radius: 10px; border: 1px solid var(--border);
   background:
-    radial-gradient(ellipse 55% 45% at 62% 44%, rgba(196,132,88,0.55), transparent 70%),
-    radial-gradient(ellipse 30% 26% at 58% 40%, rgba(255,214,170,0.5), transparent 70%),
-    radial-gradient(ellipse 70% 60% at 40% 60%, rgba(88,196,182,0.28), transparent 70%),
-    radial-gradient(ellipse 90% 80% at 50% 50%, #131722, #0a0c11);
+    radial-gradient(ellipse 55% 45% at 62% 44%, rgba(196,132,88,0.5), transparent 70%),
+    radial-gradient(ellipse 30% 26% at 58% 40%, rgba(255,214,170,0.45), transparent 70%),
+    radial-gradient(ellipse 70% 60% at 40% 60%, rgba(88,196,182,0.24), transparent 70%),
+    radial-gradient(ellipse 90% 80% at 50% 50%, #10141d, #06080c);
   position: relative; overflow: hidden;
 }
 #preview .star { position: absolute; background: #fff; border-radius: 50%; box-shadow: 0 0 4px #fff; }
 #toast {
   position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
-  background: rgba(14,17,26,0.92); border: 1px solid var(--accent);
-  border-radius: 12px; padding: 10px 18px; font-size: 13px; display: none;
-  align-items: center; gap: 10px; white-space: nowrap; box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+  background: rgba(10,13,19,0.94); border: 1px solid var(--border2);
+  border-left: 2px solid var(--accent);
+  border-radius: 8px; padding: 10px 16px; font-size: 12.5px; display: none;
+  align-items: center; gap: 10px; white-space: nowrap; box-shadow: 0 6px 28px rgba(0,0,0,0.55);
 }
 #toast.show { display: flex; }
+#toast b { color: var(--accent); }
 .spin {
-  width: 15px; height: 15px; border: 2px solid var(--border); border-top-color: var(--accent);
+  width: 14px; height: 14px; border: 1.5px solid var(--border2); border-top-color: var(--accent);
   border-radius: 50%; animation: rot 0.9s linear infinite; flex: none;
 }
 @keyframes rot { to { transform: rotate(360deg); } }
-#transport { display: flex; align-items: center; gap: 10px; width: min(92%, 860px); }
+#transport { display: flex; align-items: center; gap: 10px; width: min(92%, 880px); }
 #transport button {
-  background: var(--panel2); border: 1px solid var(--border); color: var(--text);
-  border-radius: 8px; width: 38px; height: 32px; cursor: pointer; font-size: 14px;
+  background: var(--panel2); border: 1px solid var(--border2); color: var(--text);
+  border-radius: 7px; width: 38px; height: 32px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
 }
-#timeline { flex: 1; height: 6px; background: var(--panel2); border-radius: 3px; position: relative; }
-#timeline i { position: absolute; left: 0; top: 0; bottom: 0; width: 34%; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 3px; }
-.stagehint { color: var(--muted); font-size: 12px; }
+#transport button:hover { border-color: var(--accent-dim); }
+#timeline { flex: 1; height: 4px; background: var(--panel3); border-radius: 2px; position: relative; }
+#timeline i { position: absolute; left: 0; top: 0; bottom: 0; width: 34%; background: var(--accent-dim); border-radius: 2px; box-shadow: 0 0 8px var(--glow); }
+.stagehint { color: var(--faint); font-size: 11.5px; letter-spacing: 0.3px; }
+.stagehint a { color: var(--accent-dim); }
 
 @media (max-width: 900px) {
   #app { flex-direction: column-reverse; }
@@ -205,28 +238,106 @@ select, input[type=text] {
 </style>
 </head>
 <body>
-<div id="mocknote">🎨 Design-Entwurf (klickbares Mockup) – Regler ohne Funktion, Struktur &amp; Bedienlogik zum Anfassen</div>
+
+<!-- Icon-Sprite: monochrome Linien-Icons -->
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="i-logo" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="4.2"/>
+    <ellipse cx="12" cy="12" rx="10" ry="4.4" transform="rotate(-18 12 12)"/>
+    <circle cx="20.4" cy="8.2" r="0.9" fill="currentColor" stroke="none"/>
+  </symbol>
+  <symbol id="i-img" viewBox="0 0 24 24">
+    <rect x="3.5" y="5" width="17" height="14" rx="2"/>
+    <path d="M3.5 15.5 L9 10.5 L13.5 15 L16.5 12.5 L20.5 16"/>
+    <circle cx="15.5" cy="9" r="1.1"/>
+  </symbol>
+  <symbol id="i-cam" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="8.5"/>
+    <path d="M12 3.5 L12 12 L18.5 17.5"/>
+    <path d="M12 12 L5.5 17.5"/>
+    <path d="M12 12 L20.2 9"/>
+    <path d="M12 12 L3.8 9"/>
+  </symbol>
+  <symbol id="i-star" viewBox="0 0 24 24">
+    <path d="M12 3 L13.6 10.4 L21 12 L13.6 13.6 L12 21 L10.4 13.6 L3 12 L10.4 10.4 Z"/>
+  </symbol>
+  <symbol id="i-look" viewBox="0 0 24 24">
+    <path d="M4 7.5 H20 M4 12 H20 M4 16.5 H20"/>
+    <circle cx="9" cy="7.5" r="1.9" fill="var(--panel)"/>
+    <circle cx="15.5" cy="12" r="1.9" fill="var(--panel)"/>
+    <circle cx="7" cy="16.5" r="1.9" fill="var(--panel)"/>
+  </symbol>
+  <symbol id="i-sci" viewBox="0 0 24 24">
+    <ellipse cx="12" cy="12" rx="9.5" ry="3.6" transform="rotate(30 12 12)"/>
+    <ellipse cx="12" cy="12" rx="9.5" ry="3.6" transform="rotate(-30 12 12)"/>
+    <circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none"/>
+  </symbol>
+  <symbol id="i-export" viewBox="0 0 24 24">
+    <path d="M12 4 V14.5 M8 11 L12 15 L16 11"/>
+    <path d="M4.5 16.5 V18.5 A1.5 1.5 0 0 0 6 20 H18 A1.5 1.5 0 0 0 19.5 18.5 V16.5"/>
+  </symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24">
+    <path d="M6.5 3.5 H14 L18.5 8 V20.5 H6.5 Z M14 3.5 V8 H18.5"/>
+  </symbol>
+  <symbol id="i-target" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="3"/>
+    <path d="M12 2.5 V6 M12 18 V21.5 M2.5 12 H6 M18 12 H21.5"/>
+  </symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5 L18 12 L8 18.5 Z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8.5 5.5 V18.5 M15.5 5.5 V18.5"/></symbol>
+  <symbol id="i-restart" viewBox="0 0 24 24"><path d="M5 12 A7 7 0 1 1 7 17 M5 12 V7 M5 12 H10"/></symbol>
+  <symbol id="i-orbit" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="3"/>
+    <ellipse cx="12" cy="12" rx="9" ry="9"/>
+    <circle cx="12" cy="3" r="1" fill="currentColor" stroke="none"/>
+  </symbol>
+  <symbol id="i-fog" viewBox="0 0 24 24">
+    <path d="M4 9 C6 7, 9 7, 11 9 S16 11, 18 9"/>
+    <path d="M4 13 C6 11, 9 11, 11 13 S16 15, 18 13"/>
+    <path d="M4 17 C6 15, 9 15, 11 17 S16 19, 18 17"/>
+    <circle cx="19.5" cy="5.5" r="1" fill="currentColor" stroke="none"/>
+  </symbol>
+  <symbol id="i-dice" viewBox="0 0 24 24">
+    <rect x="4.5" y="4.5" width="15" height="15" rx="3"/>
+    <circle cx="9" cy="9" r="1" fill="currentColor" stroke="none"/>
+    <circle cx="15" cy="15" r="1" fill="currentColor" stroke="none"/>
+    <circle cx="15" cy="9" r="1" fill="currentColor" stroke="none"/>
+    <circle cx="9" cy="15" r="1" fill="currentColor" stroke="none"/>
+  </symbol>
+  <symbol id="i-bug" viewBox="0 0 24 24">
+    <ellipse cx="12" cy="13.5" rx="5" ry="6.5"/>
+    <path d="M12 7 A3 3 0 0 1 15 4 M12 7 A3 3 0 0 0 9 4 M4.5 11 H7 M17 11 H19.5 M5 17.5 L7.5 16 M19 17.5 L16.5 16 M12 7 V20"/>
+  </symbol>
+  <symbol id="i-idea" viewBox="0 0 24 24">
+    <path d="M9 18 H15 M10 21 H14"/>
+    <path d="M8 14.5 A6 6 0 1 1 16 14.5 L15 16 H9 Z"/>
+  </symbol>
+</svg>
+
+<div id="mocknote"><b>Design-Entwurf</b> · klickbares Mockup – Regler ohne Funktion, Struktur &amp; Bedienlogik zum Anfassen</div>
 <div id="app">
 
   <aside id="panel">
     <div class="panelhead">
       <div class="headrow">
-        <h1>🌌 AstroFly</h1>
+        <div class="brand">
+          <svg><use href="#i-logo"/></svg>
+          <h1>Astro<span>Fly</span></h1>
+        </div>
         <div class="mode">
-          <button id="mEasy" class="active" onclick="setMode('easy')">✨ Einfach</button>
-          <button id="mPro" onclick="setMode('pro')">🛠 Profi</button>
+          <button id="mEasy" class="active" onclick="setMode('easy')">Einfach</button>
+          <button id="mPro" onclick="setMode('pro')">Profi</button>
         </div>
       </div>
     </div>
 
-    <!-- Tab-Leiste (nur Profi) -->
     <nav id="tabs" hidden>
-      <button data-tab="tBilder" class="active">📁<small>Bilder</small><i class="dot"></i></button>
-      <button data-tab="tKamera">🎥<small>Kamera</small><i class="dot"></i></button>
-      <button data-tab="tSterne">✨<small>Sterne</small><i class="dot"></i></button>
-      <button data-tab="tLook">🎨<small>Look</small><i class="dot"></i></button>
-      <button data-tab="tSci">🔬<small>Wissen</small><i class="dot"></i></button>
-      <button data-tab="tExport">📤<small>Export</small><i class="dot"></i></button>
+      <button data-tab="tBilder" class="active"><svg class="ic"><use href="#i-img"/></svg><small>Bilder</small><i class="dot"></i></button>
+      <button data-tab="tKamera"><svg class="ic"><use href="#i-cam"/></svg><small>Kamera</small><i class="dot"></i></button>
+      <button data-tab="tSterne"><svg class="ic"><use href="#i-star"/></svg><small>Sterne</small><i class="dot"></i></button>
+      <button data-tab="tLook"><svg class="ic"><use href="#i-look"/></svg><small>Look</small><i class="dot"></i></button>
+      <button data-tab="tSci"><svg class="ic"><use href="#i-sci"/></svg><small>Wissen</small><i class="dot"></i></button>
+      <button data-tab="tExport"><svg class="ic"><use href="#i-export"/></svg><small>Export</small><i class="dot"></i></button>
     </nav>
 
     <div id="tabbody">
@@ -234,58 +345,67 @@ select, input[type=text] {
       <!-- ===================== EINFACH-MODUS ===================== -->
       <div id="easy">
         <div class="group">
-          <h3>1 · Bilder laden</h3>
+          <h3>1 · Bilder laden<span class="ln"></span></h3>
           <div class="filegrid">
             <div class="filecard loaded"><b>Starless-Bild</b>andromeda.tif ✓</div>
             <div class="filecard"><b>Sternmaske</b>– keine Datei –</div>
           </div>
-          <button class="btn">✨ Mit Demo-Bild ausprobieren (Orionnebel)</button>
+          <button class="btn"><svg class="ic sm"><use href="#i-star"/></svg>Mit Demo-Bild ausprobieren (Orionnebel)</button>
         </div>
         <div class="group">
-          <h3>2 · Stil wählen</h3>
+          <h3>2 · Stil wählen<span class="ln"></span></h3>
+          <div class="pgroup">Nebel</div>
           <div class="pgrid">
             <button class="pcard active"><b>Sanfter Anflug</b><small>ruhig in den Nebel</small><span class="tune">Anpassen ›</span></button>
             <button class="pcard"><b>Seitliche Drift</b><small>vorbeigleiten mit Streifen</small><span class="tune">Anpassen ›</span></button>
             <button class="pcard"><b>Hyperflug</b><small>schneller Sog</small><span class="tune">Anpassen ›</span></button>
+          </div>
+          <div class="pgroup">Galaxien</div>
+          <div class="pgrid">
             <button class="pcard"><b>Majestätisch</b><small>langsam, Galaxie starr</small><span class="tune">Anpassen ›</span></button>
             <button class="pcard"><b>Lebende Galaxie</b><small>sanfte Rotation</small><span class="tune">Anpassen ›</span></button>
             <button class="pcard"><b>Vorbeiflug</b><small>schwungvoll mit Kippen</small><span class="tune">Anpassen ›</span></button>
           </div>
-          <div class="row">
+          <div class="pgroup">Sternhaufen</div>
+          <div class="pgrid">
+            <button class="pcard"><b>Eintauchen</b><small>tief durch die Sterne</small><span class="tune">Anpassen ›</span></button>
+            <button class="pcard"><b>Funkelnde Drift</b><small>ruhig, glitzernd – für Loops</small><span class="tune">Anpassen ›</span></button>
+          </div>
+          <div class="row" style="margin-top: 12px;">
             <label>Dauer</label>
-            <input type="range" min="5" max="60" value="20"><output>20 s</output>
+            <input type="range" min="5" max="60" value="20"><output class="num">20 s</output>
           </div>
         </div>
         <div class="group">
-          <h3>3 · Fertig</h3>
-          <button class="btn primary">⬇ Video exportieren</button>
-          <p style="color: var(--muted); font-size: 11.5px; text-align: center; margin-top: 6px;">
-            Tipp: Klick in die Vorschau wählt das Flugziel · Leertaste = Play/Pause</p>
+          <h3>3 · Fertig<span class="ln"></span></h3>
+          <button class="btn primary"><svg class="ic sm"><use href="#i-export"/></svg>Video exportieren</button>
+          <p style="color: var(--faint); font-size: 11px; text-align: center; margin-top: 6px;">
+            Klick in die Vorschau wählt das Flugziel · Leertaste = Play/Pause</p>
         </div>
       </div>
 
       <!-- ===================== PROFI: BILDER ===================== -->
       <div class="tabpane active" id="tBilder" hidden>
         <div class="group">
-          <h3>Bilder laden <button class="qm" onclick="qm(this)">?</button></h3>
+          <h3>Bilder laden<span class="ln"></span><button class="qm" onclick="qm(this)">?</button></h3>
           <div class="hint">Starless-Bild und Sternmaske z. B. aus StarNet++, StarXTerminator oder PixInsight. 16-Bit-TIFF wird unterstützt, lineare Masken werden automatisch gestreckt.</div>
           <div class="filegrid">
             <div class="filecard loaded"><b>Starless-Bild</b>andromeda.tif ✓</div>
             <div class="filecard"><b>Sternmaske</b>– keine Datei –</div>
           </div>
-          <button class="btn">✨ Mit Demo-Bild ausprobieren</button>
-          <details class="adv"><summary>Erweitert: Masken-Stretch</summary>
+          <button class="btn"><svg class="ic sm"><use href="#i-star"/></svg>Mit Demo-Bild ausprobieren</button>
+          <details class="adv"><summary>Erweitert · Masken-Stretch</summary>
             <div class="checkrow"><input type="checkbox"><span>Sternmaske ist bereits gestreckt</span></div>
-            <div class="row"><label>Stretch-Intensität</label><input type="range" value="50"><output>50</output></div>
+            <div class="row"><label>Stretch-Intensität</label><input type="range" value="50"><output class="num">50</output></div>
           </details>
         </div>
         <div class="group">
-          <h3>Tiefenkarte <button class="qm" onclick="qm(this)">?</button></h3>
+          <h3>Tiefenkarte<span class="ln"></span><button class="qm" onclick="qm(this)">?</button></h3>
           <div class="hint">Wird automatisch aus der Helligkeit des Starless-Bilds berechnet: Helle Nebelregionen wirken „näher" an der Kamera.</div>
           <div style="display: flex; gap: 10px; align-items: center;">
-            <div style="width: 110px; height: 72px; border-radius: 8px; background: radial-gradient(ellipse at 60% 45%, #cfd8ea, #3a4358 60%, #10131b); border: 1px solid var(--border); flex: none;"></div>
+            <div style="width: 110px; height: 72px; border-radius: 6px; background: radial-gradient(ellipse at 60% 45%, #cfd8ea, #3a4358 60%, #10131b); border: 1px solid var(--border); flex: none;"></div>
             <div style="flex: 1;">
-              <div class="row"><label>Glättung</label><input type="range" value="18"><output>18</output></div>
+              <div class="row"><label>Glättung</label><input type="range" value="18"><output class="num">18</output></div>
               <div class="checkrow"><input type="checkbox"><span>Tiefe invertieren</span></div>
             </div>
           </div>
@@ -295,37 +415,35 @@ select, input[type=text] {
       <!-- ===================== PROFI: KAMERA ===================== -->
       <div class="tabpane" id="tKamera" hidden>
         <div class="group">
-          <h3>Flug</h3>
-          <div class="row"><label>Flugmodus</label></div>
+          <h3>Flug<span class="ln"></span></h3>
           <select><option>Auf den Nebel zu (hineinzoomen)</option><option>Seitliche Drift (vorbeigleiten)</option></select>
-          <div class="row"><label>Zoom (Start)</label><input type="range" min="1" max="4" value="1"><output>1.00×</output></div>
-          <div class="row"><label>Tempo</label><input type="range" value="40"><output>40</output></div>
-          <div class="row"><label>3D-Effekt <button class="qm" onclick="qm(this)">?</button></label><input type="range" value="60"><output>60</output></div>
+          <div class="row" style="margin-top: 12px;"><label>Zoom (Start)</label><input type="range" min="1" max="4" value="1"><output class="num">1.00×</output></div>
+          <div class="row"><label>Tempo</label><input type="range" value="40"><output class="num">40</output></div>
+          <div class="row"><label>3D-Effekt <button class="qm" onclick="qm(this)">?</button></label><input type="range" value="60"><output class="num">60</output></div>
           <div class="hint">Stärke der Parallaxe – wie deutlich sich nahe und ferne Bereiche unterschiedlich schnell bewegen.</div>
-          <div class="row"><label>Dauer</label><input type="range" min="5" max="60" value="20"><output>20 s</output></div>
+          <div class="row"><label>Dauer</label><input type="range" min="5" max="60" value="20"><output class="num">20 s</output></div>
           <div class="checkrow"><input type="checkbox"><span>Loop-Modus (hin &amp; zurück, nahtlos)</span></div>
-          <details class="adv"><summary>Erweitert: Beschleunigung, Framing &amp; Kippen</summary>
-            <div class="row"><label>Beschleunigung</label></div>
-            <select><option>Linear (konstant)</option><option>Sanft rein &amp; raus</option></select>
-            <div class="row"><label>Tiefenspreizung</label><input type="range" value="33"><output>33</output></div>
-            <div class="row"><label>Rotation</label><input type="range" min="-15" max="15" value="0"><output>0 °/s</output></div>
-            <div class="row"><label>Framing drehen</label><input type="range" min="0" max="360" value="0"><output>0°</output></div>
-            <div class="row"><label>Framing horizontal</label><input type="range" min="-100" max="100" value="0"><output>0</output></div>
-            <div class="row"><label>Framing vertikal</label><input type="range" min="-100" max="100" value="0"><output>0</output></div>
-            <div class="row"><label>Kippen horizontal</label><input type="range" min="-100" max="100" value="0"><output>0</output></div>
-            <div class="row"><label>Kippen vertikal</label><input type="range" min="-100" max="100" value="0"><output>0</output></div>
-            <div class="row"><label>Kamera-Schwanken</label><input type="range" value="0"><output>0</output></div>
-            <div class="row"><label>Gerichteter Schwenk</label><input type="range" value="0"><output>0</output></div>
-            <div class="row"><label>Ein-/Ausblenden</label><input type="range" min="0" max="3" step="0.1" value="0"><output>0 s</output></div>
+          <details class="adv"><summary>Erweitert · Beschleunigung, Framing &amp; Kippen</summary>
+            <select style="margin-top: 4px;"><option>Linear (konstant)</option><option>Sanft rein &amp; raus</option></select>
+            <div class="row" style="margin-top: 10px;"><label>Tiefenspreizung</label><input type="range" value="33"><output class="num">33</output></div>
+            <div class="row"><label>Rotation</label><input type="range" min="-15" max="15" value="0"><output class="num">0 °/s</output></div>
+            <div class="row"><label>Framing drehen</label><input type="range" min="0" max="360" value="0"><output class="num">0°</output></div>
+            <div class="row"><label>Framing horizontal</label><input type="range" min="-100" max="100" value="0"><output class="num">0</output></div>
+            <div class="row"><label>Framing vertikal</label><input type="range" min="-100" max="100" value="0"><output class="num">0</output></div>
+            <div class="row"><label>Kippen horizontal</label><input type="range" min="-100" max="100" value="0"><output class="num">0</output></div>
+            <div class="row"><label>Kippen vertikal</label><input type="range" min="-100" max="100" value="0"><output class="num">0</output></div>
+            <div class="row"><label>Kamera-Schwanken</label><input type="range" value="0"><output class="num">0</output></div>
+            <div class="row"><label>Gerichteter Schwenk</label><input type="range" value="0"><output class="num">0</output></div>
+            <div class="row"><label>Ein-/Ausblenden</label><input type="range" min="0" max="3" step="0.1" value="0"><output class="num">0 s</output></div>
           </details>
-          <details class="adv"><summary>🌀 Galaxien-Rotation <span class="badge">🧪 experimentell</span></summary>
+          <details class="adv"><summary><svg class="ic sm"><use href="#i-orbit"/></svg>Galaxien-Rotation<span style="flex:1"></span><span class="badge">Experimentell</span></summary>
             <div class="hint open" style="margin-top: 8px;">Dreht nur den Bereich um das gesetzte Zentrum – mit weichem Rand. Zentrum per Klick in die Vorschau setzen.</div>
-            <button class="btn">🌀 Rotationszentrum setzen</button>
-            <div class="row"><label>Tempo (°/s im Kern)</label><input type="range" min="0" max="3" step="0.1" value="0"><output>0</output></div>
-            <div class="row"><label>Radius</label><input type="range" value="40"><output>40</output></div>
-            <div class="row"><label>Differenzielle Rotation</label><input type="range" value="40"><output>40</output></div>
-            <div class="row"><label>Ellipse (geneigte Galaxie)</label><input type="range" value="0"><output>0</output></div>
-            <div class="row"><label>Helligkeitsmaske</label><input type="range" value="0"><output>0</output></div>
+            <button class="btn"><svg class="ic sm"><use href="#i-target"/></svg>Rotationszentrum setzen</button>
+            <div class="row"><label>Tempo (°/s im Kern)</label><input type="range" min="0" max="3" step="0.1" value="0"><output class="num">0</output></div>
+            <div class="row"><label>Radius</label><input type="range" value="40"><output class="num">40</output></div>
+            <div class="row"><label>Differenzielle Rotation</label><input type="range" value="40"><output class="num">40</output></div>
+            <div class="row"><label>Ellipse (geneigte Galaxie)</label><input type="range" value="0"><output class="num">0</output></div>
+            <div class="row"><label>Helligkeitsmaske</label><input type="range" value="0"><output class="num">0</output></div>
             <div class="checkrow"><input type="checkbox"><span>Sterne im Rotationsbereich mitdrehen</span></div>
           </details>
         </div>
@@ -334,24 +452,24 @@ select, input[type=text] {
       <!-- ===================== PROFI: STERNE ===================== -->
       <div class="tabpane" id="tSterne" hidden>
         <div class="group">
-          <h3>Sternfeld</h3>
-          <div class="row"><label>Stern-Parallaxe <button class="qm" onclick="qm(this)">?</button></label><input type="range" min="0" max="600" value="100"><output>100 %</output></div>
+          <h3>Sternfeld<span class="ln"></span></h3>
+          <div class="row"><label>Stern-Parallaxe <button class="qm" onclick="qm(this)">?</button></label><input type="range" min="0" max="600" value="100"><output class="num">100 %</output></div>
           <div class="hint">Wie stark sich die Sterne relativ zum Nebel bewegen – höhere Werte = mehr Tiefenwirkung.</div>
-          <div class="row"><label>Ebenen-Streuung</label><input type="range" value="70"><output>70</output></div>
-          <div class="row"><label>Entfernung zum Nebel</label><input type="range" value="55"><output>55</output></div>
-          <div class="row"><label>Funkeln</label><input type="range" value="25"><output>25</output></div>
-          <div class="row"><label>Größe</label><input type="range" min="20" max="300" value="100"><output>100 %</output></div>
-          <div class="row"><label>Helligkeit</label><input type="range" min="0" max="300" value="100"><output>100 %</output></div>
-          <details class="adv"><summary>Erweitert: Ebenen, Farben &amp; Zusatzsterne</summary>
-            <div class="row"><label>Tiefen-Ebenen (Anzahl)</label><input type="range" min="0" max="12" value="0"><output>∞</output></div>
-            <div class="row"><label>Funkel-Tempo</label><input type="range" min="10" max="300" value="100"><output>100 %</output></div>
-            <div class="row"><label>Sättigung</label><input type="range" min="0" max="200" value="100"><output>100 %</output></div>
-            <div class="row"><label>Generierte Sterne</label><input type="range" min="0" max="3000" value="0"><output>0</output></div>
-            <button class="btn">🎲 Ebenen neu mischen</button>
+          <div class="row"><label>Ebenen-Streuung</label><input type="range" value="70"><output class="num">70</output></div>
+          <div class="row"><label>Entfernung zum Nebel</label><input type="range" value="55"><output class="num">55</output></div>
+          <div class="row"><label>Funkeln</label><input type="range" value="25"><output class="num">25</output></div>
+          <div class="row"><label>Größe</label><input type="range" min="20" max="300" value="100"><output class="num">100 %</output></div>
+          <div class="row"><label>Helligkeit</label><input type="range" min="0" max="300" value="100"><output class="num">100 %</output></div>
+          <details class="adv"><summary>Erweitert · Ebenen, Farben &amp; Zusatzsterne</summary>
+            <div class="row"><label>Tiefen-Ebenen (Anzahl)</label><input type="range" min="0" max="12" value="0"><output class="num">∞</output></div>
+            <div class="row"><label>Funkel-Tempo</label><input type="range" min="10" max="300" value="100"><output class="num">100 %</output></div>
+            <div class="row"><label>Sättigung</label><input type="range" min="0" max="200" value="100"><output class="num">100 %</output></div>
+            <div class="row"><label>Generierte Sterne</label><input type="range" min="0" max="3000" value="0"><output class="num">0</output></div>
+            <button class="btn"><svg class="ic sm"><use href="#i-dice"/></svg>Ebenen neu mischen</button>
           </details>
-          <details class="adv"><summary>🌫️ Nebel-Okklusion <span class="badge">🧪 experimentell</span></summary>
+          <details class="adv"><summary><svg class="ic sm"><use href="#i-fog"/></svg>Nebel-Okklusion<span style="flex:1"></span><span class="badge">Experimentell</span></summary>
             <div class="hint open" style="margin-top: 8px;">Nebelschwaden verdecken Sterne, die dahinter liegen – beim Vorbeiflug verschwinden Sterne hinter Wolken und tauchen wieder auf.</div>
-            <div class="row"><label>Stärke</label><input type="range" value="0"><output>0 %</output></div>
+            <div class="row"><label>Stärke</label><input type="range" value="0"><output class="num">0 %</output></div>
           </details>
         </div>
       </div>
@@ -359,7 +477,7 @@ select, input[type=text] {
       <!-- ===================== PROFI: LOOK ===================== -->
       <div class="tabpane" id="tLook" hidden>
         <div class="group">
-          <h3>Look-Preset</h3>
+          <h3>Look-Preset<span class="ln"></span></h3>
           <div class="chips">
             <button class="chip active">Neutral</button><button class="chip">Cinematic</button>
             <button class="chip">Deep Space</button><button class="chip">Dreamy Glow</button>
@@ -367,19 +485,19 @@ select, input[type=text] {
           </div>
         </div>
         <div class="group">
-          <h3>Effekte</h3>
-          <div class="row"><label>Bloom</label><input type="range" value="0"><output>0</output></div>
-          <div class="row"><label>Bewegungsunschärfe</label><input type="range" value="0"><output>0</output></div>
+          <h3>Effekte<span class="ln"></span></h3>
+          <div class="row"><label>Bloom</label><input type="range" value="0"><output class="num">0</output></div>
+          <div class="row"><label>Bewegungsunschärfe</label><input type="range" value="0"><output class="num">0</output></div>
           <div class="checkrow"><input type="checkbox"><span>Unschärfe nur auf Sterne (Nebel bleibt scharf)</span></div>
-          <div class="row"><label>Warp</label><input type="range" value="0"><output>0</output></div>
-          <div class="row"><label>Vignette</label><input type="range" value="0"><output>0</output></div>
-          <details class="adv"><summary>Erweitert: Farbe &amp; Detail</summary>
-            <div class="row"><label>Belichtung</label><input type="range" min="-100" max="100" value="0"><output>0</output></div>
-            <div class="row"><label>Kontrast</label><input type="range" min="-100" max="100" value="0"><output>0</output></div>
-            <div class="row"><label>Sättigung</label><input type="range" min="-100" max="100" value="0"><output>0</output></div>
-            <div class="row"><label>Klarheit</label><input type="range" min="-100" max="100" value="0"><output>0</output></div>
-            <div class="row"><label>Struktur (Feindetail)</label><input type="range" value="0"><output>0</output></div>
-            <div class="row"><label>Schärfe</label><input type="range" value="0"><output>0</output></div>
+          <div class="row"><label>Warp</label><input type="range" value="0"><output class="num">0</output></div>
+          <div class="row"><label>Vignette</label><input type="range" value="0"><output class="num">0</output></div>
+          <details class="adv"><summary>Erweitert · Farbe &amp; Detail</summary>
+            <div class="row"><label>Belichtung</label><input type="range" min="-100" max="100" value="0"><output class="num">0</output></div>
+            <div class="row"><label>Kontrast</label><input type="range" min="-100" max="100" value="0"><output class="num">0</output></div>
+            <div class="row"><label>Sättigung</label><input type="range" min="-100" max="100" value="0"><output class="num">0</output></div>
+            <div class="row"><label>Klarheit</label><input type="range" min="-100" max="100" value="0"><output class="num">0</output></div>
+            <div class="row"><label>Struktur (Feindetail)</label><input type="range" value="0"><output class="num">0</output></div>
+            <div class="row"><label>Schärfe</label><input type="range" value="0"><output class="num">0</output></div>
           </details>
         </div>
       </div>
@@ -387,49 +505,47 @@ select, input[type=text] {
       <!-- ===================== PROFI: WISSENSCHAFT ===================== -->
       <div class="tabpane" id="tSci" hidden>
         <div class="group">
-          <h3>Echte Daten <button class="qm" onclick="qm(this)">?</button></h3>
+          <h3>Echte Daten<span class="ln"></span><button class="qm" onclick="qm(this)">?</button></h3>
           <div class="hint">AstroFly gleicht deine Sterne mit dem ESA-Gaia-Katalog ab (echte Entfernungen, Farben, Eigenbewegungen) und erkennt die Objekte im Feld via SIMBAD. Übertragen werden nur Himmelskoordinaten, nie dein Bild.</div>
 
-          <!-- Zustand VOR dem Abgleich -->
           <div id="sciBefore">
             <div class="scicard">
-              <div class="strow"><span>📄</span><span>Noch keine Plate-Solve-Lösung geladen.</span><button class="qm" onclick="qm(this)">?</button></div>
+              <div class="strow"><svg class="ic sm"><use href="#i-doc"/></svg><span>Noch keine Plate-Solve-Lösung geladen.</span><button class="qm" onclick="qm(this)">?</button></div>
               <div class="hint">Eine geplatesolvte FITS (ASTAP, Siril, PixInsight) oder .wcs-Datei von nova.astrometry.net – nur der kleine Header wird gelesen.</div>
               <div class="steps"><span class="done"></span><span></span><span></span></div>
             </div>
-            <button class="btn">📄 Plate-Solve-Datei laden</button>
-            <button class="btn" style="opacity: 0.45; cursor: default;">⭐ Sterne mit Gaia abgleichen</button>
-            <button class="btn" onclick="sciDemo(true)" style="border-style: dashed; color: var(--muted);">▶ Mockup-Demo: Zustand nach dem Abgleich zeigen</button>
+            <button class="btn"><svg class="ic sm"><use href="#i-doc"/></svg>Plate-Solve-Datei laden</button>
+            <button class="btn" disabled><svg class="ic sm"><use href="#i-star"/></svg>Sterne mit Gaia abgleichen</button>
+            <button class="btn ghost" onclick="sciDemo(true)">Mockup-Demo: Zustand nach dem Abgleich zeigen</button>
           </div>
 
-          <!-- Zustand NACH dem Abgleich (progressive disclosure) -->
           <div id="sciAfter" hidden>
             <div class="scicard">
-              <div class="strow"><span>⭐</span><span><b style="color: var(--text);">1.847 von 2.121 Sternen</b> zugeordnet</span><span class="badge ok">87 % ✓</span></div>
-              <div style="margin-top: 5px;">Echte Entfernungen ≈ 89–7.940 Lichtjahre</div>
+              <div class="strow"><svg class="ic sm"><use href="#i-star"/></svg><span><b style="color: var(--text);">1.847 von 2.121 Sternen</b> zugeordnet</span><span class="badge ok">87 %</span></div>
+              <div class="num" style="margin-top: 6px;">Echte Entfernungen ≈ 89 – 7 940 Lichtjahre</div>
               <div class="steps"><span class="done"></span><span class="done"></span><span class="done"></span></div>
             </div>
-            <div class="row"><label>Einfluss der echten Tiefen</label><input type="range" value="100"><output>100 %</output></div>
-            <div class="checkrow"><input type="checkbox" checked><span>🔬 Wissenschaftlich korrekte Entfernungen</span><button class="qm" onclick="qm(this)">?</button></div>
+            <div class="row"><label>Einfluss der echten Tiefen</label><input type="range" value="100"><output class="num">100 %</output></div>
+            <div class="checkrow"><input type="checkbox" checked><span>Wissenschaftlich korrekte Entfernungen</span><button class="qm" onclick="qm(this)">?</button></div>
             <div class="hint">Zeigt nur Sterne mit echter Gaia-Entfernung auf ihrer echten Tiefe – ab 75 % Erkennungsrate freigeschaltet.</div>
-            <div class="checkrow"><input type="checkbox"><span>🎨 Echte Sternfarben aus dem Katalog</span></div>
-            <div class="row"><label>⏩ Zeitraffer Eigenbewegung</label><input type="range" min="0" max="500000" step="5000" value="0"><output>0 J.</output></div>
-            <div class="checkrow"><input type="checkbox"><span>🌌 Objekt auf echte Tiefe (hinter alle Sterne)</span></div>
+            <div class="checkrow"><input type="checkbox"><span>Echte Sternfarben aus dem Katalog</span></div>
+            <div class="row"><label>Zeitraffer Eigenbewegung</label><input type="range" min="0" max="500000" step="5000" value="0"><output class="num">0 J.</output></div>
+            <div class="checkrow"><input type="checkbox"><span>Objekt auf echte Tiefe (hinter alle Sterne)</span></div>
 
-            <div class="group" style="margin-top: 16px;">
-              <h3>Objekte im Bild</h3>
+            <div class="group" style="margin-top: 18px;">
+              <h3>Objekte im Bild<span class="ln"></span></h3>
               <div class="scicard">
-                <div class="strow"><span>🔭</span><span><b style="color: var(--text);">M 31 – Andromedagalaxie</b> erkannt</span></div>
+                <div class="strow"><svg class="ic sm"><use href="#i-target"/></svg><span><b style="color: var(--text);">M 31 · Andromedagalaxie</b> erkannt</span></div>
                 <div style="margin-top: 5px;">+ 2 weitere Objekte im Feld</div>
               </div>
               <div class="checkrow"><input type="checkbox" checked><span>Infokarte ins Video rendern</span></div>
               <div class="checkrow"><input type="checkbox" checked><span>Feld-Beschriftungen rendern</span></div>
-              <div class="objlist" style="padding-left: 22px;">
-                <div class="checkrow"><input type="checkbox" checked><span style="color: var(--muted);">M 32 · Zwerggalaxie</span></div>
-                <div class="checkrow"><input type="checkbox" checked><span style="color: var(--muted);">M 110 · Zwerggalaxie</span></div>
+              <div class="sublist">
+                <div class="checkrow"><input type="checkbox" checked><span>M 32 · Zwerggalaxie</span></div>
+                <div class="checkrow"><input type="checkbox" checked><span>M 110 · Zwerggalaxie</span></div>
               </div>
             </div>
-            <button class="btn" onclick="sciDemo(false)" style="border-style: dashed; color: var(--muted);">↺ Mockup-Demo: zurück zum Anfangszustand</button>
+            <button class="btn ghost" onclick="sciDemo(false)">Mockup-Demo: zurück zum Anfangszustand</button>
           </div>
         </div>
       </div>
@@ -437,25 +553,23 @@ select, input[type=text] {
       <!-- ===================== PROFI: EXPORT ===================== -->
       <div class="tabpane" id="tExport" hidden>
         <div class="group">
-          <h3>Format</h3>
+          <h3>Format<span class="ln"></span></h3>
           <div class="chips">
             <button class="chip">1:1</button><button class="chip active">16:9</button>
             <button class="chip">21:9</button><button class="chip">4:3</button>
-            <button class="chip">9:16 (Reel)</button>
+            <button class="chip">9:16 Reel</button>
           </div>
-          <div class="row"><label>Auflösung</label></div>
-          <select><option>1080p (Full HD)</option><option>1440p</option><option>4K</option></select>
-          <div class="row" style="margin-top: 10px;"><label>Dateiname</label></div>
-          <input type="text" value="andromeda_flight">
+          <select style="margin-top: 8px;"><option>1080p (Full HD)</option><option>1440p</option><option>4K</option></select>
+          <input type="text" value="andromeda_flight" style="margin-top: 8px;">
         </div>
         <div class="group">
-          <h3>Export</h3>
-          <button class="btn primary">⬇ Video exportieren (MP4)</button>
+          <h3>Export<span class="ln"></span></h3>
+          <button class="btn primary"><svg class="ic sm"><use href="#i-export"/></svg>Video exportieren (MP4)</button>
         </div>
         <div class="group">
-          <h3>Feedback</h3>
-          <button class="btn">🐞 Fehler melden</button>
-          <button class="btn">💡 Idee vorschlagen</button>
+          <h3>Feedback<span class="ln"></span></h3>
+          <button class="btn"><svg class="ic sm"><use href="#i-bug"/></svg>Fehler melden</button>
+          <button class="btn"><svg class="ic sm"><use href="#i-idea"/></svg>Idee vorschlagen</button>
         </div>
       </div>
 
@@ -465,22 +579,22 @@ select, input[type=text] {
   <main id="stage">
     <div id="previewwrap">
       <div id="preview"></div>
-      <div id="toast"><span class="spin"></span><span>⭐ Gleiche Sterne mit dem Gaia-Katalog ab … <b>34 %</b></span></div>
+      <div id="toast"><span class="spin"></span><span>Gleiche Sterne mit dem Gaia-Katalog ab … <b class="num">34 %</b></span></div>
     </div>
     <div id="transport">
-      <button>⏸</button><button>⟲</button>
+      <button><svg class="ic sm"><use href="#i-pause"/></svg></button>
+      <button><svg class="ic sm"><use href="#i-restart"/></svg></button>
       <div id="timeline"><i></i></div>
-      <span style="color: var(--muted); font-size: 12px;">6,8 / 20 s</span>
+      <span class="num" style="color: var(--muted);">6.8 / 20 s</span>
     </div>
     <p class="stagehint">Klick in die Vorschau = Flugziel wählen · Leertaste = Play/Pause ·
-      <a href="#" onclick="toast(); return false;" style="color: var(--accent);">Demo: Status-Toast zeigen</a></p>
+      <a href="#" onclick="toast(); return false;">Demo: Status-Toast zeigen</a></p>
   </main>
 
 </div>
 
 <script>
 "use strict";
-// Sternchen in die Vorschau streuen
 (() => {
   const pv = document.getElementById("preview");
   let h = 1;
@@ -521,13 +635,10 @@ document.querySelectorAll("#tabs button").forEach((b) => {
 });
 
 function qm(btn) {
-  // zugehörigen Hinweis finden: nächstes .hint-Element nach dem Container
   let el = btn.closest(".row, .checkrow, h3, .strow") || btn;
   let n = el.nextElementSibling;
   while (n && !n.classList.contains("hint")) n = n.nextElementSibling;
-  if (!n) { // im .scicard: Hinweis innerhalb der Karte
-    n = el.parentElement.querySelector(".hint");
-  }
+  if (!n) n = el.parentElement.querySelector(".hint");
   if (n) n.classList.toggle("open");
 }
 
@@ -545,7 +656,6 @@ function toast() {
   toastT = setTimeout(() => t.classList.remove("show"), 4000);
 }
 
-// Slider-Werte live anzeigen (reine Optik)
 document.querySelectorAll("input[type=range]").forEach((r) => {
   r.addEventListener("input", () => {
     const out = r.parentElement.querySelector("output");
