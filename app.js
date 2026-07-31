@@ -345,6 +345,7 @@ uniform float uAngle2;
 uniform vec2 uCenter2;
 uniform vec2 uTilt2;
 uniform float uStreak;    // Belichtungszeit / dt (0 = keine Streifen)
+uniform float uMaxPoint;  // größte Punktgröße der GPU (Intel meldet z. B. nur 255)
 uniform float uGaiaAmt;   // Mischung Zufallstiefe -> echte Gaia-Tiefe (0..1)
 uniform float uGaiaOnly;  // 1 = Wissenschafts-Modus: nur Sterne mit Gaia-Tiefe
 // Sterne rotieren mit der Galaxie (gleiche Formeln wie spinWarp im Hintergrund;
@@ -479,7 +480,10 @@ void main() {
     // y negiert: gl_PointCoord zählt nach unten, der Clip-Space nach oben
     vec2 velPx = velClip * 0.5 * vec2(uPixelsY * uViewAspect, -uPixelsY);
     float rawLen = length(velPx);
-    len = min(rawLen, 1024.0 - base);
+    // Nie größer werden als die GPU-Punktgröße erlaubt (sonst kappt der
+    // Treiber das Sprite und der Sternkopf wird sichtbar "halbiert"),
+    // plus 4 px Rand, damit der Kopf nie exakt auf der Sprite-Kante liegt
+    len = min(rawLen, uMaxPoint - base - 4.0);
     if (rawLen > 1e-4) {
       dirPx = velPx / rawLen;
       // Kometen-Optik: Der Stern bleibt an seiner Position (Kopf), der
@@ -488,7 +492,7 @@ void main() {
     }
   }
   gl_Position = vec4(clipMid, 0.0, 1.0);
-  float size = base + len;
+  float size = base + min(len + 4.0, uMaxPoint - base);
   gl_PointSize = size;
   vDir = dirPx;
   vLen = len;
@@ -1694,6 +1698,17 @@ function animParams(t) {
 
 // ---------------------------------------------------------------- Rendering
 
+// Größte darstellbare Punktgröße der GPU (einmalig abgefragt): Intel-GPUs
+// melden z. B. nur 255 px - längere Streifen-Sprites würden gekappt
+let _maxPoint = 0;
+function maxPointSize() {
+  if (!_maxPoint) {
+    const r = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE);
+    _maxPoint = Math.min(r ? r[1] : 1024, 2048);
+  }
+  return _maxPoint;
+}
+
 function render(forcedT) {
   const w = canvas.width, h = canvas.height;
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -1818,6 +1833,7 @@ function render(forcedT) {
     u2f(starProg, "uCenter2", cam2.cx, cam2.cy);
     u2f(starProg, "uTilt2", starTilt2X, starTilt2Y);
     u1f(starProg, "uStreak", splitBlur ? (state.mblur / 100) / dt : 0);
+    u1f(starProg, "uMaxPoint", maxPointSize());
     u1f(starProg, "uGaiaAmt", state.gaiaAmt / 100);
     u1f(starProg, "uGaiaOnly", state.gaiaOnly && state.gaiaDepth ? 1 : 0);
     // Sterne mit der Galaxien-Rotation mitdrehen (gleiche Parameter wie bgFS)
