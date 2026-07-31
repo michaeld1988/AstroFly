@@ -139,6 +139,16 @@
         <button class="pcard" data-preset="clusterSparkle"><b data-i18n="pClusterSparkle">Sparkling drift</b><small data-i18n="pClusterSparkleD">calm, twinkling – great for loops</small></button>
       </div>
       <label class="slider">
+        <span><span data-i18n="simpleFx">Effect strength</span> <output id="outSimpleFx">50 %</output></span>
+        <input type="range" id="ctlSimpleFx" min="10" max="100" step="5" value="50">
+      </label>
+      <div id="simpleDirRow" hidden>
+        <label class="slider">
+          <span><span data-i18n="driftDir">Flight direction</span> <output id="outSimpleDir">90°</output></span>
+          <input type="range" id="ctlSimpleDir" min="0" max="360" step="5" value="90">
+        </label>
+      </div>
+      <label class="slider">
         <span><span data-i18n="duration">Duration</span> <output id="outSimpleDuration">20 s</output></span>
         <input type="range" id="ctlSimpleDuration" min="5" max="60" step="1" value="20">
       </label>
