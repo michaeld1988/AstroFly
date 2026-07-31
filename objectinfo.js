@@ -118,21 +118,35 @@ function csvFields(line) {
   return out;
 }
 
+// Winkelgrößen (Bogenminuten) der kuratierten Klassiker als Ersatz, wenn
+// SIMBAD keine galdim-Abmessung führt (z. B. NGC 7000) - sonst würde das
+// Hauptobjekt des Bildes gar nicht erst gefunden
+const OBJ_ARCMIN = {
+  M31: 190, M32: 8.7, M110: 22, M33: 71, M42: 85, M45: 110, M13: 20,
+  M8: 90, M16: 70, M17: 11, M20: 28, M27: 8, M51: 11, M57: 1.4, M63: 12.6,
+  M81: 27, M82: 11, M101: 28.8, M104: 8.7, M106: 18.6,
+  NGC7000: 120, IC5070: 60, IC1805: 60, IC1848: 60, NGC6960: 70,
+  NGC6992: 60, NGC2237: 80, NGC869: 30, NGC884: 30, NGC7635: 15,
+  NGC281: 35, IC434: 60, IC443: 50, NGC7023: 18,
+};
+
 /**
  * SIMBAD-Kegelabfrage: größere Objekte im Feld (CSV, CORS-frei).
  * Viele bekannte Objekte heißen in SIMBAD primär nach ihrem Eigennamen
  * (NGC 7000 = "NAME North America Nebula") - deshalb wird die Katalog-
  * Nummer über die Alias-Tabelle (ident) mitgeliefert und pro Objekt der
  * beste Katalogname gewählt (Messier vor NGC vor IC).
+ * Hinweise: ORDER BY verträgt beim SIMBAD-Parser keine Tabellen-Präfixe
+ * (daher der Spalten-Alias), und galdim darf NULL sein - die Größe wird
+ * dann aus OBJ_ARCMIN ergänzt.
  */
 async function querySimbad(ra, dec, radiusDeg) {
-  const adql = `SELECT TOP 120 b.main_id, b.ra, b.dec, b.otype_txt, b.galdim_majaxis, i.id ` +
+  const adql = `SELECT TOP 120 b.main_id, b.ra, b.dec, b.otype_txt, b.galdim_majaxis AS majaxis, i.id ` +
     `FROM basic AS b JOIN ident AS i ON i.oidref = b.oid ` +
     `WHERE 1=CONTAINS(POINT('ICRS',b.ra,b.dec),` +
     `CIRCLE('ICRS',${ra.toFixed(6)},${dec.toFixed(6)},${radiusDeg.toFixed(4)})) ` +
-    `AND b.galdim_majaxis IS NOT NULL ` +
     `AND (i.id LIKE 'M %' OR i.id LIKE 'NGC %' OR i.id LIKE 'IC %') ` +
-    `ORDER BY b.galdim_majaxis DESC`;
+    `ORDER BY majaxis DESC`;
   const url = "https://simbad.cds.unistra.fr/simbad/sim-tap/sync?REQUEST=doQuery&LANG=ADQL&FORMAT=csv&QUERY=" +
     encodeURIComponent(adql);
   const resp = await fetch(url);
@@ -152,7 +166,9 @@ async function querySimbad(ra, dec, radiusDeg) {
     const rank = CAT_RANK[m[1]];
     const prev = byMain.get(mainId);
     if (prev && prev.rank <= rank) continue;
-    byMain.set(mainId, { id: alias, rank, ra: oRa, dec: oDec, otype, sizeArcmin: isFinite(size) ? size : 0 });
+    const fallback = OBJ_ARCMIN[normObjId(alias)] || 0;
+    byMain.set(mainId, { id: alias, rank, ra: oRa, dec: oDec, otype,
+      sizeArcmin: size > 0 ? size : fallback });
   }
   const out = [...byMain.values()];
   out.sort((a, b) => b.sizeArcmin - a.sizeArcmin);
