@@ -35,13 +35,22 @@ The interface is available in **English and German** – switch with the
 EN/DE toggle at the top left (your choice is remembered; the app follows
 your browser language on first visit).
 
+**New to AstroFly?** The app starts in **Easy mode**: load your two images,
+pick one of eight one-click style presets (3 for nebulae, 3 for galaxies,
+2 for star clusters), choose duration and aspect ratio, export – done.
+Switch to **Pro mode** anytime for every individual control.
+
 ## Run locally
 
 Download the repository and open `index.html` in your browser – that's it,
 no build step required.
 
-All panel sections are collapsible – click a heading to open or close it
-(the state is remembered).
+The control panel is organized into **six tabs** (Images · Camera · Stars ·
+Look · Science · Export) in Pro mode – each tab shows a handful of core
+controls, everything else sits behind "Advanced" expanders, and explanation
+texts open on demand via the small "?" buttons. The active tab and the
+Easy/Pro choice are remembered. Running catalog queries (Gaia/SIMBAD) are
+shown as a status overlay on the preview.
 
 ## Usage
 
@@ -84,8 +93,8 @@ All panel sections are collapsible – click a heading to open or close it
    | Fade in/out | Black-to-image and image-to-black fade, adjustable 0–3 s (0 = off) |
    | Loop mode | Camera flies in and seamlessly back out – perfect for endless loops on social media |
 
-   **🧪 Experimental** (own panel section – these features may still produce
-   visible artifacts): **Galaxy spin** rotates only the region around a
+   **🧪 Experimental** (marked with an "Experimental" badge – these features
+   may still produce visible artifacts): **Galaxy spin** (Camera tab) rotates only the region around a
    click-set spin center (radius, soft edge falloff) – with adjustable
    differential rotation (inner faster, like a real galaxy) and an ellipse
    option for inclined galaxies; foreground stars do not rotate. An optional
@@ -94,7 +103,7 @@ All panel sections are collapsible – click a heading to open or close it
    overlay (Photoshop-style, auto-shown while picking the center, never
    exported) visualizes exactly where and how strongly the spin acts.
 
-   Also experimental: **Real star distances (Gaia)** – load a plate-solved
+   In the **Science tab**: **Real star distances (Gaia)** – load a plate-solved
    version of your image (a FITS solved by ASTAP, PixInsight or Siril, or an
    astrometry.net `.wcs` file) and AstroFly matches your detected stars
    against the **ESA Gaia DR3 catalog** (via the CDS VizieR API), assigning
@@ -104,8 +113,24 @@ All panel sections are collapsible – click a heading to open or close it
    between random and real depths. A **scientific mode** (unlocked at a
    match rate of 75 % or higher, reported in the status line) shows only
    stars with a real Gaia distance at their true depth and hides everything
-   else. Requires an internet connection for the
+   else. Matched stars can also take their **true colors** from the measured
+   Gaia color index, and a **proper-motion time lapse** lets them drift along
+   their real measured trajectories (e.g. 200,000 years compressed into your
+   clip). Requires an internet connection for the
    catalog query – only sky coordinates are transferred, never your image.
+
+   More experimental options: stars inside the galaxy-spin region can
+   **rotate along with the galaxy**; **object at true depth** treats the
+   image as one rigid distant object so all stars pass in front of it;
+   **nebula hides stars behind it** dims stars that sit deeper than the
+   nebula by its local density, so they visibly disappear behind clouds and
+   re-emerge during a flyby; and
+   with a plate-solve solution loaded, AstroFly can **identify the objects
+   in your field via SIMBAD** (CDS) and render an info card (distance, size,
+   stars, age for popular objects) plus labeled markers that follow the
+   camera directly into the exported video – objects known mainly by their
+   proper name (like the North America Nebula) are resolved to their catalog
+   number automatically.
 
    **Zoom target:** simply **click** the preview – the camera pans slowly
    toward that point over the whole flight while zooming in (following the
@@ -114,7 +139,8 @@ All panel sections are collapsible – click a heading to open or close it
    Double-click resets the target to the image center.
 
    **Preview size:** the 🔍 slider below the preview scales the viewport
-   (40–100 %); your choice is remembered.
+   (40–100 %); your choice is remembered. The **spacebar** starts and stops
+   the preview playback.
 4. **Stars**
    | Control | Effect |
    |---|---|
