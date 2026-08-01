@@ -54,8 +54,13 @@ shown as a status overlay on the preview.
 
 ## Usage
 
-1. **Load images** – select a starless image and a star mask as TIFF, PNG or
-   JPG, or drag & drop them (16-bit TIFF is supported). Or click the
+1. **Load images** – select a starless image and a star mask as TIFF, FITS,
+   PNG or JPG, or drag & drop them (16-bit TIFF and 8/16/32-bit integer or
+   float FITS are supported, mono or RGB). **Bonus:** if a loaded FITS
+   contains a plate-solve solution in its header (e.g. solved in Siril,
+   PixInsight or ASTAP before export), AstroFly picks it up automatically –
+   the Gaia matching and object detection in the Science tab are then ready
+   without loading a separate WCS file. Or click the
    **demo button** to load the bundled Orion Nebula example
    (`demo/`, © Michael Döhler).
 
