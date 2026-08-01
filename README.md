@@ -93,8 +93,8 @@ shown as a status overlay on the preview.
    | Fade in/out | Black-to-image and image-to-black fade, adjustable 0–3 s (0 = off) |
    | Loop mode | Camera flies in and seamlessly back out – perfect for endless loops on social media |
 
-   **🧪 Experimental** (own panel section – these features may still produce
-   visible artifacts): **Galaxy spin** rotates only the region around a
+   **🧪 Experimental** (marked with an "Experimental" badge – these features
+   may still produce visible artifacts): **Galaxy spin** (Camera tab) rotates only the region around a
    click-set spin center (radius, soft edge falloff) – with adjustable
    differential rotation (inner faster, like a real galaxy) and an ellipse
    option for inclined galaxies; foreground stars do not rotate. An optional
@@ -103,7 +103,7 @@ shown as a status overlay on the preview.
    overlay (Photoshop-style, auto-shown while picking the center, never
    exported) visualizes exactly where and how strongly the spin acts.
 
-   Also experimental: **Real star distances (Gaia)** – load a plate-solved
+   In the **Science tab**: **Real star distances (Gaia)** – load a plate-solved
    version of your image (a FITS solved by ASTAP, PixInsight or Siril, or an
    astrometry.net `.wcs` file) and AstroFly matches your detected stars
    against the **ESA Gaia DR3 catalog** (via the CDS VizieR API), assigning
