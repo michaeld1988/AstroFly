@@ -752,8 +752,90 @@ function ensureFbos() {
 
 // ---------------------------------------------------------------- Bild-Dekodierung
 
+/**
+ * FITS-Bilddaten dekodieren (unkomprimiert): BITPIX 8/16/32 Integer sowie
+ * -32/-64 Float, Mono oder RGB (NAXIS3 = 3), BSCALE/BZERO, Big-Endian.
+ * FITS zählt Zeilen von unten nach oben -> beim Übertragen in den Canvas
+ * wird vertikal gespiegelt. Eine im Header enthaltene TAN-Plate-Solve-
+ * Lösung wird mitgeliefert (wcs), sodass kein separater Upload nötig ist.
+ */
+function decodeFits(buf, fileName) {
+  const bytes = new Uint8Array(buf);
+  const text = new TextDecoder("ascii").decode(
+    bytes.subarray(0, Math.min(bytes.length, 2880 * 200)));
+  const h = {};
+  let end = -1;
+  for (let off = 0; off + 80 <= text.length; off += 80) {
+    const card = text.slice(off, off + 80);
+    const key = card.slice(0, 8).trim();
+    if (key === "END") { end = off + 80; break; }
+    if (card[8] !== "=") continue;
+    let val = card.slice(10).split("/")[0].trim();
+    if (val.startsWith("'")) val = val.slice(1, val.lastIndexOf("'")).trim();
+    h[key] = val;
+  }
+  if (end < 0) throw new Error("FITS: header end not found");
+  const dataStart = Math.ceil(end / 2880) * 2880;
+  const bitpix = parseInt(h.BITPIX, 10);
+  const w = parseInt(h.NAXIS1, 10), hgt = parseInt(h.NAXIS2, 10);
+  const planes = parseInt(h.NAXIS3 || "1", 10);
+  if (!(w > 0) || !(hgt > 0)) throw new Error("FITS: no image data");
+  if (planes !== 1 && planes !== 3) throw new Error("FITS: NAXIS3 = " + planes);
+  const bscale = parseFloat(h.BSCALE || "1"), bzero = parseFloat(h.BZERO || "0");
+  const n = w * hgt * planes;
+  const bpp = Math.abs(bitpix) / 8;
+  if (dataStart + n * bpp > buf.byteLength) throw new Error("FITS: file truncated");
+  const dv = new DataView(buf, dataStart);
+  const vals = new Float32Array(n);
+  switch (bitpix) {
+    case 8:   for (let i = 0; i < n; i++) vals[i] = dv.getUint8(i) * bscale + bzero; break;
+    case 16:  for (let i = 0; i < n; i++) vals[i] = dv.getInt16(i * 2) * bscale + bzero; break;
+    case 32:  for (let i = 0; i < n; i++) vals[i] = dv.getInt32(i * 4) * bscale + bzero; break;
+    case -32: for (let i = 0; i < n; i++) vals[i] = dv.getFloat32(i * 4) * bscale + bzero; break;
+    case -64: for (let i = 0; i < n; i++) vals[i] = dv.getFloat64(i * 8) * bscale + bzero; break;
+    default: throw new Error("FITS: BITPIX " + bitpix);
+  }
+  // Robuste Normierung auf 0..255 über gesampelte Perzentile (einzelne
+  // heiße Pixel sollen das Bild nicht abdunkeln); gemeinsame Skala für
+  // alle Farbebenen, damit die Farbbalance erhalten bleibt
+  const stride = Math.max(1, Math.floor(n / 1e6));
+  const sample = [];
+  for (let i = 0; i < n; i += stride) {
+    if (isFinite(vals[i])) sample.push(vals[i]);
+  }
+  sample.sort((a, b) => a - b);
+  const lo = sample[Math.floor((sample.length - 1) * 0.0002)];
+  const hi = sample[Math.floor((sample.length - 1) * 0.9998)];
+  const range = Math.max(1e-9, hi - lo);
+  const rgba = new Uint8ClampedArray(w * hgt * 4);
+  const plane = w * hgt;
+  for (let y = 0; y < hgt; y++) {
+    const srcRow = (hgt - 1 - y) * w; // FITS: Zeile 0 liegt unten
+    for (let x = 0; x < w; x++) {
+      const sIdx = srcRow + x, d = (y * w + x) * 4;
+      rgba[d] = ((vals[sIdx] - lo) / range) * 255;
+      if (planes === 3) {
+        rgba[d + 1] = ((vals[sIdx + plane] - lo) / range) * 255;
+        rgba[d + 2] = ((vals[sIdx + 2 * plane] - lo) / range) * 255;
+      } else {
+        rgba[d + 1] = rgba[d + 2] = rgba[d];
+      }
+      rgba[d + 3] = 255;
+    }
+  }
+  const c = document.createElement("canvas");
+  c.width = w; c.height = hgt;
+  c.getContext("2d").putImageData(new ImageData(rgba, w, hgt), 0, 0);
+  let wcs = null;
+  try { wcs = parseWcsHeader(bytes.subarray(0, dataStart)); } catch { /* keine Lösung im Header */ }
+  return { canvas: c, width: w, height: hgt, name: fileName, wcs };
+}
+
 async function decodeFile(file) {
   const name = file.name.toLowerCase();
+  if (/\.(fits?|fts)$/.test(name)) {
+    return decodeFits(await file.arrayBuffer(), file.name);
+  }
   if (name.endsWith(".tif") || name.endsWith(".tiff")) {
     const buf = await file.arrayBuffer();
     const ifds = UTIF.decode(buf);
@@ -2679,6 +2761,16 @@ async function loadFile(which, file) {
       $("nameStars").textContent = `${file.name} (${img.width}×${img.height})`;
       $("dropStars").classList.add("loaded");
       processStarMask();
+    }
+    // Plate-Solve-Lösung aus dem FITS-Header direkt übernehmen - der
+    // separate WCS-Upload im Wissenschafts-Tab entfällt dann
+    if (img.wcs) {
+      img.wcs._name = file.name;
+      state.wcs = img.wcs;
+      state.gaiaDepth = null; state.gaiaInfo = null; state.gaiaColorRGB = null; state.gaiaPM = null;
+      gaiaTransient = { key: "gaiaWcsAuto", args: [file.name] };
+      uploadStars();
+      updateGaiaStatus();
     }
     if (state.starless) {
       $("placeholder").style.display = "none";
