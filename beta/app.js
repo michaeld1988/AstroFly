@@ -1532,55 +1532,9 @@ function drawOverlayTo(ctx, W, H, loopT, cam) {
   ctx.save();
   ctx.textBaseline = "alphabetic";
 
-  // ---- Feld-Beschriftungen ----
-  if (state.showLabels && state.labels) {
-    for (const L of state.labels) {
-      if (!L.on) continue;
-      const sp = toScreen(L);
-      if (sp.x < -80 * u || sp.x > W + 80 * u || sp.y < -80 * u || sp.y > H + 80 * u) continue;
-      const r = Math.max(16 * u, (L.sizePlane * sp.scaleD * H) / 2);
-      ctx.strokeStyle = ACC + "0.75)";
-      ctx.lineWidth = 1.6 * u;
-      ctx.beginPath();
-      ctx.arc(sp.x, sp.y, r, 0, Math.PI * 2);
-      ctx.stroke();
-      // Chip rechts vom Ring, bei Platzmangel links
-      const facts = OBJECT_FACTS[normObjId(L.id)];
-      const name = L.id;
-      const sub = facts
-        ? `${facts[lang].name} · ${facts[lang].dist || ""}`.replace(/ · $/, "")
-        : (OTYPE_NAMES[lang][L.otype] || L.otype);
-      ctx.font = `700 ${15 * u}px system-ui, sans-serif`;
-      const wName = ctx.measureText(name).width;
-      ctx.font = `${11.5 * u}px system-ui, sans-serif`;
-      const wSub = ctx.measureText(sub).width;
-      const chipW = Math.max(wName, wSub) + 24 * u;
-      const chipH = 40 * u;
-      const right = sp.x + r + 14 * u + chipW < W - 8 * u;
-      const cx0 = right ? sp.x + r + 14 * u : sp.x - r - 14 * u - chipW;
-      const cy0 = Math.min(Math.max(sp.y - chipH / 2, 8 * u), H - chipH - 8 * u);
-      ctx.strokeStyle = ACC + "0.7)";
-      ctx.lineWidth = 1.4 * u;
-      ctx.beginPath();
-      ctx.moveTo(right ? sp.x + r : sp.x - r, sp.y);
-      ctx.lineTo(right ? cx0 : cx0 + chipW, cy0 + chipH / 2);
-      ctx.stroke();
-      ctx.fillStyle = "rgba(8,10,16,0.72)";
-      ctx.strokeStyle = ACC + "0.55)";
-      ctx.beginPath();
-      ctx.roundRect(cx0, cy0, chipW, chipH, 8 * u);
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = "#e8eeff";
-      ctx.font = `700 ${15 * u}px system-ui, sans-serif`;
-      ctx.fillText(name, cx0 + 12 * u, cy0 + 17 * u);
-      ctx.fillStyle = "#aab8d8";
-      ctx.font = `${11.5 * u}px system-ui, sans-serif`;
-      ctx.fillText(sub, cx0 + 12 * u, cy0 + 32 * u);
-    }
-  }
-
   // ---- Infokarte (blendet ein und wieder aus) ----
+  // Vor den Beschriftungen gezeichnet, damit Chips ihr ausweichen können
+  let cardRect = null;
   if (state.showInfo && state.objInfo) {
     const outStart = Math.min(7, state.duration - 2);
     const a = Math.min(1, Math.max(0, (loopT - 0.8) / 0.8)) *
@@ -1604,7 +1558,12 @@ function drawOverlayTo(ctx, W, H, loopT, cam) {
       const cardW = Math.min(W - 40 * u, Math.max(300 * u, 2 * colW + 2 * pad));
       const rows = Math.ceil(facts.length / 2);
       const cardH = (56 + (typeLine ? 20 : 0) + rows * 40 + 14) * u;
-      const x0 = 24 * u, y0 = H - cardH - 24 * u;
+      // Bei Hochformat (Reels/Shorts/TikTok) liegt unten die Bedienleiste
+      // der Apps (Username, Audio, Caption) über dem Video – die Karte
+      // sitzt dort in der Schutzzone, damit sie nicht verdeckt wird
+      const bottomOff = (viewAspect < 1 ? 200 : 24) * u;
+      const x0 = 24 * u, y0 = H - cardH - bottomOff;
+      cardRect = { x0, y0, w: cardW, h: cardH };
       ctx.fillStyle = "rgba(8,10,16,0.74)";
       ctx.strokeStyle = ACC + "0.5)";
       ctx.lineWidth = 1.6 * u;
@@ -1638,6 +1597,62 @@ function drawOverlayTo(ctx, W, H, loopT, cam) {
       ctx.globalAlpha = 1;
     }
   }
+
+  // ---- Feld-Beschriftungen ----
+  if (state.showLabels && state.labels) {
+    for (const L of state.labels) {
+      if (!L.on) continue;
+      const sp = toScreen(L);
+      if (sp.x < -80 * u || sp.x > W + 80 * u || sp.y < -80 * u || sp.y > H + 80 * u) continue;
+      const r = Math.max(16 * u, (L.sizePlane * sp.scaleD * H) / 2);
+      ctx.strokeStyle = ACC + "0.75)";
+      ctx.lineWidth = 1.6 * u;
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, r, 0, Math.PI * 2);
+      ctx.stroke();
+      // Chip rechts vom Ring, bei Platzmangel links
+      const facts = OBJECT_FACTS[normObjId(L.id)];
+      const name = L.id;
+      const sub = facts
+        ? `${facts[lang].name} · ${facts[lang].dist || ""}`.replace(/ · $/, "")
+        : (OTYPE_NAMES[lang][L.otype] || L.otype);
+      ctx.font = `700 ${15 * u}px system-ui, sans-serif`;
+      const wName = ctx.measureText(name).width;
+      ctx.font = `${11.5 * u}px system-ui, sans-serif`;
+      const wSub = ctx.measureText(sub).width;
+      const chipW = Math.max(wName, wSub) + 24 * u;
+      const chipH = 40 * u;
+      const right = sp.x + r + 14 * u + chipW < W - 8 * u;
+      const cx0 = right ? sp.x + r + 14 * u : sp.x - r - 14 * u - chipW;
+      // Chips im Hochformat aus der unteren Social-UI-Schutzzone heraushalten
+      const chipSafe = (viewAspect < 1 ? 200 : 8) * u;
+      let cy0 = Math.min(Math.max(sp.y - chipH / 2, 8 * u), H - chipH - chipSafe);
+      // ... und nicht mit der Infokarte kollidieren lassen
+      if (cardRect && cx0 < cardRect.x0 + cardRect.w && cx0 + chipW > cardRect.x0 &&
+          cy0 + chipH > cardRect.y0) {
+        cy0 = cardRect.y0 - chipH - 8 * u;
+      }
+      ctx.strokeStyle = ACC + "0.7)";
+      ctx.lineWidth = 1.4 * u;
+      ctx.beginPath();
+      ctx.moveTo(right ? sp.x + r : sp.x - r, sp.y);
+      ctx.lineTo(right ? cx0 : cx0 + chipW, cy0 + chipH / 2);
+      ctx.stroke();
+      ctx.fillStyle = "rgba(8,10,16,0.72)";
+      ctx.strokeStyle = ACC + "0.55)";
+      ctx.beginPath();
+      ctx.roundRect(cx0, cy0, chipW, chipH, 8 * u);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#e8eeff";
+      ctx.font = `700 ${15 * u}px system-ui, sans-serif`;
+      ctx.fillText(name, cx0 + 12 * u, cy0 + 17 * u);
+      ctx.fillStyle = "#aab8d8";
+      ctx.font = `${11.5 * u}px system-ui, sans-serif`;
+      ctx.fillText(sub, cx0 + 12 * u, cy0 + 32 * u);
+    }
+  }
+
   ctx.restore();
 }
 
