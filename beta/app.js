@@ -940,6 +940,13 @@ function buildSpinMask() {
   const m = computeLuminanceMap(state.spinMaskSmooth, false);
   if (texSpinMask) gl.deleteTexture(texSpinMask);
   texSpinMask = makeTexture(m.canvas);
+  // CPU-Kopie für die Marker-Projektion (spinMaskAtPlane)
+  const g = m.canvas.getContext("2d");
+  state.spinMaskData = {
+    w: m.canvas.width,
+    h: m.canvas.height,
+    data: g.getImageData(0, 0, m.canvas.width, m.canvas.height).data,
+  };
 }
 
 function boxBlurH(src, dst, w, h, r) {
@@ -1518,12 +1525,16 @@ function drawOverlayTo(ctx, W, H, loopT, cam) {
   const drK = parallax * depthRange;
   const bgTiltX = (state.tiltX / 100) * 0.08 + cam.tiltAddX + cam.driftTX * drK;
   const bgTiltY = (state.tiltY / 100) * 0.08 + cam.tiltAddY + cam.driftTY * drK;
+  // Galaxien-Rotation: Objekte im Spin-Bereich wandern im Bild mit -
+  // die Marker müssen dieselbe Verschiebung mitmachen wie der Hintergrund
+  const spinAngle = state.spinSpeed * Math.PI / 180 * cam.te;
   const toScreen = (P) => {
-    const d = state.objFar ? 0.02 : depthAtPlane(P.x, P.y, imgAspect);
+    const S = spinDisplace(P.x, P.y, spinAngle);
+    const d = state.objFar ? 0.02 : depthAtPlane(S.x, S.y, imgAspect);
     const ex = 1 + parallax * (d - 0.45) * depthRange;
     const scaleD = cover * Math.pow(cam.zoom, ex);
-    const prx = (P.x - cam.cx - bgTiltX * (d - 0.45)) * scaleD;
-    const pry = (P.y - cam.cy - bgTiltY * (d - 0.45)) * scaleD;
+    const prx = (S.x - cam.cx - bgTiltX * (d - 0.45)) * scaleD;
+    const pry = (S.y - cam.cy - bgTiltY * (d - 0.45)) * scaleD;
     const px = rc * prx - rs * pry, py = rs * prx + rc * pry;
     return { x: (px / viewAspect + 0.5) * W, y: (1 - (py + 0.5)) * H, scaleD };
   };
@@ -3190,6 +3201,51 @@ $("btnFeedbackMail").addEventListener("click", () => {
 // ---------------------------------------------------------------- Hilfen
 
 /** Tiefe (0..1) an einem Punkt der Bildebene, aus der CPU-Kopie der Tiefenkarte. */
+/**
+ * Wohin verschiebt die Galaxien-Rotation einen Ebenen-Punkt? Umkehrung von
+ * spinWarp aus dem Hintergrund-Shader: Dort wird für den Anzeige-Punkt die
+ * Bildquelle bei +a gesucht, ein Bildpunkt erscheint also um -a gedreht.
+ * Der Winkel hängt nur vom drehinvarianten Radius ab; die Helligkeitsmaske
+ * wertet der Shader am Anzeige-Punkt aus, deshalb hier die Fixpunkt-Iteration.
+ */
+function spinDisplace(px, py, spinAngle) {
+  if (!spinAngle) return { x: px, y: py };
+  const cx = state.spinCenter.x, cy = state.spinCenter.y;
+  const rad = Math.max(0.02, (state.spinRadius / 100) * 0.75);
+  const tilt = state.spinTilt * Math.PI / 180;
+  const c = Math.cos(tilt), s = Math.sin(tilt);
+  const flat = 1 - (state.spinFlat / 100) * 0.7;
+  const dx = px - cx, dy = py - cy;
+  const ex = c * dx + s * dy, ey = (-s * dx + c * dy) / flat;
+  const r = Math.hypot(ex, ey) / rad;
+  if (r >= 1) return { x: px, y: py };
+  const ft = Math.min(1, Math.max(0, (r - 1) / (0.55 - 1)));
+  const fall = ft * ft * (3 - 2 * ft);
+  const diffW = 1 + (0.25 / (0.25 + 0.75 * r) - 1) * (state.spinDiff / 100);
+  let out = { x: px, y: py };
+  for (let i = 0; i < 2; i++) {
+    const a = -spinAngle * fall * diffW * spinMaskAtPlane(out.x, out.y);
+    const ca = Math.cos(a), sa = Math.sin(a);
+    const rx = ca * ex + sa * ey, ry = (-sa * ex + ca * ey) * flat;
+    out = { x: cx + c * rx - s * ry, y: cy + s * rx + c * ry };
+    if (!state.spinMaskAmt || !state.spinMaskData) break;
+  }
+  return out;
+}
+
+/** Gewicht der Spin-Helligkeitsmaske an einem Ebenen-Punkt (wie spinMaskW im Shader). */
+function spinMaskAtPlane(qx, qy) {
+  const md = state.spinMaskData;
+  if (!md || !state.spinMaskAmt || !state.starless) return 1;
+  const imgAspect = state.starless.width / state.starless.height;
+  const u = Math.min(1, Math.max(0, qx / imgAspect + 0.5));
+  const v = Math.min(1, Math.max(0, qy + 0.5)); // Ebene ist y-up
+  const col = Math.round(u * (md.w - 1));
+  const row = Math.round((1 - v) * (md.h - 1));
+  const m = md.data[(row * md.w + col) * 4] / 255;
+  return 1 + (m - 1) * (state.spinMaskAmt / 100);
+}
+
 function depthAtPlane(qx, qy, imgAspect) {
   const dd = state.depthData;
   if (!dd) return 0.45;
