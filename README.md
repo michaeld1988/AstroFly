@@ -140,6 +140,9 @@ shown as a status overlay on the preview.
    describes the whole Cygnus Loop while the labels still mark the parts –
    a dropdown lets you pick what the card shows (region or any single
    object), and each label row has a small slider to adjust its ring size.
+   Six label designs are available (editorial line, glass pill, HUD frame,
+   micro typography, focus ring, classic) via the label-style dropdown;
+   your choice is remembered.
 
    **Zoom target:** simply **click** the preview – the camera pans slowly
    toward that point over the whole flight while zooming in (following the
