@@ -86,6 +86,7 @@ const state = {
   labels: null,          // Feld-Beschriftungen [{ id, x, y, sizePlane, otype, on }]
   showInfo: true,        // Infokarte ins Video einblenden
   showLabels: true,      // Feld-Beschriftungen ins Video einblenden
+  labelStyle: "editorial", // Stil der Beschriftungen (editorial/glass/hud/micro/focus/classic)
   twinkleSpeed: 100,     // Funkel-Tempo in %
   starSize: 100,         // % Sterngröße
   starBright: 100,       // % Sternhelligkeit
@@ -1616,69 +1617,270 @@ function drawOverlayTo(ctx, W, H, loopT, cam) {
     }
   }
 
-  // ---- Feld-Beschriftungen ----
+  // ---- Feld-Beschriftungen (6 wählbare Stile) ----
   if (state.showLabels && state.labels) {
+    const style = state.labelStyle || "editorial";
+    const chipSafe = (viewAspect < 1 ? 200 : 8) * u; // Social-UI-Schutzzone
     for (const L of state.labels) {
       if (!L.on) continue;
       const sp = toScreen(L);
       if (sp.x < -80 * u || sp.x > W + 80 * u || sp.y < -80 * u || sp.y > H + 80 * u) continue;
       const r = Math.max(16 * u, (L.sizePlane * (L.sizeMul || 1) * sp.scaleD * H) / 2);
-      ctx.strokeStyle = ACC + "0.75)";
-      ctx.lineWidth = 1.6 * u;
-      ctx.beginPath();
-      ctx.arc(sp.x, sp.y, r, 0, Math.PI * 2);
-      ctx.stroke();
-      // Chip rechts vom Ring, bei Platzmangel links
       const facts = OBJECT_FACTS[normObjId(L.id)];
       const name = L.id;
       const sub = facts
         ? `${facts[lang].name} · ${facts[lang].dist || ""}`.replace(/ · $/, "")
         : (OTYPE_NAMES[lang][L.otype] || L.otype);
-      ctx.font = `700 ${15 * u}px system-ui, sans-serif`;
-      const wName = ctx.measureText(name).width;
-      ctx.font = `${11.5 * u}px system-ui, sans-serif`;
-      const wSub = ctx.measureText(sub).width;
-      const chipW = Math.max(wName, wSub) + 24 * u;
-      const chipH = 40 * u;
-      // Seite pro Label festhalten: eine pro Frame neu getroffene Wahl
-      // springt beim Zoomen sichtbar hin und her. Gewechselt wird nur,
-      // wenn die aktuelle Seite nicht mehr passt, die andere aber schon.
-      const fitsRight = sp.x + r + 14 * u + chipW < W - 8 * u;
-      const fitsLeft = sp.x - r - 14 * u - chipW > 8 * u;
-      let side = L._chipSide || (fitsRight ? 1 : -1);
-      if (side > 0 && !fitsRight && fitsLeft) side = -1;
-      else if (side < 0 && !fitsLeft && fitsRight) side = 1;
-      L._chipSide = side;
-      const right = side > 0;
-      // Nie aus dem Bild ragen lassen
-      const cx0 = Math.min(Math.max(right ? sp.x + r + 14 * u : sp.x - r - 14 * u - chipW,
-        8 * u), W - chipW - 8 * u);
-      // Chips im Hochformat aus der unteren Social-UI-Schutzzone heraushalten
-      const chipSafe = (viewAspect < 1 ? 200 : 8) * u;
-      let cy0 = Math.min(Math.max(sp.y - chipH / 2, 8 * u), H - chipH - chipSafe);
-      // ... und nicht mit der Infokarte kollidieren lassen
-      if (cardRect && cx0 < cardRect.x0 + cardRect.w && cx0 + chipW > cardRect.x0 &&
-          cy0 + chipH > cardRect.y0) {
-        cy0 = cardRect.y0 - chipH - 8 * u;
+
+      // Seite pro Label festhalten (Hysterese): eine pro Frame neu
+      // getroffene Wahl springt beim Zoomen sichtbar hin und her
+      const pickSide = (fitsRight, fitsLeft) => {
+        let side = L._chipSide || (fitsRight ? 1 : -1);
+        if (side > 0 && !fitsRight && fitsLeft) side = -1;
+        else if (side < 0 && !fitsLeft && fitsRight) side = 1;
+        L._chipSide = side;
+        return side;
+      };
+      const measure = (fName, fSub, subText) => {
+        ctx.font = fName;
+        const wn = ctx.measureText(name).width;
+        ctx.font = fSub;
+        return { wn, ws: ctx.measureText(subText || sub).width };
+      };
+
+      if (style === "classic") {
+        ctx.strokeStyle = ACC + "0.75)";
+        ctx.lineWidth = 1.6 * u;
+        ctx.beginPath();
+        ctx.arc(sp.x, sp.y, r, 0, Math.PI * 2);
+        ctx.stroke();
+        const { wn, ws } = measure(`700 ${15 * u}px system-ui, sans-serif`, `${11.5 * u}px system-ui, sans-serif`);
+        const chipW = Math.max(wn, ws) + 24 * u;
+        const chipH = 40 * u;
+        const side = pickSide(sp.x + r + 14 * u + chipW < W - 8 * u,
+          sp.x - r - 14 * u - chipW > 8 * u);
+        const right = side > 0;
+        const cx0 = Math.min(Math.max(right ? sp.x + r + 14 * u : sp.x - r - 14 * u - chipW,
+          8 * u), W - chipW - 8 * u);
+        let cy0 = Math.min(Math.max(sp.y - chipH / 2, 8 * u), H - chipH - chipSafe);
+        if (cardRect && cx0 < cardRect.x0 + cardRect.w && cx0 + chipW > cardRect.x0 &&
+            cy0 + chipH > cardRect.y0) {
+          cy0 = cardRect.y0 - chipH - 8 * u;
+        }
+        ctx.strokeStyle = ACC + "0.7)";
+        ctx.lineWidth = 1.4 * u;
+        ctx.beginPath();
+        ctx.moveTo(right ? sp.x + r : sp.x - r, sp.y);
+        ctx.lineTo(right ? cx0 : cx0 + chipW, cy0 + chipH / 2);
+        ctx.stroke();
+        ctx.fillStyle = "rgba(8,10,16,0.72)";
+        ctx.strokeStyle = ACC + "0.55)";
+        ctx.beginPath();
+        ctx.roundRect(cx0, cy0, chipW, chipH, 8 * u);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = "#e8eeff";
+        ctx.font = `700 ${15 * u}px system-ui, sans-serif`;
+        ctx.fillText(name, cx0 + 12 * u, cy0 + 17 * u);
+        ctx.fillStyle = "#aab8d8";
+        ctx.font = `${11.5 * u}px system-ui, sans-serif`;
+        ctx.fillText(sub, cx0 + 12 * u, cy0 + 32 * u);
+
+      } else if (style === "editorial") {
+        // Punkt am Objekt, abgewinkelte Linie, freier Text ohne Box
+        const { wn, ws } = measure(`650 ${17 * u}px system-ui, sans-serif`, `${12.5 * u}px system-ui, sans-serif`);
+        const textW = Math.max(wn, ws);
+        const diag = 52 * u;
+        const side = pickSide(sp.x + 10 * u + diag + textW + 18 * u < W - 8 * u,
+          sp.x - 10 * u - diag - textW - 18 * u > 8 * u);
+        const up = sp.y - diag - 46 * u > 8 * u ? 1 : -1;
+        const bx = sp.x + side * (10 * u + diag);
+        let by = sp.y - up * (10 * u + diag);
+        by = Math.min(Math.max(by, 46 * u), H - chipSafe - 6 * u);
+        ctx.strokeStyle = "rgba(234,240,255,0.8)";
+        ctx.lineWidth = 1.2 * u;
+        ctx.beginPath();
+        ctx.moveTo(sp.x + side * 8 * u, sp.y - up * 8 * u);
+        ctx.lineTo(bx, by);
+        ctx.lineTo(bx + side * (textW + 8 * u), by);
+        ctx.stroke();
+        ctx.fillStyle = "#eaf0ff";
+        ctx.beginPath();
+        ctx.arc(sp.x, sp.y, 3.2 * u, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(234,240,255,0.65)";
+        ctx.lineWidth = 1.2 * u;
+        ctx.beginPath();
+        ctx.arc(sp.x, sp.y, 7.5 * u, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.textAlign = side > 0 ? "left" : "right";
+        const tx = bx + side * 2 * u;
+        ctx.shadowColor = "rgba(0,0,0,0.8)";
+        ctx.shadowBlur = 8 * u;
+        ctx.fillStyle = "#f2f5ff";
+        ctx.font = `650 ${17 * u}px system-ui, sans-serif`;
+        ctx.fillText(name, tx, by - 22 * u);
+        ctx.fillStyle = "#c3cde6";
+        ctx.font = `${12.5 * u}px system-ui, sans-serif`;
+        ctx.fillText(sub, tx, by - 6 * u);
+        ctx.shadowBlur = 0;
+        ctx.textAlign = "left";
+
+      } else if (style === "glass") {
+        // Dünner Ring + Glas-Kapsel (Blur wird im Canvas durch dunklere
+        // Halbtransparenz ersetzt)
+        ctx.strokeStyle = "rgba(207,224,255,0.5)";
+        ctx.lineWidth = 1.1 * u;
+        ctx.beginPath(); ctx.arc(sp.x, sp.y, r, 0, Math.PI * 2); ctx.stroke();
+        ctx.strokeStyle = "rgba(207,224,255,0.08)";
+        ctx.lineWidth = 5 * u;
+        ctx.beginPath(); ctx.arc(sp.x, sp.y, r, 0, Math.PI * 2); ctx.stroke();
+        const { wn, ws } = measure(`650 ${15 * u}px system-ui, sans-serif`, `${11.5 * u}px system-ui, sans-serif`);
+        const gap = 9 * u, pad = 15 * u;
+        const pillW = wn + ws + gap + 2 * pad;
+        const pillH = 32 * u;
+        const diag = 40 * u;
+        const side = pickSide(sp.x + (r + diag) * 0.71 + pillW + 16 * u < W - 8 * u,
+          sp.x - (r + diag) * 0.71 - pillW - 16 * u > 8 * u);
+        const ax = sp.x + side * r * 0.71, ay = sp.y - r * 0.71;
+        const bx2 = ax + side * diag * 0.71, by2 = ay - diag * 0.71;
+        ctx.strokeStyle = "rgba(207,224,255,0.55)";
+        ctx.lineWidth = 1.1 * u;
+        ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx2, by2); ctx.stroke();
+        const px0 = Math.min(Math.max(side > 0 ? bx2 + 6 * u : bx2 - 6 * u - pillW, 8 * u), W - pillW - 8 * u);
+        const py0 = Math.min(Math.max(by2 - pillH / 2, 8 * u), H - pillH - chipSafe);
+        ctx.fillStyle = "rgba(18,24,38,0.55)";
+        ctx.strokeStyle = "rgba(220,232,255,0.3)";
+        ctx.lineWidth = 1 * u;
+        ctx.beginPath();
+        ctx.roundRect(px0, py0, pillW, pillH, pillH / 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = "#f2f6ff";
+        ctx.font = `650 ${15 * u}px system-ui, sans-serif`;
+        ctx.fillText(name, px0 + pad, py0 + 21 * u);
+        ctx.fillStyle = "#b9c6e4";
+        ctx.font = `${11.5 * u}px system-ui, sans-serif`;
+        ctx.fillText(sub, px0 + pad + wn + gap, py0 + 21 * u);
+
+      } else if (style === "hud") {
+        // Eckklammern + Monospace-Typo mit Trennlinie
+        const arm = Math.max(12 * u, r * 0.3);
+        ctx.strokeStyle = "rgba(159,232,255,0.85)";
+        ctx.lineWidth = 1.6 * u;
+        for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+          ctx.beginPath();
+          ctx.moveTo(sp.x + sx * r, sp.y + sy * r - sy * arm);
+          ctx.lineTo(sp.x + sx * r, sp.y + sy * r);
+          ctx.lineTo(sp.x + sx * r - sx * arm, sp.y + sy * r);
+          ctx.stroke();
+        }
+        const mono = `600 ${14 * u}px "Cascadia Code", "SF Mono", Consolas, monospace`;
+        const monoSub = `${10.5 * u}px "Cascadia Code", "SF Mono", Consolas, monospace`;
+        const subUp = sub.toUpperCase();
+        const { wn, ws } = measure(mono, monoSub, subUp);
+        const textW = Math.max(wn, ws);
+        const diag = 26 * u;
+        const side = pickSide(sp.x + r + diag + textW + 14 * u < W - 8 * u,
+          sp.x - r - diag - textW - 14 * u > 8 * u);
+        const up = sp.y - r - diag - 40 * u > 8 * u ? 1 : -1;
+        ctx.strokeStyle = "rgba(159,232,255,0.7)";
+        ctx.lineWidth = 1.2 * u;
+        ctx.beginPath();
+        ctx.moveTo(sp.x + side * r, sp.y - up * r);
+        ctx.lineTo(sp.x + side * (r + diag), sp.y - up * (r + diag));
+        ctx.stroke();
+        const tx = Math.min(Math.max(side > 0 ? sp.x + side * (r + diag) + 6 * u
+          : sp.x + side * (r + diag) - 6 * u - textW, 8 * u), W - textW - 8 * u);
+        let ty = sp.y - up * (r + diag) - (up > 0 ? 24 * u : -14 * u);
+        ty = Math.min(Math.max(ty, 20 * u), H - chipSafe - 22 * u);
+        ctx.shadowColor = "rgba(120,220,255,0.35)";
+        ctx.shadowBlur = 10 * u;
+        ctx.fillStyle = "#d9f4ff";
+        ctx.font = mono;
+        ctx.fillText(name, tx, ty);
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = "rgba(140,220,250,0.4)";
+        ctx.lineWidth = 1 * u;
+        ctx.beginPath();
+        ctx.moveTo(tx, ty + 7 * u);
+        ctx.lineTo(tx + textW, ty + 7 * u);
+        ctx.stroke();
+        ctx.fillStyle = "#8fd2ea";
+        ctx.font = monoSub;
+        ctx.fillText(subUp, tx, ty + 21 * u);
+
+      } else if (style === "micro") {
+        // Nur Typografie: gesperrte Versalien über feiner Linie + Zeiger
+        const nameSp = name.split("").join("  ");
+        const subUp = sub.toUpperCase().split("").join(" ");
+        ctx.font = `600 ${14.5 * u}px system-ui, sans-serif`;
+        const wn = ctx.measureText(nameSp).width;
+        ctx.font = `${9.5 * u}px system-ui, sans-serif`;
+        const ws = ctx.measureText(subUp).width;
+        const halfW = Math.max(wn, ws) / 2 + 14 * u;
+        const lift = 78 * u;
+        const up = sp.y - lift - 44 * u > 8 * u ? 1 : -1;
+        const lineY = Math.min(Math.max(sp.y - up * lift, 44 * u), H - chipSafe - 10 * u);
+        const cx1 = Math.min(Math.max(sp.x, halfW + 8 * u), W - halfW - 8 * u);
+        ctx.strokeStyle = "rgba(255,255,255,0.55)";
+        ctx.lineWidth = 1 * u;
+        ctx.beginPath();
+        ctx.moveTo(sp.x, sp.y - up * 6 * u);
+        ctx.lineTo(sp.x, lineY);
+        ctx.moveTo(cx1 - halfW, lineY);
+        ctx.lineTo(cx1 + halfW, lineY);
+        ctx.stroke();
+        ctx.fillStyle = "rgba(255,255,255,0.9)";
+        ctx.beginPath(); ctx.arc(sp.x, sp.y, 3 * u, 0, Math.PI * 2); ctx.fill();
+        ctx.textAlign = "center";
+        ctx.shadowColor = "rgba(0,0,0,0.9)";
+        ctx.shadowBlur = 8 * u;
+        const tBase = up > 0 ? lineY - 8 * u : lineY + 30 * u;
+        ctx.fillStyle = "#ffffff";
+        ctx.font = `600 ${14.5 * u}px system-ui, sans-serif`;
+        ctx.fillText(nameSp, cx1, tBase - 14 * u);
+        ctx.fillStyle = "#c9d2e8";
+        ctx.font = `${9.5 * u}px system-ui, sans-serif`;
+        ctx.fillText(subUp, cx1, tBase);
+        ctx.shadowBlur = 0;
+        ctx.textAlign = "left";
+
+      } else { // "focus"
+        // Gestrichelter Fokus-Ring + Karte mit Akzentkante
+        ctx.strokeStyle = "rgba(167,196,255,0.9)";
+        ctx.lineWidth = 1.4 * u;
+        ctx.lineCap = "round";
+        ctx.setLineDash([3 * u, 7 * u]);
+        ctx.beginPath(); ctx.arc(sp.x, sp.y, r, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.lineCap = "butt";
+        ctx.strokeStyle = "rgba(167,196,255,0.3)";
+        ctx.lineWidth = 0.8 * u;
+        ctx.beginPath(); ctx.arc(sp.x, sp.y, Math.max(6 * u, r - 7 * u), 0, Math.PI * 2); ctx.stroke();
+        const { wn, ws } = measure(`650 ${15 * u}px system-ui, sans-serif`, `${11.5 * u}px system-ui, sans-serif`);
+        const boxW = Math.max(wn, ws) + 30 * u;
+        const boxH = 42 * u;
+        const bx3 = Math.min(Math.max(sp.x - boxW / 2, 8 * u), W - boxW - 8 * u);
+        let by3 = sp.y + r + 12 * u;
+        if (by3 + boxH > H - chipSafe) by3 = sp.y - r - 12 * u - boxH;
+        by3 = Math.min(Math.max(by3, 8 * u), H - boxH - chipSafe);
+        ctx.fillStyle = "rgba(16,21,34,0.85)";
+        ctx.strokeStyle = "rgba(167,196,255,0.45)";
+        ctx.lineWidth = 1 * u;
+        ctx.beginPath();
+        ctx.roundRect(bx3, by3, boxW, boxH, 6 * u);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = ACC + "0.9)";
+        ctx.fillRect(bx3, by3 + 4 * u, 3 * u, boxH - 8 * u);
+        ctx.fillStyle = "#eef3ff";
+        ctx.font = `650 ${15 * u}px system-ui, sans-serif`;
+        ctx.fillText(name, bx3 + 14 * u, by3 + 18 * u);
+        ctx.fillStyle = "#a9b8d9";
+        ctx.font = `${11.5 * u}px system-ui, sans-serif`;
+        ctx.fillText(sub, bx3 + 14 * u, by3 + 33 * u);
       }
-      ctx.strokeStyle = ACC + "0.7)";
-      ctx.lineWidth = 1.4 * u;
-      ctx.beginPath();
-      ctx.moveTo(right ? sp.x + r : sp.x - r, sp.y);
-      ctx.lineTo(right ? cx0 : cx0 + chipW, cy0 + chipH / 2);
-      ctx.stroke();
-      ctx.fillStyle = "rgba(8,10,16,0.72)";
-      ctx.strokeStyle = ACC + "0.55)";
-      ctx.beginPath();
-      ctx.roundRect(cx0, cy0, chipW, chipH, 8 * u);
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = "#e8eeff";
-      ctx.font = `700 ${15 * u}px system-ui, sans-serif`;
-      ctx.fillText(name, cx0 + 12 * u, cy0 + 17 * u);
-      ctx.fillStyle = "#aab8d8";
-      ctx.font = `${11.5 * u}px system-ui, sans-serif`;
-      ctx.fillText(sub, cx0 + 12 * u, cy0 + 32 * u);
     }
   }
 
@@ -2707,6 +2909,19 @@ $("ctlCardObj").addEventListener("change", () => {
   state.cardChoice = $("ctlCardObj").value;
   applyCardChoice();
 });
+
+// Beschriftungs-Stil (wird gespeichert)
+{
+  const saved = localStorage.getItem("astrofly-labelstyle");
+  if (["editorial", "glass", "hud", "micro", "focus", "classic"].includes(saved)) {
+    state.labelStyle = saved;
+  }
+  $("ctlLabelStyle").value = state.labelStyle;
+  $("ctlLabelStyle").addEventListener("change", () => {
+    state.labelStyle = $("ctlLabelStyle").value;
+    localStorage.setItem("astrofly-labelstyle", state.labelStyle);
+  });
+}
 
 $("btnObjects").addEventListener("click", async () => {
   if (!state.wcs || !state.starless) return;

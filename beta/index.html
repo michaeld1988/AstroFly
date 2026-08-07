@@ -544,6 +544,17 @@
         <input type="checkbox" id="ctlShowLabels" checked>
         <span data-i18n="objShowLabels">Render field labels into the video</span>
       </label>
+      <div class="selrow">
+        <label for="ctlLabelStyle" data-i18n="labelStyleLabel">Label style</label>
+        <select id="ctlLabelStyle">
+          <option value="editorial" data-i18n="lsEditorial">Editorial (line + text)</option>
+          <option value="glass" data-i18n="lsGlass">Glass pill</option>
+          <option value="hud" data-i18n="lsHud">HUD frame</option>
+          <option value="micro" data-i18n="lsMicro">Micro typography</option>
+          <option value="focus" data-i18n="lsFocus">Focus ring</option>
+          <option value="classic" data-i18n="lsClassic">Classic</option>
+        </select>
+      </div>
       <div id="cardObjRow" class="selrow" hidden>
         <label for="ctlCardObj" data-i18n="cardObjLabel">Info card shows</label>
         <select id="ctlCardObj"></select>
