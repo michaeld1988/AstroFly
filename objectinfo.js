@@ -62,6 +62,8 @@ const OBJECT_FACTS = {
                en: { name: "Western Veil Nebula", type: "Supernova remnant", dist: "≈ 2,400 light-years", size: "≈ 110 light-years", age: "≈ 10,000–20,000 years" } },
   "NGC6992": { de: { name: "Cirrusnebel (Ost)", type: "Supernova-Überrest", dist: "≈ 2.400 Lichtjahre", size: "≈ 110 Lichtjahre", age: "≈ 10.000–20.000 Jahre" },
                en: { name: "Eastern Veil Nebula", type: "Supernova remnant", dist: "≈ 2,400 light-years", size: "≈ 110 light-years", age: "≈ 10,000–20,000 years" } },
+  "NGC6995": { de: { name: "Fledermausnebel (Cirrus Ost)", type: "Supernova-Überrest (Teil des Cygnusbogens)", dist: "≈ 2.400 Lichtjahre", age: "≈ 10.000–20.000 Jahre" },
+               en: { name: "Bat Nebula (Eastern Veil)", type: "Supernova remnant (part of the Cygnus Loop)", dist: "≈ 2,400 light-years", age: "≈ 10,000–20,000 years" } },
   "NGC2237": { de: { name: "Rosettennebel", type: "Emissionsnebel", dist: "≈ 5.200 Lichtjahre", size: "≈ 130 Lichtjahre" },
                en: { name: "Rosette Nebula", type: "Emission nebula", dist: "≈ 5,200 light-years", size: "≈ 130 light-years" } },
   "NGC869": { de: { name: "h Persei (Doppelhaufen)", type: "Offener Sternhaufen", dist: "≈ 7.500 Lichtjahre", stars: "≈ 300", age: "≈ 14 Mio. Jahre" },
@@ -82,8 +84,8 @@ const OBJECT_FACTS = {
 
 // SIMBAD-Objekttypen -> Anzeigename (für Objekte ohne kuratierten Eintrag)
 const OTYPE_NAMES = {
-  de: { G: "Galaxie", AGN: "Galaxie (aktiver Kern)", SyG: "Seyfert-Galaxie", Sy1: "Seyfert-Galaxie", Sy2: "Seyfert-Galaxie", EmG: "Galaxie", SBG: "Starburst-Galaxie", GiG: "Galaxie", GiP: "Galaxie", LIN: "Galaxie", IG: "Galaxie", GlC: "Kugelsternhaufen", OpC: "Offener Sternhaufen", "Cl*": "Sternhaufen", HII: "Emissionsnebel", SNR: "Supernova-Überrest", PN: "Planetarischer Nebel", RNe: "Reflexionsnebel", ISM: "Nebel", Neb: "Nebel", MoC: "Molekülwolke", DNe: "Dunkelnebel", EmO: "Emissionsobjekt", glb: "Globule", SFR: "Sternentstehungsregion" },
-  en: { G: "Galaxy", AGN: "Galaxy (active nucleus)", SyG: "Seyfert galaxy", Sy1: "Seyfert galaxy", Sy2: "Seyfert galaxy", EmG: "Galaxy", SBG: "Starburst galaxy", GiG: "Galaxy", GiP: "Galaxy", LIN: "Galaxy", IG: "Galaxy", GlC: "Globular cluster", OpC: "Open cluster", "Cl*": "Star cluster", HII: "Emission nebula", SNR: "Supernova remnant", PN: "Planetary nebula", RNe: "Reflection nebula", ISM: "Nebula", Neb: "Nebula", MoC: "Molecular cloud", DNe: "Dark nebula", EmO: "Emission object", glb: "Globule", SFR: "Star-forming region" },
+  de: { G: "Galaxie", AGN: "Galaxie (aktiver Kern)", SyG: "Seyfert-Galaxie", Sy1: "Seyfert-Galaxie", Sy2: "Seyfert-Galaxie", EmG: "Galaxie", SBG: "Starburst-Galaxie", GiG: "Galaxie", GiP: "Galaxie", LIN: "Galaxie", IG: "Galaxie", GlC: "Kugelsternhaufen", OpC: "Offener Sternhaufen", "Cl*": "Sternhaufen", HII: "Emissionsnebel", SNR: "Supernova-Überrest", PN: "Planetarischer Nebel", RNe: "Reflexionsnebel", ISM: "Nebel", Neb: "Nebel", sh: "Nebel (Gasschale)", MoC: "Molekülwolke", DNe: "Dunkelnebel", EmO: "Emissionsobjekt", glb: "Globule", SFR: "Sternentstehungsregion" },
+  en: { G: "Galaxy", AGN: "Galaxy (active nucleus)", SyG: "Seyfert galaxy", Sy1: "Seyfert galaxy", Sy2: "Seyfert galaxy", EmG: "Galaxy", SBG: "Starburst galaxy", GiG: "Galaxy", GiP: "Galaxy", LIN: "Galaxy", IG: "Galaxy", GlC: "Globular cluster", OpC: "Open cluster", "Cl*": "Star cluster", HII: "Emission nebula", SNR: "Supernova remnant", PN: "Planetary nebula", RNe: "Reflection nebula", ISM: "Nebula", Neb: "Nebula", sh: "Nebula (gas shell)", MoC: "Molecular cloud", DNe: "Dark nebula", EmO: "Emission object", glb: "Globule", SFR: "Star-forming region" },
 };
 const INTERESTING_OTYPES = new Set(Object.keys(OTYPE_NAMES.en));
 
@@ -126,7 +128,7 @@ const OBJ_ARCMIN = {
   M8: 90, M16: 70, M17: 11, M20: 28, M27: 8, M51: 11, M57: 1.4, M63: 12.6,
   M81: 27, M82: 11, M101: 28.8, M104: 8.7, M106: 18.6,
   NGC7000: 120, IC5070: 60, IC1805: 60, IC1848: 60, NGC6960: 70,
-  NGC6992: 60, NGC2237: 80, NGC869: 30, NGC884: 30, NGC7635: 15,
+  NGC6992: 60, NGC6995: 12, NGC2237: 80, NGC869: 30, NGC884: 30, NGC7635: 15,
   NGC281: 35, IC434: 60, IC443: 50, NGC7023: 18,
 };
 

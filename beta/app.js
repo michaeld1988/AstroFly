@@ -2595,7 +2595,11 @@ $("btnObjects").addEventListener("click", async () => {
     const degPerPx = Math.sqrt(Math.abs(wcs.cd[0] * wcs.cd[3] - wcs.cd[1] * wcs.cd[2]));
     const items = [];
     for (const o of objs) {
-      if (!INTERESTING_OTYPES.has(o.otype)) continue;
+      // Kuratierte Klassiker immer durchlassen: SIMBAD führt manche Teile
+      // bekannter Objekte ohne oder mit kryptischem Typ (z. B. Cirrusnebel:
+      // NGC 6992 = "sh", NGC 6995 ganz ohne Typ)
+      const curated = OBJECT_FACTS[normObjId(o.id)] || OBJ_ARCMIN[normObjId(o.id)];
+      if (!INTERESTING_OTYPES.has(o.otype) && !curated) continue;
       // Nur die bekannten Kataloge beschriften (keine kryptischen Survey-Ids)
       if (!/^(M|NGC|IC)\d/.test(normObjId(o.id))) continue;
       const p = planeOfSky(o.ra, o.dec);
