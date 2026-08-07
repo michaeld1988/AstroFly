@@ -89,6 +89,40 @@ const OTYPE_NAMES = {
 };
 const INTERESTING_OTYPES = new Set(Object.keys(OTYPE_NAMES.en));
 
+// Kuratierte Regionen/Komplexe: Sobald genug Mitglieder im Feld erkannt
+// werden, beschreibt die Infokarte den Gesamtkomplex - die Beschriftungen
+// zeigen weiter die Einzelteile. "single" = schon EIN Teil genügt (die Teile
+// sind Fragmente desselben physischen Objekts, z. B. Cygnusbogen: oft ist
+// nur die halbe Region im Bild, gemeint ist trotzdem der Komplex).
+const OBJECT_REGIONS = [
+  { id: "NGC 6960/92/95", single: true, otype: "SNR",
+    members: ["NGC6960", "NGC6992", "NGC6995", "NGC6974", "NGC6979", "IC1340"],
+    de: { name: "Cirrusnebel (Cygnusbogen)", type: "Supernova-Überrest (Gesamtkomplex)", dist: "≈ 2.400 Lichtjahre", size: "≈ 110 Lichtjahre", age: "≈ 10.000–20.000 Jahre" },
+    en: { name: "Veil Nebula (Cygnus Loop)", type: "Supernova remnant (full complex)", dist: "≈ 2,400 light-years", size: "≈ 110 light-years", age: "≈ 10,000–20,000 years" } },
+  { id: "NGC 7000 / IC 5070", otype: "HII",
+    members: ["NGC7000", "IC5070"],
+    de: { name: "Nordamerika- & Pelikannebel", type: "Emissionsnebel-Komplex", dist: "≈ 2.600 Lichtjahre", size: "≈ 140 Lichtjahre" },
+    en: { name: "North America & Pelican Nebulae", type: "Emission nebula complex", dist: "≈ 2,600 light-years", size: "≈ 140 light-years" } },
+  { id: "IC 1805 / IC 1848", otype: "HII",
+    members: ["IC1805", "IC1848"],
+    de: { name: "Herz- & Seelennebel", type: "Emissionsnebel-Komplex", dist: "≈ 7.500 Lichtjahre", size: "≈ 300 Lichtjahre" },
+    en: { name: "Heart & Soul Nebulae", type: "Emission nebula complex", dist: "≈ 7,500 light-years", size: "≈ 300 light-years" } },
+  { id: "NGC 869/884", otype: "OpC",
+    members: ["NGC869", "NGC884"],
+    de: { name: "h & χ Persei (Doppelhaufen)", type: "Offene Sternhaufen", dist: "≈ 7.500 Lichtjahre", stars: "≈ 600", age: "≈ 14 Mio. Jahre" },
+    en: { name: "Double Cluster (h & χ Persei)", type: "Open clusters", dist: "≈ 7,500 light-years", stars: "≈ 600", age: "≈ 14 million years" } },
+];
+
+/** Passende Region zu den erkannten Objekten (oder null). */
+function findObjectRegion(items) {
+  const ids = new Set(items.map((it) => normObjId(it.id)));
+  for (const reg of OBJECT_REGIONS) {
+    const n = reg.members.filter((m) => ids.has(m)).length;
+    if (n >= (reg.single ? 1 : 2)) return reg;
+  }
+  return null;
+}
+
 function normObjId(id) {
   return id.replace(/\s+/g, "").toUpperCase();
 }

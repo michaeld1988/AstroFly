@@ -92,7 +92,7 @@ shown as a status overlay on the preview.
    | Rotate framing | Static rotation of the crop (0–360°) |
    | Shift framing horizontal/vertical | Moves the visible crop within the image – e.g. when your object sits outside the default center crop; automatically clamped to the image edges, so no black borders can appear |
    | Tilt horizontal/vertical | Tilts the camera – near regions shift relative to far ones (tilt parallax) |
-   | Camera sway | Animated tilt with adjustable direction (0–360°), tempo and a randomness slider (0 = clean directional rocking, 100 = organic wobble) |
+   | Camera sway | Slow circling tilt motion (main axis 0–360°, tempo, randomness for an organic path) – continuous, without visible back-and-forth reversals |
    | Directional tilt | The camera slowly tips in a chosen direction (0–360°) over the whole flight – a one-way ramp instead of rocking, which continuously strengthens the parallax depth cue; seamless there-and-back in loop mode |
    | Duration | Length of the video (5–60 s) |
    | Fade in/out | Black-to-image and image-to-black fade, adjustable 0–3 s (0 = off) |
@@ -135,7 +135,11 @@ shown as a status overlay on the preview.
    stars, age for popular objects) plus labeled markers that follow the
    camera directly into the exported video – objects known mainly by their
    proper name (like the North America Nebula) are resolved to their catalog
-   number automatically.
+   number automatically. Known multi-part complexes are recognized as a
+   region: if parts of e.g. the Veil Nebula are in the field, the info card
+   describes the whole Cygnus Loop while the labels still mark the parts –
+   a dropdown lets you pick what the card shows (region or any single
+   object), and each label row has a small slider to adjust its ring size.
 
    **Zoom target:** simply **click** the preview – the camera pans slowly
    toward that point over the whole flight while zooming in (following the
@@ -176,6 +180,10 @@ shown as a status overlay on the preview.
    | Structure | Fine-detail enhancement (multi-scale local contrast) – brings out more real detail at native resolution, no AI involved |
    | Sharpness | Fine detail sharpening |
 6. **Aspect ratio** – 1:1, 16:9, 21:9, 4:3, 5:4 or 9:16 (portrait, e.g. for reels).
+   By default the crop is automatically kept inside the real image area, so
+   rotation, tilt and drift can never reveal mirrored borders (most visible
+   at 21:9); untick *"Keep the crop inside the real image"* for a wider
+   framing that accepts mirrored edges.
 7. **Export** – choose a resolution and click **"Export video"**.
    The video is rendered and saved automatically as a file
    (MP4 in Chrome/Edge, otherwise WebM). The file name is derived from
