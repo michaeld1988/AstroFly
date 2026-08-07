@@ -23,6 +23,7 @@ const state = {
 
   aspect: 16 / 9,
   aspectName: "16:9",
+  strictEdges: true,     // Ausschnitt nie über die echte Bildfläche (sonst Spiegelränder)
 
   flightMode: "zoom",    // "zoom" = auf den Nebel zu, "lateral" = seitlicher Flug
   driftDir: 90,          // Flugrichtung beim seitlichen Flug in Grad
@@ -1519,7 +1520,7 @@ function drawOverlayTo(ctx, W, H, loopT, cam) {
   const lang = I18N.lang === "de" ? "de" : "en";
   const viewAspect = state.aspect;
   const imgAspect = state.starless.width / state.starless.height;
-  const cover = Math.max(viewAspect / imgAspect, 1) * 1.02;
+  const cover = coverBase(viewAspect, imgAspect);
   const scale = cover * cam.zoom;
   const rc = Math.cos(cam.angle), rs = Math.sin(cam.angle);
   // Marker exakt auf das Objekt pinnen: dieselbe tiefenabhängige
@@ -1621,7 +1622,7 @@ function drawOverlayTo(ctx, W, H, loopT, cam) {
       if (!L.on) continue;
       const sp = toScreen(L);
       if (sp.x < -80 * u || sp.x > W + 80 * u || sp.y < -80 * u || sp.y > H + 80 * u) continue;
-      const r = Math.max(16 * u, (L.sizePlane * sp.scaleD * H) / 2);
+      const r = Math.max(16 * u, (L.sizePlane * (L.sizeMul || 1) * sp.scaleD * H) / 2);
       ctx.strokeStyle = ACC + "0.75)";
       ctx.lineWidth = 1.6 * u;
       ctx.beginPath();
@@ -1718,6 +1719,57 @@ function smoothstep(x) {
 }
 
 /**
+ * Grund-Überdeckung des Ausschnitts. Mit "strikte Ränder" (Standard) wird sie
+ * so weit vergrößert, dass Rotation, Kippen, Schwenk und Fahrt-Parallaxe den
+ * sichtbaren Ausschnitt nie über die echte Bildfläche hinausschieben - sonst
+ * spiegelt die Textur an den Rändern (sichtbar v. a. bei 21:9). Der Faktor
+ * ist über den ganzen Flug konstant (Worst Case), damit nichts "pumpt".
+ */
+function coverBase(viewAspect, imgAspect) {
+  const base = Math.max(viewAspect / imgAspect, 1) * 1.02;
+  if (!state.strictEdges) return base;
+
+  // Rotation: benötigte Halbbreite/-höhe des gedrehten Ausschnitts (bei
+  // Zoom 1); über den Drehbereich des Flugs abgetastet
+  const rotSpan = Math.abs(state.rotationSpeed) * state.duration * (state.loopMode ? 0.5 : 1);
+  let needW = viewAspect / 2, needH = 0.5;
+  const steps = 24;
+  for (let i = 0; i <= steps; i++) {
+    const th = (state.orientation + (rotSpan * i) / steps) * Math.PI / 180;
+    const ca = Math.abs(Math.cos(th)), sa = Math.abs(Math.sin(th));
+    needW = Math.max(needW, (viewAspect * ca + sa) / 2);
+    needH = Math.max(needH, (viewAspect * sa + ca) / 2);
+  }
+
+  // Seitliche Verschiebungen in Ebenen-Einheiten (Faktor 0.55 = max |d-0.45|)
+  const drK = (state.parallax / 100) * 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
+  const tilt = (Math.abs(state.tiltX) + Math.abs(state.tiltY)) / 100 * 0.08;
+  const sway = (state.swayAmp / 100) * 0.06 * 1.6;
+  const ramp = (state.tiltRampAmp / 100) * 0.08;
+  const T0 = (tilt + sway + ramp) * 0.55;
+
+  // Fahrt-Parallaxe (Lateral) hängt von der erlaubten Strecke ab, die
+  // wiederum mit der Überdeckung wächst -> kurze Fixpunkt-Iteration
+  let cover = base;
+  for (let i = 0; i < 6; i++) {
+    let tx = T0, ty = T0;
+    if (state.flightMode === "lateral") {
+      const sc = cover * state.zoomBase;
+      const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.92;
+      const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.92;
+      tx += drK * 0.55 * freeX;
+      ty += drK * 0.55 * freeY;
+    }
+    const cx = needW / Math.max(0.05, imgAspect / 2 - tx);
+    const cy = needH / Math.max(0.05, 0.5 - ty);
+    const next = Math.max(base, cx, cy);
+    if (Math.abs(next - cover) < 1e-4) { cover = next; break; }
+    cover = next;
+  }
+  return Math.min(cover, base * 2.5);
+}
+
+/**
  * Kamerazustand zu einem Zeitpunkt (für Rendering und Bewegungsunschärfe).
  * Ablauf: Rohzeit -> Loop-Dreieck (hin & zurück) -> Easing -> effektive
  * Flugzeit te, aus der Zoom, Rotation, Ziel-Fahrt und Schwenk berechnet werden.
@@ -1750,7 +1802,7 @@ function camAt(loopT) {
     const viewAspect = state.aspect;
     const imgAspect = state.starless
       ? state.starless.width / state.starless.height : 16 / 9;
-    const cover = Math.max(viewAspect / imgAspect, 1) * 1.02;
+    const cover = coverBase(viewAspect, imgAspect);
     const sc = cover * zoom;
     const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.92;
     const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.92;
@@ -1779,17 +1831,22 @@ function camAt(loopT) {
   let tiltAddX = 0, tiltAddY = 0;
   const swayA = (state.swayAmp / 100) * 0.06;
   if (swayA > 0) {
-    const period = 16 - (state.swayTempo / 100) * 12; // 16 s .. 4 s
+    // Kreisende Kippbewegung statt Hin-und-her-Pendeln: Der Kipp-Vektor
+    // läuft auf einer flachen Ellipse (Hauptachse = eingestellte Richtung).
+    // Ohne Umkehrpunkte wirkt der Schwenk ruhig statt wackelig - das
+    // Pendeln kehrte selbst bei langsamem Tempo sichtbar "hart" um.
+    const period = 24 - (state.swayTempo / 100) * 18; // 24 s .. 6 s
     const ph = te * 2 * Math.PI / period;
-    // Gerichtetes Pendeln entlang der eingestellten Richtung ...
     const dir = state.swayDir * Math.PI / 180;
-    const lin = Math.sin(ph);
-    // ... gemischt mit dem zufälligen elliptischen Wackeln
     const rnd = state.swayRandom / 100;
-    const ellX = Math.sin(ph);
-    const ellY = 0.7 * Math.sin(ph * 0.8 + 1.3);
-    tiltAddX = swayA * ((1 - rnd) * Math.cos(dir) * lin + rnd * ellX);
-    tiltAddY = swayA * ((1 - rnd) * Math.sin(dir) * lin + rnd * ellY);
+    // Zufalls-Anteil: zweite, inkommensurable Frequenz macht die Bahn organisch
+    const ex = Math.cos(ph) + rnd * 0.5 * Math.sin(ph * 0.63 + 1.3);
+    const ey = 0.55 * Math.sin(ph) + rnd * 0.35 * Math.sin(ph * 0.41 + 0.7);
+    // Sanft einschwingen (und im Loop-Modus über te wieder aus), damit der
+    // Flug nicht mit bereits gekippter Kamera beginnt
+    const ramp = smoothstep(Math.min(1, te / (period * 0.35)));
+    tiltAddX = swayA * ramp * (Math.cos(dir) * ex - Math.sin(dir) * ey);
+    tiltAddY = swayA * ramp * (Math.sin(dir) * ex + Math.cos(dir) * ey);
   }
 
   // Gerichteter Kipp-Schwenk: die Kamera kippt über die gesamte Flugdauer
@@ -1813,7 +1870,7 @@ function camAt(loopT) {
     const viewAspect = state.aspect;
     const imgAspect = state.starless
       ? state.starless.width / state.starless.height : 16 / 9;
-    const cover = Math.max(viewAspect / imgAspect, 1) * 1.02;
+    const cover = coverBase(viewAspect, imgAspect);
     const sc = cover * zoom;
     const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.98;
     const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.98;
@@ -1865,7 +1922,7 @@ function render(forcedT) {
   const { loopT, cam, fade } = animParams(t);
   const viewAspect = state.aspect;
   const imgAspect = state.starless.width / state.starless.height;
-  const cover = Math.max(viewAspect / imgAspect, 1) * 1.02;
+  const cover = coverBase(viewAspect, imgAspect);
   const parallax = state.parallax / 100;
   const warp = state.warp / 100;
   const depthRange = 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
@@ -2568,11 +2625,55 @@ $("ctlObjFar").addEventListener("change", () => {
   state.objFar = $("ctlObjFar").checked;
 });
 
+$("ctlStrictEdges").addEventListener("change", () => {
+  state.strictEdges = $("ctlStrictEdges").checked;
+});
+
 // --------------------------- Objekt-Erkennung (SIMBAD) & Overlay-Bedienung
+
+/**
+ * Infokarte nach der aktuellen Auswahl setzen. "auto" bevorzugt die erkannte
+ * Region (Gesamtkomplex), sonst das größte Objekt; ansonsten gilt die vom
+ * Nutzer getroffene Wahl (Region oder ein bestimmtes Objekt).
+ */
+function applyCardChoice() {
+  const items = state.objChoices || [];
+  if (!items.length) { state.objInfo = null; return; }
+  const reg = state.objRegion;
+  const c = state.cardChoice || "auto";
+  if (reg && (c === "auto" || c === "region")) {
+    state.objInfo = { id: reg.id, facts: { de: reg.de, en: reg.en }, otype: reg.otype };
+    return;
+  }
+  const pick = items.find((it) => it.id === c) || items[0];
+  state.objInfo = { id: pick.id, facts: OBJECT_FACTS[normObjId(pick.id)] || null, otype: pick.otype };
+}
 
 function rebuildObjList() {
   const box = $("objList");
   box.innerHTML = "";
+  const lang = I18N.lang === "de" ? "de" : "en";
+  // Auswahl, welches Objekt die Infokarte beschreibt (Auto/Region/Einzelobjekt)
+  const row = $("cardObjRow");
+  const sel = $("ctlCardObj");
+  const items = state.objChoices || [];
+  row.hidden = !items.length;
+  sel.innerHTML = "";
+  if (items.length) {
+    const add = (value, text) => {
+      const o = document.createElement("option");
+      o.value = value; o.textContent = text;
+      sel.appendChild(o);
+    };
+    add("auto", t("cardAuto"));
+    if (state.objRegion) add("region", `${t("cardRegion")}: ${state.objRegion[lang].name}`);
+    for (const it of items) {
+      const facts = OBJECT_FACTS[normObjId(it.id)];
+      add(it.id, facts ? `${it.id} – ${facts[lang].name}` : it.id);
+    }
+    sel.value = state.cardChoice || "auto";
+    if (sel.selectedIndex < 0) sel.value = "auto";
+  }
   if (!state.labels) return;
   for (const L of state.labels) {
     const lab = document.createElement("label");
@@ -2583,10 +2684,18 @@ function rebuildObjList() {
     cb.addEventListener("change", () => { L.on = cb.checked; });
     const span = document.createElement("span");
     const facts = OBJECT_FACTS[normObjId(L.id)];
-    const lang = I18N.lang === "de" ? "de" : "en";
     span.textContent = facts ? `${L.id} – ${facts[lang].name}` : L.id;
+    // Ringgröße pro Label anpassbar (SIMBAD-Größen fehlen oft oder passen
+    // nicht zum Ausschnitt)
+    const rg = document.createElement("input");
+    rg.type = "range";
+    rg.min = 30; rg.max = 300; rg.value = Math.round((L.sizeMul || 1) * 100);
+    rg.className = "objsize";
+    rg.title = t("objRingSize");
+    rg.addEventListener("input", () => { L.sizeMul = rg.value / 100; });
     lab.appendChild(cb);
     lab.appendChild(span);
+    lab.appendChild(rg);
     box.appendChild(lab);
   }
 }
@@ -2594,6 +2703,10 @@ I18N.onChange.push(rebuildObjList);
 
 $("ctlShowInfo").addEventListener("change", () => { state.showInfo = $("ctlShowInfo").checked; });
 $("ctlShowLabels").addEventListener("change", () => { state.showLabels = $("ctlShowLabels").checked; });
+$("ctlCardObj").addEventListener("change", () => {
+  state.cardChoice = $("ctlCardObj").value;
+  applyCardChoice();
+});
 
 $("btnObjects").addEventListener("click", async () => {
   if (!state.wcs || !state.starless) return;
@@ -2627,16 +2740,20 @@ $("btnObjects").addEventListener("click", async () => {
     }
     if (!items.length) {
       state.objInfo = null; state.labels = null;
+      state.objChoices = null; state.objRegion = null;
+      rebuildObjList();
       $("objStatus").textContent = t("objNone");
     } else {
       items.sort((a, b) => b.sizePlane - a.sizePlane);
-      const main = items[0];
-      state.objInfo = { id: main.id, facts: OBJECT_FACTS[normObjId(main.id)] || null, otype: main.otype };
+      state.objChoices = items;
+      state.objRegion = findObjectRegion(items);
+      state.cardChoice = "auto";
+      applyCardChoice();
       // Hauptobjekt nur beschriften, wenn es nicht das halbe Bild füllt
       const labels = items.filter((it, idx) => idx > 0 || it.sizePlane < 0.35).slice(0, 6);
       state.labels = labels.map((it) => ({ ...it, on: true }));
       rebuildObjList();
-      $("objStatus").textContent = t("objFound", items.length, main.id);
+      $("objStatus").textContent = t("objFound", items.length, state.objInfo.id);
     }
   } catch (e) {
     $("objStatus").textContent = t("objNetErr");
@@ -2702,7 +2819,7 @@ canvas.addEventListener("click", (e) => {
   const rx = c * px + s * py;   // R(a) wie im Shader (mat2 ist spaltenweise)
   const ry = -s * px + c * py;
   const imgAspect = state.starless.width / state.starless.height;
-  const cover = Math.max(state.aspect / imgAspect, 1) * 1.02;
+  const cover = coverBase(state.aspect, imgAspect);
   // Fixpunkt-Iteration wie im Shader: die Tiefe des angeklickten Objekts
   // bestimmt seine effektive Zoomrate, sonst trifft der Klick daneben
   const parallax = state.parallax / 100;

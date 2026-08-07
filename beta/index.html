@@ -544,6 +544,10 @@
         <input type="checkbox" id="ctlShowLabels" checked>
         <span data-i18n="objShowLabels">Render field labels into the video</span>
       </label>
+      <div id="cardObjRow" class="selrow" hidden>
+        <label for="ctlCardObj" data-i18n="cardObjLabel">Info card shows</label>
+        <select id="ctlCardObj"></select>
+      </div>
       <div id="objList"></div>
       <p class="tip" id="objStatus"></p>
     </section>
@@ -559,6 +563,11 @@
         <button data-aspect="5:4">5:4</button>
         <button data-aspect="9:16">9:16</button>
       </div>
+      <label class="check">
+        <input type="checkbox" id="ctlStrictEdges" checked>
+        <span><span data-i18n="strictEdges">Keep the crop inside the real image</span> <button class="qm" data-help="hintStrictEdges">?</button></span>
+      </label>
+      <p class="tip hint2" id="hintStrictEdges" hidden data-i18n="strictEdgesHint">The crop is automatically tightened so rotation, tilt and drift can never push it past the image edges. If disabled you get a wider framing, but the borders are mirrored there and the stars end before the frame edge.</p>
     </section>
 
     <section data-tab="export" data-easy="1">
