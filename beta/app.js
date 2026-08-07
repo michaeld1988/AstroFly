@@ -1510,6 +1510,12 @@ function overlayActive() {
  */
 function drawOverlayTo(ctx, W, H, loopT, cam) {
   if (!state.starless || !overlayActive()) return;
+  // Beim Neustart der Zeitachse (Loop-Wiederholung, Export ab 0) die
+  // gemerkten Chip-Seiten vergessen, damit jeder Durchlauf gleich aussieht
+  if (state.labels && loopT + 0.5 < (drawOverlayTo._lastT || 0)) {
+    for (const L of state.labels) delete L._chipSide;
+  }
+  drawOverlayTo._lastT = loopT;
   const lang = I18N.lang === "de" ? "de" : "en";
   const viewAspect = state.aspect;
   const imgAspect = state.starless.width / state.starless.height;
@@ -1633,8 +1639,19 @@ function drawOverlayTo(ctx, W, H, loopT, cam) {
       const wSub = ctx.measureText(sub).width;
       const chipW = Math.max(wName, wSub) + 24 * u;
       const chipH = 40 * u;
-      const right = sp.x + r + 14 * u + chipW < W - 8 * u;
-      const cx0 = right ? sp.x + r + 14 * u : sp.x - r - 14 * u - chipW;
+      // Seite pro Label festhalten: eine pro Frame neu getroffene Wahl
+      // springt beim Zoomen sichtbar hin und her. Gewechselt wird nur,
+      // wenn die aktuelle Seite nicht mehr passt, die andere aber schon.
+      const fitsRight = sp.x + r + 14 * u + chipW < W - 8 * u;
+      const fitsLeft = sp.x - r - 14 * u - chipW > 8 * u;
+      let side = L._chipSide || (fitsRight ? 1 : -1);
+      if (side > 0 && !fitsRight && fitsLeft) side = -1;
+      else if (side < 0 && !fitsLeft && fitsRight) side = 1;
+      L._chipSide = side;
+      const right = side > 0;
+      // Nie aus dem Bild ragen lassen
+      const cx0 = Math.min(Math.max(right ? sp.x + r + 14 * u : sp.x - r - 14 * u - chipW,
+        8 * u), W - chipW - 8 * u);
       // Chips im Hochformat aus der unteren Social-UI-Schutzzone heraushalten
       const chipSafe = (viewAspect < 1 ? 200 : 8) * u;
       let cy0 = Math.min(Math.max(sp.y - chipH / 2, 8 * u), H - chipH - chipSafe);
