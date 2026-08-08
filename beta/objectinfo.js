@@ -123,6 +123,27 @@ function findObjectRegion(items) {
   return null;
 }
 
+/**
+ * TAP-Abfrage mit Wiederholung: Die CDS-Dienste (SIMBAD/VizieR) haben
+ * gelegentlich kurze Aussetzer (z. B. 503). Zweimal mit Pause erneut
+ * versuchen und Server-Fehler von echten Verbindungsproblemen unterscheiden
+ * (err.server = true -> Server antwortet, aber mit Fehlerstatus).
+ */
+async function fetchTapCsv(url) {
+  let lastErr;
+  for (let i = 0; i < 3; i++) {
+    if (i) await new Promise((r) => setTimeout(r, 1500 * i));
+    try {
+      const resp = await fetch(url);
+      if (resp.ok) return await resp.text();
+      lastErr = Object.assign(new Error("HTTP " + resp.status), { server: true, status: resp.status });
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr;
+}
+
 function normObjId(id) {
   return id.replace(/\s+/g, "").toUpperCase();
 }
@@ -185,9 +206,7 @@ async function querySimbad(ra, dec, radiusDeg) {
     `ORDER BY majaxis DESC`;
   const url = "https://simbad.cds.unistra.fr/simbad/sim-tap/sync?REQUEST=doQuery&LANG=ADQL&FORMAT=csv&QUERY=" +
     encodeURIComponent(adql);
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error("HTTP " + resp.status);
-  const lines = (await resp.text()).trim().split("\n");
+  const lines = (await fetchTapCsv(url)).trim().split("\n");
   const CAT_RANK = { M: 0, NGC: 1, IC: 2 };
   const byMain = new Map(); // main_id -> Objekt mit bestem Katalog-Alias
   for (let i = 1; i < lines.length; i++) {
