@@ -1165,9 +1165,7 @@ async function queryGaia(ra, dec, radiusDeg) {
     `AND Plx>0.05 ORDER BY Gmag`;
   const url = "https://tapvizier.cds.unistra.fr/TAPVizieR/tap/sync?REQUEST=doQuery&LANG=ADQL&FORMAT=csv&QUERY=" +
     encodeURIComponent(adql);
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error("HTTP " + resp.status);
-  const lines = (await resp.text()).trim().split("\n");
+  const lines = (await fetchTapCsv(url)).trim().split("\n");
   const out = [];
   for (let i = 1; i < lines.length; i++) {
     const p = lines[i].split(",");
@@ -1510,8 +1508,11 @@ function overlayActive() {
  * auflösungsunabhängig (alles relativ zur Höhe H), identisch für Vorschau
  * und Export. Die Labels folgen der Kamerafahrt (neutrale Tiefe).
  */
-function drawOverlayTo(ctx, W, H, loopT, cam) {
+function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
   if (!state.starless || !overlayActive()) return;
+  // Schwarzblende des Videos mitmachen: Overlay nie vor dem Bild sichtbar
+  const baseA = fade === undefined ? 1 : fade;
+  if (baseA <= 0.01) return;
   // Beim Neustart der Zeitachse (Loop-Wiederholung, Export ab 0) die
   // gemerkten Chip-Seiten vergessen, damit jeder Durchlauf gleich aussieht
   if (state.labels && loopT + 0.5 < (drawOverlayTo._lastT || 0)) {
@@ -1550,6 +1551,7 @@ function drawOverlayTo(ctx, W, H, loopT, cam) {
   const ACC = "rgba(157,184,255,";
   ctx.save();
   ctx.textBaseline = "alphabetic";
+  ctx.globalAlpha = baseA;
 
   // ---- Infokarte (blendet ein und wieder aus) ----
   // Vor den Beschriftungen gezeichnet, damit Chips ihr ausweichen können
@@ -1559,7 +1561,7 @@ function drawOverlayTo(ctx, W, H, loopT, cam) {
     const a = Math.min(1, Math.max(0, (loopT - 0.8) / 0.8)) *
       Math.min(1, Math.max(0, (outStart + 1 - loopT) / 1));
     if (a > 0.01) {
-      ctx.globalAlpha = a;
+      ctx.globalAlpha = a * baseA;
       const info = state.objInfo;
       const f = info.facts ? info.facts[lang] : null;
       const title = f ? `${info.id} · ${f.name}` : info.id;
@@ -1583,37 +1585,94 @@ function drawOverlayTo(ctx, W, H, loopT, cam) {
       const bottomOff = (viewAspect < 1 ? 200 : 24) * u;
       const x0 = 24 * u, y0 = H - cardH - bottomOff;
       cardRect = { x0, y0, w: cardW, h: cardH };
-      ctx.fillStyle = "rgba(8,10,16,0.74)";
-      ctx.strokeStyle = ACC + "0.5)";
-      ctx.lineWidth = 1.6 * u;
-      ctx.beginPath();
-      ctx.roundRect(x0, y0, cardW, cardH, 14 * u);
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = "#eef2ff";
-      ctx.font = `800 ${22 * u}px system-ui, sans-serif`;
-      ctx.fillText(title, x0 + pad, y0 + 33 * u, cardW - 2 * pad);
+
+      // Die Karte folgt dem gewählten Beschriftungs-Stil, damit die
+      // Video-Overlays wie aus einem Guss wirken
+      const style = state.labelStyle || "editorial";
+      const monoF = `"Cascadia Code", "SF Mono", Consolas, monospace`;
+      const T = {
+        classic:   { box: "solid", fill: "rgba(8,10,16,0.74)", border: ACC + "0.5)", radius: 14,
+                     tW: "800", tCol: "#eef2ff", subCol: "#aab8d8", kCol: "#ffffff", vCol: "#c6cfe4", accCol: ACC + "0.75)" },
+        editorial: { box: "none", rule: "rgba(234,240,255,0.7)",
+                     tW: "650", tCol: "#f2f5ff", subCol: "#c3cde6", kCol: "#eef2ff", vCol: "#c3cde6", accCol: "rgba(234,240,255,0.65)", shadow: true },
+        glass:     { box: "solid", fill: "rgba(18,24,38,0.55)", border: "rgba(220,232,255,0.3)", radius: 18,
+                     tW: "650", tCol: "#f2f6ff", subCol: "#b9c6e4", kCol: "#f2f6ff", vCol: "#b9c6e4", accCol: "rgba(220,232,255,0.6)" },
+        hud:       { box: "hud", fill: "rgba(6,16,22,0.5)", border: "rgba(159,232,255,0.55)", radius: 2,
+                     tW: "600", tCol: "#d9f4ff", subCol: "#8fd2ea", kCol: "#d9f4ff", vCol: "#9fdcf2", accCol: "rgba(159,232,255,0.7)", font: monoF, upper: true },
+        micro:     { box: "none", rule: "rgba(255,255,255,0.5)",
+                     tW: "600", tCol: "#ffffff", subCol: "#c9d2e8", kCol: "#ffffff", vCol: "#c9d2e8", accCol: "rgba(255,255,255,0.6)", shadow: true, upper: true },
+        focus:     { box: "accent", fill: "rgba(16,21,34,0.85)", border: "rgba(167,196,255,0.45)", radius: 6,
+                     tW: "650", tCol: "#eef3ff", subCol: "#a9b8d9", kCol: "#eef3ff", vCol: "#a9b8d9", accCol: ACC + "0.9)" },
+      }[style] || { box: "solid", fill: "rgba(8,10,16,0.74)", border: ACC + "0.5)", radius: 14,
+        tW: "800", tCol: "#eef2ff", subCol: "#aab8d8", kCol: "#ffffff", vCol: "#c6cfe4", accCol: ACC + "0.75)" };
+      const fam = T.font || "system-ui, sans-serif";
+
+      if (T.box !== "none") {
+        ctx.fillStyle = T.fill;
+        ctx.strokeStyle = T.border;
+        ctx.lineWidth = 1.2 * u;
+        ctx.beginPath();
+        ctx.roundRect(x0, y0, cardW, cardH, T.radius * u);
+        ctx.fill();
+        ctx.stroke();
+        if (T.box === "accent") {
+          ctx.fillStyle = T.accCol;
+          ctx.fillRect(x0, y0 + 5 * u, 3 * u, cardH - 10 * u);
+        }
+        if (T.box === "hud") {
+          // Eckklammern wie bei den HUD-Labels
+          ctx.strokeStyle = T.border;
+          ctx.lineWidth = 1.8 * u;
+          const arm = 15 * u;
+          for (const [ex, ey] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+            const cxp = x0 + ex * cardW, cyp = y0 + ey * cardH;
+            ctx.beginPath();
+            ctx.moveTo(cxp, cyp + (ey ? -arm : arm));
+            ctx.lineTo(cxp, cyp);
+            ctx.lineTo(cxp + (ex ? -arm : arm), cyp);
+            ctx.stroke();
+          }
+        }
+      }
+      if (T.shadow) {
+        ctx.shadowColor = "rgba(0,0,0,0.85)";
+        ctx.shadowBlur = 8 * u;
+      }
+      const titleTxt = T.upper ? title.toUpperCase() : title;
+      ctx.fillStyle = T.tCol;
+      ctx.font = `${T.tW} ${(T.upper ? 19 : 22) * u}px ${fam}`;
+      ctx.fillText(titleTxt, x0 + pad, y0 + 33 * u, cardW - 2 * pad);
+      if (T.box === "none") {
+        // Feine Linie unter dem Titel ersetzt den Kasten
+        ctx.strokeStyle = T.rule;
+        ctx.lineWidth = 1 * u;
+        ctx.beginPath();
+        ctx.moveTo(x0 + pad, y0 + 41 * u);
+        ctx.lineTo(x0 + cardW - pad, y0 + 41 * u);
+        ctx.stroke();
+      }
       if (typeLine) {
-        ctx.fillStyle = "#aab8d8";
-        ctx.font = `${13 * u}px system-ui, sans-serif`;
-        ctx.fillText(typeLine, x0 + pad, y0 + 52 * u, cardW - 2 * pad);
+        ctx.fillStyle = T.subCol;
+        ctx.font = `${13 * u}px ${fam}`;
+        ctx.fillText(T.upper ? typeLine.toUpperCase() : typeLine, x0 + pad, y0 + 55 * u, cardW - 2 * pad);
       }
       facts.forEach(([k, v], i) => {
         const fx = x0 + pad + (i % 2) * colW;
         const fy = y0 + (typeLine ? 76 : 58) * u + Math.floor(i / 2) * 40 * u;
-        ctx.fillStyle = "#ffffff";
-        ctx.font = `700 ${13.5 * u}px system-ui, sans-serif`;
-        ctx.fillText(k, fx, fy);
-        ctx.fillStyle = "#c6cfe4";
-        ctx.font = `${13.5 * u}px system-ui, sans-serif`;
+        ctx.fillStyle = T.kCol;
+        ctx.font = `700 ${13.5 * u}px ${fam}`;
+        ctx.fillText(T.upper ? k.toUpperCase() : k, fx, fy);
+        ctx.fillStyle = T.vCol;
+        ctx.font = `${13.5 * u}px ${fam}`;
         ctx.fillText(v, fx, fy + 17 * u, colW - 14 * u);
       });
+      ctx.shadowBlur = 0;
       // Datenquelle dezent unter der Karte
-      ctx.globalAlpha = a * 0.8;
-      ctx.fillStyle = ACC + "0.75)";
-      ctx.font = `${10.5 * u}px system-ui, sans-serif`;
+      ctx.globalAlpha = a * 0.8 * baseA;
+      ctx.fillStyle = T.accCol;
+      ctx.font = `${10.5 * u}px ${fam}`;
       ctx.fillText("Data: SIMBAD/CDS · ESA Gaia DR3", x0 + 2 * u, y0 + cardH + 15 * u);
-      ctx.globalAlpha = 1;
+      ctx.globalAlpha = baseA;
     }
   }
 
@@ -1625,6 +1684,12 @@ function drawOverlayTo(ctx, W, H, loopT, cam) {
       if (!L.on) continue;
       const sp = toScreen(L);
       if (sp.x < -80 * u || sp.x > W + 80 * u || sp.y < -80 * u || sp.y > H + 80 * u) continue;
+      // Sanft ausblenden, wenn der Anker das Bild verlässt - vorher
+      // verschwand die Beschriftung von einem Frame auf den nächsten
+      const dOut = Math.max(0, -sp.x, sp.x - W, -sp.y, sp.y - H);
+      const edgeA = 1 - Math.min(1, dOut / (70 * u));
+      if (edgeA <= 0.01) continue;
+      ctx.globalAlpha = edgeA * baseA;
       const r = Math.max(16 * u, (L.sizePlane * (L.sizeMul || 1) * sp.scaleD * H) / 2);
       const facts = OBJECT_FACTS[normObjId(L.id)];
       const name = L.id;
@@ -1694,9 +1759,14 @@ function drawOverlayTo(ctx, W, H, loopT, cam) {
         const side = pickSide(sp.x + 10 * u + diag + textW + 18 * u < W - 8 * u,
           sp.x - 10 * u - diag - textW - 18 * u > 8 * u);
         const up = sp.y - diag - 46 * u > 8 * u ? 1 : -1;
-        const bx = sp.x + side * (10 * u + diag);
         let by = sp.y - up * (10 * u + diag);
         by = Math.min(Math.max(by, 46 * u), H - chipSafe - 6 * u);
+        // Text (und Linie) horizontal ins Bild klemmen - lange Untertitel
+        // wurden sonst am Bildrand abgeschnitten
+        let tx = sp.x + side * (10 * u + diag) + side * 2 * u;
+        if (side > 0) tx = Math.min(tx, W - textW - 10 * u);
+        else tx = Math.max(tx, textW + 10 * u);
+        const bx = tx - side * 2 * u;
         ctx.strokeStyle = "rgba(234,240,255,0.8)";
         ctx.lineWidth = 1.2 * u;
         ctx.beginPath();
@@ -1714,7 +1784,6 @@ function drawOverlayTo(ctx, W, H, loopT, cam) {
         ctx.arc(sp.x, sp.y, 7.5 * u, 0, Math.PI * 2);
         ctx.stroke();
         ctx.textAlign = side > 0 ? "left" : "right";
-        const tx = bx + side * 2 * u;
         ctx.shadowColor = "rgba(0,0,0,0.8)";
         ctx.shadowBlur = 8 * u;
         ctx.fillStyle = "#f2f5ff";
@@ -1895,7 +1964,7 @@ canvas.parentElement.style.position = "relative";
 canvas.parentElement.appendChild(overlayCanvas);
 const overlayCtx = overlayCanvas.getContext("2d");
 
-function drawPreviewOverlay(loopT, cam) {
+function drawPreviewOverlay(loopT, cam, fade) {
   if (overlayCanvas.width !== canvas.width || overlayCanvas.height !== canvas.height) {
     overlayCanvas.width = canvas.width;
     overlayCanvas.height = canvas.height;
@@ -1905,7 +1974,7 @@ function drawPreviewOverlay(loopT, cam) {
   overlayCanvas.style.width = canvas.clientWidth + "px";
   overlayCanvas.style.height = canvas.clientHeight + "px";
   overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-  drawOverlayTo(overlayCtx, overlayCanvas.width, overlayCanvas.height, loopT, cam);
+  drawOverlayTo(overlayCtx, overlayCanvas.width, overlayCanvas.height, loopT, cam, fade);
 }
 
 // ---------------------------------------------------------------- Kamera & Zeit
@@ -2388,7 +2457,7 @@ function render(forcedT) {
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
   // Objekt-Overlay (Infokarte + Labels) über der Vorschau
-  drawPreviewOverlay(loopT, cam);
+  drawPreviewOverlay(loopT, cam, fade);
 
   // Transport-UI
   const prog = (loopT / state.duration) * 100;
@@ -2971,7 +3040,7 @@ $("btnObjects").addEventListener("click", async () => {
       $("objStatus").textContent = t("objFound", items.length, state.objInfo.id);
     }
   } catch (e) {
-    $("objStatus").textContent = t("objNetErr");
+    $("objStatus").textContent = e.server ? t("objSrvErr", e.status) : t("objNetErr");
   }
   stageToast(null);
   $("btnObjects").disabled = !state.wcs;
@@ -3015,7 +3084,9 @@ $("btnGaia").addEventListener("click", async () => {
     const info = matchGaia(stars);
     if (!info) gaiaTransient = { key: "gaiaNoMatch", args: [] };
   } catch (e) {
-    gaiaTransient = { key: "gaiaNetErr", args: [] };
+    gaiaTransient = e.server
+      ? { key: "gaiaSrvErr", args: [e.status] }
+      : { key: "gaiaNetErr", args: [] };
   }
   updateGaiaStatus();
 });
@@ -3371,7 +3442,7 @@ async function exportOffline(w, h, fps) {
       if (burnOverlay) {
         compCtx.drawImage(canvas, 0, 0, w, h);
         const ap = animParams(t);
-        drawOverlayTo(compCtx, w, h, ap.loopT, ap.cam);
+        drawOverlayTo(compCtx, w, h, ap.loopT, ap.cam, ap.fade);
         src = compCanvas;
       }
       const vf = new VideoFrame(src, {
@@ -3449,7 +3520,7 @@ function exportRealtime(w, h, fps) {
     if (burnOverlay) {
       compCtx.drawImage(canvas, 0, 0, w, h);
       const ap = animParams(Math.min(t, state.duration));
-      drawOverlayTo(compCtx, w, h, ap.loopT, ap.cam);
+      drawOverlayTo(compCtx, w, h, ap.loopT, ap.cam, ap.fade);
     }
     $("exportProgress").style.width = Math.min(100, (t / state.duration) * 100) + "%";
     if (t >= state.duration) rec.stop();
@@ -3604,9 +3675,16 @@ function depthAtPlane(qx, qy, imgAspect) {
   if (!dd) return 0.45;
   const u = Math.min(1, Math.max(0, qx / imgAspect + 0.5));
   const v = Math.min(1, Math.max(0, qy + 0.5)); // Ebene ist y-up
-  const col = Math.round(u * (dd.w - 1));
-  const row = Math.round((1 - v) * (dd.h - 1));
-  return dd.data[(row * dd.w + col) * 4] / 255;
+  // Bilinear statt Nearest-Neighbor: Die Marker-Projektion nutzt die Tiefe
+  // für den Parallaxe-Exponenten - gestufte Werte ließen die Beschriftungen
+  // bei langsamer Kamerabewegung sichtbar "zittern"
+  const fx = u * (dd.w - 1), fy = (1 - v) * (dd.h - 1);
+  const x0 = Math.floor(fx), y0 = Math.floor(fy);
+  const x1 = Math.min(dd.w - 1, x0 + 1), y1 = Math.min(dd.h - 1, y0 + 1);
+  const ax = fx - x0, ay = fy - y0;
+  const at = (x, y) => dd.data[(y * dd.w + x) * 4] / 255;
+  return (at(x0, y0) * (1 - ax) + at(x1, y0) * ax) * (1 - ay) +
+         (at(x0, y1) * (1 - ax) + at(x1, y1) * ax) * ay;
 }
 
 // Vorschaugröße (wird gespeichert)
