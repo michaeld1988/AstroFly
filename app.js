@@ -1516,7 +1516,7 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
   // Beim Neustart der Zeitachse (Loop-Wiederholung, Export ab 0) die
   // gemerkten Chip-Seiten vergessen, damit jeder Durchlauf gleich aussieht
   if (state.labels && loopT + 0.5 < (drawOverlayTo._lastT || 0)) {
-    for (const L of state.labels) delete L._chipSide;
+    for (const L of state.labels) { delete L._chipSide; delete L._up; }
   }
   drawOverlayTo._lastT = loopT;
   const lang = I18N.lang === "de" ? "de" : "en";
@@ -1680,6 +1680,26 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
   if (state.showLabels && state.labels) {
     const style = state.labelStyle || "editorial";
     const chipSafe = (viewAspect < 1 ? 200 : 8) * u; // Social-UI-Schutzzone
+    // Platzierungs-System: belegte Flaechen (Infokarte + bereits gesetzte
+    // Labels) sammeln und Kollisionen durch vertikales Ausweichen aufloesen -
+    // Beschriftungen konnten sich sonst ueberlappen
+    const placed = [];
+    if (cardRect) placed.push({ x: cardRect.x0, y: cardRect.y0, w: cardRect.w, h: cardRect.h });
+    const claim = (x, y, w, h, anchorY) => {
+      const rr = { x, y, w, h };
+      for (let it = 0; it < 5; it++) {
+        let hit = null;
+        for (const p of placed) {
+          if (rr.x < p.x + p.w + 6 * u && rr.x + rr.w + 6 * u > p.x &&
+              rr.y < p.y + p.h + 6 * u && rr.y + rr.h + 6 * u > p.y) { hit = p; break; }
+        }
+        if (!hit) break;
+        rr.y = anchorY >= hit.y + hit.h / 2 ? hit.y + hit.h + 7 * u : hit.y - rr.h - 7 * u;
+      }
+      rr.y = Math.min(Math.max(rr.y, 8 * u), H - rr.h - chipSafe);
+      placed.push(rr);
+      return rr.y;
+    };
     for (const L of state.labels) {
       if (!L.on) continue;
       const sp = toScreen(L);
@@ -1697,14 +1717,17 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
         ? `${facts[lang].name} · ${facts[lang].dist || ""}`.replace(/ · $/, "")
         : (OTYPE_NAMES[lang][L.otype] || L.otype);
 
-      // Seite pro Label festhalten (Hysterese): eine pro Frame neu
-      // getroffene Wahl springt beim Zoomen sichtbar hin und her
-      const pickSide = (fitsRight, fitsLeft) => {
-        let side = L._chipSide || (fitsRight ? 1 : -1);
-        if (side > 0 && !fitsRight && fitsLeft) side = -1;
-        else if (side < 0 && !fitsLeft && fitsRight) side = 1;
-        L._chipSide = side;
-        return side;
+      // Seite/Richtung EINMAL pro Durchlauf waehlen und behalten: Ein
+      // Wechsel mitten im Flug liess die Beschriftung auf die andere Seite
+      // springen, sobald der Text den Rand beruehrte - die Klemmung haelt
+      // sie stattdessen kontinuierlich im Bild.
+      const pickSide = (fitsRight) => {
+        if (!L._chipSide) L._chipSide = fitsRight ? 1 : -1;
+        return L._chipSide;
+      };
+      const pickUp = (fitsUp) => {
+        if (!L._up) L._up = fitsUp ? 1 : -1;
+        return L._up;
       };
       const measure = (fName, fSub, subText) => {
         ctx.font = fName;
@@ -1722,16 +1745,11 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
         const { wn, ws } = measure(`700 ${15 * u}px system-ui, sans-serif`, `${11.5 * u}px system-ui, sans-serif`);
         const chipW = Math.max(wn, ws) + 24 * u;
         const chipH = 40 * u;
-        const side = pickSide(sp.x + r + 14 * u + chipW < W - 8 * u,
-          sp.x - r - 14 * u - chipW > 8 * u);
+        const side = pickSide(sp.x + r + 14 * u + chipW < W - 8 * u);
         const right = side > 0;
         const cx0 = Math.min(Math.max(right ? sp.x + r + 14 * u : sp.x - r - 14 * u - chipW,
           8 * u), W - chipW - 8 * u);
-        let cy0 = Math.min(Math.max(sp.y - chipH / 2, 8 * u), H - chipH - chipSafe);
-        if (cardRect && cx0 < cardRect.x0 + cardRect.w && cx0 + chipW > cardRect.x0 &&
-            cy0 + chipH > cardRect.y0) {
-          cy0 = cardRect.y0 - chipH - 8 * u;
-        }
+        const cy0 = claim(cx0, sp.y - chipH / 2, chipW, chipH, sp.y);
         ctx.strokeStyle = ACC + "0.7)";
         ctx.lineWidth = 1.4 * u;
         ctx.beginPath();
@@ -1756,17 +1774,16 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
         const { wn, ws } = measure(`650 ${17 * u}px system-ui, sans-serif`, `${12.5 * u}px system-ui, sans-serif`);
         const textW = Math.max(wn, ws);
         const diag = 52 * u;
-        const side = pickSide(sp.x + 10 * u + diag + textW + 18 * u < W - 8 * u,
-          sp.x - 10 * u - diag - textW - 18 * u > 8 * u);
-        const up = sp.y - diag - 46 * u > 8 * u ? 1 : -1;
+        const side = pickSide(sp.x + 10 * u + diag + textW + 18 * u < W - 8 * u);
+        const up = pickUp(sp.y - diag - 46 * u > 8 * u);
         let by = sp.y - up * (10 * u + diag);
-        by = Math.min(Math.max(by, 46 * u), H - chipSafe - 6 * u);
         // Text (und Linie) horizontal ins Bild klemmen - lange Untertitel
         // wurden sonst am Bildrand abgeschnitten
         let tx = sp.x + side * (10 * u + diag) + side * 2 * u;
         if (side > 0) tx = Math.min(tx, W - textW - 10 * u);
         else tx = Math.max(tx, textW + 10 * u);
         const bx = tx - side * 2 * u;
+        by = claim(side > 0 ? tx : tx - textW, by - 36 * u, textW + 8 * u, 42 * u, sp.y) + 36 * u;
         ctx.strokeStyle = "rgba(234,240,255,0.8)";
         ctx.lineWidth = 1.2 * u;
         ctx.beginPath();
@@ -1809,15 +1826,14 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
         const pillW = wn + ws + gap + 2 * pad;
         const pillH = 32 * u;
         const diag = 40 * u;
-        const side = pickSide(sp.x + (r + diag) * 0.71 + pillW + 16 * u < W - 8 * u,
-          sp.x - (r + diag) * 0.71 - pillW - 16 * u > 8 * u);
+        const side = pickSide(sp.x + (r + diag) * 0.71 + pillW + 16 * u < W - 8 * u);
         const ax = sp.x + side * r * 0.71, ay = sp.y - r * 0.71;
         const bx2 = ax + side * diag * 0.71, by2 = ay - diag * 0.71;
         ctx.strokeStyle = "rgba(207,224,255,0.55)";
         ctx.lineWidth = 1.1 * u;
         ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx2, by2); ctx.stroke();
         const px0 = Math.min(Math.max(side > 0 ? bx2 + 6 * u : bx2 - 6 * u - pillW, 8 * u), W - pillW - 8 * u);
-        const py0 = Math.min(Math.max(by2 - pillH / 2, 8 * u), H - pillH - chipSafe);
+        const py0 = claim(px0, by2 - pillH / 2, pillW, pillH, sp.y);
         ctx.fillStyle = "rgba(18,24,38,0.55)";
         ctx.strokeStyle = "rgba(220,232,255,0.3)";
         ctx.lineWidth = 1 * u;
@@ -1850,9 +1866,8 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
         const { wn, ws } = measure(mono, monoSub, subUp);
         const textW = Math.max(wn, ws);
         const diag = 26 * u;
-        const side = pickSide(sp.x + r + diag + textW + 14 * u < W - 8 * u,
-          sp.x - r - diag - textW - 14 * u > 8 * u);
-        const up = sp.y - r - diag - 40 * u > 8 * u ? 1 : -1;
+        const side = pickSide(sp.x + r + diag + textW + 14 * u < W - 8 * u);
+        const up = pickUp(sp.y - r - diag - 40 * u > 8 * u);
         ctx.strokeStyle = "rgba(159,232,255,0.7)";
         ctx.lineWidth = 1.2 * u;
         ctx.beginPath();
@@ -1862,7 +1877,7 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
         const tx = Math.min(Math.max(side > 0 ? sp.x + side * (r + diag) + 6 * u
           : sp.x + side * (r + diag) - 6 * u - textW, 8 * u), W - textW - 8 * u);
         let ty = sp.y - up * (r + diag) - (up > 0 ? 24 * u : -14 * u);
-        ty = Math.min(Math.max(ty, 20 * u), H - chipSafe - 22 * u);
+        ty = claim(tx, ty - 16 * u, textW, 42 * u, sp.y) + 16 * u;
         ctx.shadowColor = "rgba(120,220,255,0.35)";
         ctx.shadowBlur = 10 * u;
         ctx.fillStyle = "#d9f4ff";
@@ -1889,9 +1904,11 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
         const ws = ctx.measureText(subUp).width;
         const halfW = Math.max(wn, ws) / 2 + 14 * u;
         const lift = 78 * u;
-        const up = sp.y - lift - 44 * u > 8 * u ? 1 : -1;
-        const lineY = Math.min(Math.max(sp.y - up * lift, 44 * u), H - chipSafe - 10 * u);
+        const up = pickUp(sp.y - lift - 44 * u > 8 * u);
+        let lineY = Math.min(Math.max(sp.y - up * lift, 44 * u), H - chipSafe - 10 * u);
         const cx1 = Math.min(Math.max(sp.x, halfW + 8 * u), W - halfW - 8 * u);
+        const blockTop0 = up > 0 ? lineY - 40 * u : lineY - 4 * u;
+        lineY += claim(cx1 - halfW, blockTop0, 2 * halfW, 46 * u, sp.y) - blockTop0;
         ctx.strokeStyle = "rgba(255,255,255,0.55)";
         ctx.lineWidth = 1 * u;
         ctx.beginPath();
@@ -1931,9 +1948,8 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
         const boxW = Math.max(wn, ws) + 30 * u;
         const boxH = 42 * u;
         const bx3 = Math.min(Math.max(sp.x - boxW / 2, 8 * u), W - boxW - 8 * u);
-        let by3 = sp.y + r + 12 * u;
-        if (by3 + boxH > H - chipSafe) by3 = sp.y - r - 12 * u - boxH;
-        by3 = Math.min(Math.max(by3, 8 * u), H - boxH - chipSafe);
+        const below = pickUp(sp.y + r + 12 * u + boxH <= H - chipSafe) > 0;
+        const by3 = claim(bx3, below ? sp.y + r + 12 * u : sp.y - r - 12 * u - boxH, boxW, boxH, sp.y);
         ctx.fillStyle = "rgba(16,21,34,0.85)";
         ctx.strokeStyle = "rgba(167,196,255,0.45)";
         ctx.lineWidth = 1 * u;
