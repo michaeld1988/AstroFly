@@ -3581,6 +3581,16 @@ $("btnExport").addEventListener("click", async () => {
     banner.hidden = false;
     return;
   }
+  // Firefox kann das Video nicht zuverlässig rendern/exportieren (kein
+  // WebCodecs-MP4, MediaRecorder-Probleme) - deutliche Warnung ganz oben
+  if (/firefox/i.test(navigator.userAgent)) {
+    for (const el of [hint, $("inappBanner")]) {
+      el.setAttribute("data-i18n", "firefoxWarn");
+      el.textContent = t("firefoxWarn");
+      el.hidden = false;
+    }
+    return;
+  }
   if (IS_SAFARI) {
     hint.setAttribute("data-i18n", "safariExport");
     hint.textContent = t("safariExport");
