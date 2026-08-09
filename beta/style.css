@@ -198,6 +198,7 @@ input[type=range]::-moz-range-thumb {
 .check input[type=checkbox] { accent-color: var(--accent-dim); width: 14px; height: 14px; flex: none; }
 .check input.objsize { width: 72px; flex: none; accent-color: var(--accent-dim); }
 .selrow { display: flex; gap: 8px; align-items: center; margin-top: 10px; font-size: 12.5px; }
+.selrow[hidden] { display: none; }
 .selrow label { color: var(--muted, #7d8598); flex: none; }
 .selrow select { flex: 1; min-width: 0; }
 
