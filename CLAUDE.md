@@ -57,7 +57,8 @@ kein Build-Schritt, alles läuft lokal im Browser.
 - `index.html` / `style.css` – flache Tab-Sektionen, Instrumenten-Look
   (monochrom, Akzent #8fb0ff)
 - `beta/` – vollständige Kopie der App für den Beta-Kanal
-- `demo/` – Orion-Demobilder; `vendor/` – UTIF, mp4-muxer u. a.
+- `demo/` – Orion-Demobilder + `orion.wcs` (Plate-Solve-Lösung, wird vom
+  Demo-Button automatisch mitgeladen); `vendor/` – UTIF, mp4-muxer u. a.
 - `tools/instagram-mcp/` – optionaler MCP-Server (Cloudflare Worker) für
   Instagram-Posts/Kommentare/Insights (geparkt, PR #52)
 
