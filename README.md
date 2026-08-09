@@ -16,8 +16,9 @@ nothing is uploaded).
 Example flights & updates: [@astrofly_app on Instagram](https://www.instagram.com/astrofly_app/)
 
 Chrome or Edge recommended – they support the fastest, frame-perfect MP4
-export. Safari exports MP4 via a compatibility mode (realtime recording);
-Firefox exports WebM (not accepted by Instagram/TikTok).
+export. Safari exports MP4 via a compatibility mode (realtime recording).
+**Firefox is not supported** – video rendering/export does not work reliably
+there; the app shows a prominent warning and recommends Chrome/Edge.
 
 **Videos you create are yours** – use them anywhere (social media, YouTube,
 client work), credit is appreciated but not required
