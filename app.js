@@ -481,20 +481,24 @@ void main() {
     vec2 velClip = (clip2 - clip) * uStreak;
     // y negiert: gl_PointCoord zählt nach unten, der Clip-Space nach oben
     vec2 velPx = velClip * 0.5 * vec2(uPixelsY * uViewAspect, -uPixelsY);
-    float rawLen = length(velPx);
+    float fullLen = length(velPx);
     // Langsame Sterne bleiben perfekt runde Punkte: Erst wenn die Bewegung
     // deutlich über einen Sterndurchmesser hinausgeht, wächst der Schweif
-    // weich an - sonst wirken alle Sterne leicht "eiförmig" verformt
-    rawLen *= smoothstep(base * 0.4, base * 1.3, rawLen);
+    // weich an - sonst wirken alle Sterne leicht "eiförmig" verformt.
+    // Wichtig: fullLen getrennt halten - dirPx muss mit der ECHTEN Länge
+    // normiert werden, sonst verzerrt ein teilweiser Anlauffaktor die ganze
+    // Kapsel-Geometrie (Sterne verschwanden bei mittleren Reglerwerten)
+    float rawLen = fullLen * smoothstep(base * 0.4, base * 1.3, fullLen);
     // Nie größer werden als die GPU-Punktgröße erlaubt (sonst kappt der
     // Treiber das Sprite und der Sternkopf wird sichtbar "halbiert"),
     // plus 4 px Rand, damit der Kopf nie exakt auf der Sprite-Kante liegt
-    len = min(rawLen, uMaxPoint - base - 4.0);
-    if (rawLen > 1e-4) {
-      dirPx = velPx / rawLen;
+    len = clamp(rawLen, 0.0, max(uMaxPoint - base - 4.0, 0.0));
+    if (fullLen > 1e-4) {
+      dirPx = velPx / fullLen;
       // Kometen-Optik: Der Stern bleibt an seiner Position (Kopf), der
-      // Schweif läuft entgegen der Flugrichtung aus -> Sprite nach hinten
-      clipMid = clip - velClip * 0.5 * (len / rawLen);
+      // Schweif läuft entgegen der Flugrichtung aus -> Sprite nach hinten,
+      // um die SICHTBARE Schweiflänge (nicht die volle Bewegung)
+      clipMid = clip - velClip * 0.5 * (len / fullLen);
     }
   }
   gl_Position = vec4(clipMid, 0.0, 1.0);
@@ -508,10 +512,11 @@ void main() {
   float seed = fract(aPos.x * 137.7 + aPos.y * 91.3) * 6.2831;
   float tw = sin(uTime * uTwSpeed * (1.0 + fract(seed) * 2.5) + seed * 10.0) * 0.5 + 0.5;
   vAlpha = 1.0 - uTwinkle * 0.55 * tw;
-  // Langzeitbelichtung: die Helligkeit verteilt sich über die Streifenlänge.
-  // Wurzel statt linear (und eine Untergrenze), damit lange Streifen sichtbar
-  // bleiben statt physikalisch korrekt im Nichts zu verschwinden.
-  vAlpha *= max(sqrt(vBase / vSize), 0.25);
+  // Kometen-Logik statt physikalischer Langzeitbelichtung: Der Sternkopf
+  // behält IMMER seine volle Helligkeit, nur der Schweif läuft weich aus
+  // (macht der Verlauf im Fragment-Shader). Eine globale Längen-Dämpfung
+  // ließ schwache Sterne bei mittleren Reglerwerten unter die
+  // Sichtbarkeitsschwelle fallen - der Regler war nicht dosierbar.
   vAlpha *= 1.0 - occ;
   float lumS = dot(aColor, vec3(0.299, 0.587, 0.114));
   vColor = max(mix(vec3(lumS), aColor, uStarSat), 0.0) * uStarBright;
@@ -543,7 +548,11 @@ void main() {
   // vorn) volle Helligkeit, zum Ende hin weich auslaufend
   if (vLen > 0.5) {
     float s = clamp((along + vLen * 0.5) / max(vLen, 1.0), 0.0, 1.0);
-    a *= mix(0.10, 1.0, s * s);
+    float grad = mix(0.10, 1.0, s * s);
+    // Der Kometen-Verlauf blendet erst mit wachsender Streifenlänge ein -
+    // bei winzigen Längen dimmte er sonst den ganzen Stern und der Regler
+    // war nicht dosierbar (Sterne verschwanden bei kleinen Werten)
+    a *= mix(1.0, grad, clamp(vLen / (vBase + 1.0), 0.0, 1.0));
   }
   outColor = vec4(vColor * a, a);
 }`;
