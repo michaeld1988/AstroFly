@@ -23,6 +23,7 @@ const state = {
 
   aspect: 16 / 9,
   aspectName: "16:9",
+  strictEdges: true,     // Ausschnitt nie über die echte Bildfläche (sonst Spiegelränder)
 
   flightMode: "zoom",    // "zoom" = auf den Nebel zu, "lateral" = seitlicher Flug
   driftDir: 90,          // Flugrichtung beim seitlichen Flug in Grad
@@ -85,6 +86,7 @@ const state = {
   labels: null,          // Feld-Beschriftungen [{ id, x, y, sizePlane, otype, on }]
   showInfo: true,        // Infokarte ins Video einblenden
   showLabels: true,      // Feld-Beschriftungen ins Video einblenden
+  labelStyle: "editorial", // Stil der Beschriftungen (editorial/glass/hud/micro/focus/classic)
   twinkleSpeed: 100,     // Funkel-Tempo in %
   starSize: 100,         // % Sterngröße
   starBright: 100,       // % Sternhelligkeit
@@ -479,20 +481,24 @@ void main() {
     vec2 velClip = (clip2 - clip) * uStreak;
     // y negiert: gl_PointCoord zählt nach unten, der Clip-Space nach oben
     vec2 velPx = velClip * 0.5 * vec2(uPixelsY * uViewAspect, -uPixelsY);
-    float rawLen = length(velPx);
+    float fullLen = length(velPx);
     // Langsame Sterne bleiben perfekt runde Punkte: Erst wenn die Bewegung
     // deutlich über einen Sterndurchmesser hinausgeht, wächst der Schweif
-    // weich an - sonst wirken alle Sterne leicht "eiförmig" verformt
-    rawLen *= smoothstep(base * 0.4, base * 1.3, rawLen);
+    // weich an - sonst wirken alle Sterne leicht "eiförmig" verformt.
+    // Wichtig: fullLen getrennt halten - dirPx muss mit der ECHTEN Länge
+    // normiert werden, sonst verzerrt ein teilweiser Anlauffaktor die ganze
+    // Kapsel-Geometrie (Sterne verschwanden bei mittleren Reglerwerten)
+    float rawLen = fullLen * smoothstep(base * 0.4, base * 1.3, fullLen);
     // Nie größer werden als die GPU-Punktgröße erlaubt (sonst kappt der
     // Treiber das Sprite und der Sternkopf wird sichtbar "halbiert"),
     // plus 4 px Rand, damit der Kopf nie exakt auf der Sprite-Kante liegt
-    len = min(rawLen, uMaxPoint - base - 4.0);
-    if (rawLen > 1e-4) {
-      dirPx = velPx / rawLen;
+    len = clamp(rawLen, 0.0, max(uMaxPoint - base - 4.0, 0.0));
+    if (fullLen > 1e-4) {
+      dirPx = velPx / fullLen;
       // Kometen-Optik: Der Stern bleibt an seiner Position (Kopf), der
-      // Schweif läuft entgegen der Flugrichtung aus -> Sprite nach hinten
-      clipMid = clip - velClip * 0.5 * (len / rawLen);
+      // Schweif läuft entgegen der Flugrichtung aus -> Sprite nach hinten,
+      // um die SICHTBARE Schweiflänge (nicht die volle Bewegung)
+      clipMid = clip - velClip * 0.5 * (len / fullLen);
     }
   }
   gl_Position = vec4(clipMid, 0.0, 1.0);
@@ -506,10 +512,11 @@ void main() {
   float seed = fract(aPos.x * 137.7 + aPos.y * 91.3) * 6.2831;
   float tw = sin(uTime * uTwSpeed * (1.0 + fract(seed) * 2.5) + seed * 10.0) * 0.5 + 0.5;
   vAlpha = 1.0 - uTwinkle * 0.55 * tw;
-  // Langzeitbelichtung: die Helligkeit verteilt sich über die Streifenlänge.
-  // Wurzel statt linear (und eine Untergrenze), damit lange Streifen sichtbar
-  // bleiben statt physikalisch korrekt im Nichts zu verschwinden.
-  vAlpha *= max(sqrt(vBase / vSize), 0.25);
+  // Kometen-Logik statt physikalischer Langzeitbelichtung: Der Sternkopf
+  // behält IMMER seine volle Helligkeit, nur der Schweif läuft weich aus
+  // (macht der Verlauf im Fragment-Shader). Eine globale Längen-Dämpfung
+  // ließ schwache Sterne bei mittleren Reglerwerten unter die
+  // Sichtbarkeitsschwelle fallen - der Regler war nicht dosierbar.
   vAlpha *= 1.0 - occ;
   float lumS = dot(aColor, vec3(0.299, 0.587, 0.114));
   vColor = max(mix(vec3(lumS), aColor, uStarSat), 0.0) * uStarBright;
@@ -541,7 +548,11 @@ void main() {
   // vorn) volle Helligkeit, zum Ende hin weich auslaufend
   if (vLen > 0.5) {
     float s = clamp((along + vLen * 0.5) / max(vLen, 1.0), 0.0, 1.0);
-    a *= mix(0.10, 1.0, s * s);
+    float grad = mix(0.10, 1.0, s * s);
+    // Der Kometen-Verlauf blendet erst mit wachsender Streifenlänge ein -
+    // bei winzigen Längen dimmte er sonst den ganzen Stern und der Regler
+    // war nicht dosierbar (Sterne verschwanden bei kleinen Werten)
+    a *= mix(1.0, grad, clamp(vLen / (vBase + 1.0), 0.0, 1.0));
   }
   outColor = vec4(vColor * a, a);
 }`;
@@ -1163,9 +1174,7 @@ async function queryGaia(ra, dec, radiusDeg) {
     `AND Plx>0.05 ORDER BY Gmag`;
   const url = "https://tapvizier.cds.unistra.fr/TAPVizieR/tap/sync?REQUEST=doQuery&LANG=ADQL&FORMAT=csv&QUERY=" +
     encodeURIComponent(adql);
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error("HTTP " + resp.status);
-  const lines = (await resp.text()).trim().split("\n");
+  const lines = (await fetchTapCsv(url)).trim().split("\n");
   const out = [];
   for (let i = 1; i < lines.length; i++) {
     const p = lines[i].split(",");
@@ -1508,18 +1517,21 @@ function overlayActive() {
  * auflösungsunabhängig (alles relativ zur Höhe H), identisch für Vorschau
  * und Export. Die Labels folgen der Kamerafahrt (neutrale Tiefe).
  */
-function drawOverlayTo(ctx, W, H, loopT, cam) {
+function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
   if (!state.starless || !overlayActive()) return;
+  // Schwarzblende des Videos mitmachen: Overlay nie vor dem Bild sichtbar
+  const baseA = fade === undefined ? 1 : fade;
+  if (baseA <= 0.01) return;
   // Beim Neustart der Zeitachse (Loop-Wiederholung, Export ab 0) die
   // gemerkten Chip-Seiten vergessen, damit jeder Durchlauf gleich aussieht
   if (state.labels && loopT + 0.5 < (drawOverlayTo._lastT || 0)) {
-    for (const L of state.labels) delete L._chipSide;
+    for (const L of state.labels) { delete L._chipSide; delete L._up; }
   }
   drawOverlayTo._lastT = loopT;
   const lang = I18N.lang === "de" ? "de" : "en";
   const viewAspect = state.aspect;
   const imgAspect = state.starless.width / state.starless.height;
-  const cover = Math.max(viewAspect / imgAspect, 1) * 1.02;
+  const cover = coverBase(viewAspect, imgAspect);
   const scale = cover * cam.zoom;
   const rc = Math.cos(cam.angle), rs = Math.sin(cam.angle);
   // Marker exakt auf das Objekt pinnen: dieselbe tiefenabhängige
@@ -1548,6 +1560,7 @@ function drawOverlayTo(ctx, W, H, loopT, cam) {
   const ACC = "rgba(157,184,255,";
   ctx.save();
   ctx.textBaseline = "alphabetic";
+  ctx.globalAlpha = baseA;
 
   // ---- Infokarte (blendet ein und wieder aus) ----
   // Vor den Beschriftungen gezeichnet, damit Chips ihr ausweichen können
@@ -1557,7 +1570,7 @@ function drawOverlayTo(ctx, W, H, loopT, cam) {
     const a = Math.min(1, Math.max(0, (loopT - 0.8) / 0.8)) *
       Math.min(1, Math.max(0, (outStart + 1 - loopT) / 1));
     if (a > 0.01) {
-      ctx.globalAlpha = a;
+      ctx.globalAlpha = a * baseA;
       const info = state.objInfo;
       const f = info.facts ? info.facts[lang] : null;
       const title = f ? `${info.id} · ${f.name}` : info.id;
@@ -1581,103 +1594,387 @@ function drawOverlayTo(ctx, W, H, loopT, cam) {
       const bottomOff = (viewAspect < 1 ? 200 : 24) * u;
       const x0 = 24 * u, y0 = H - cardH - bottomOff;
       cardRect = { x0, y0, w: cardW, h: cardH };
-      ctx.fillStyle = "rgba(8,10,16,0.74)";
-      ctx.strokeStyle = ACC + "0.5)";
-      ctx.lineWidth = 1.6 * u;
-      ctx.beginPath();
-      ctx.roundRect(x0, y0, cardW, cardH, 14 * u);
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = "#eef2ff";
-      ctx.font = `800 ${22 * u}px system-ui, sans-serif`;
-      ctx.fillText(title, x0 + pad, y0 + 33 * u, cardW - 2 * pad);
+
+      // Die Karte folgt dem gewählten Beschriftungs-Stil, damit die
+      // Video-Overlays wie aus einem Guss wirken
+      const style = state.labelStyle || "editorial";
+      const monoF = `"Cascadia Code", "SF Mono", Consolas, monospace`;
+      const T = {
+        classic:   { box: "solid", fill: "rgba(8,10,16,0.74)", border: ACC + "0.5)", radius: 14,
+                     tW: "800", tCol: "#eef2ff", subCol: "#aab8d8", kCol: "#ffffff", vCol: "#c6cfe4", accCol: ACC + "0.75)" },
+        editorial: { box: "none", rule: "rgba(234,240,255,0.7)",
+                     tW: "650", tCol: "#f2f5ff", subCol: "#c3cde6", kCol: "#eef2ff", vCol: "#c3cde6", accCol: "rgba(234,240,255,0.65)", shadow: true },
+        glass:     { box: "solid", fill: "rgba(18,24,38,0.55)", border: "rgba(220,232,255,0.3)", radius: 18,
+                     tW: "650", tCol: "#f2f6ff", subCol: "#b9c6e4", kCol: "#f2f6ff", vCol: "#b9c6e4", accCol: "rgba(220,232,255,0.6)" },
+        hud:       { box: "hud", fill: "rgba(6,16,22,0.5)", border: "rgba(159,232,255,0.55)", radius: 2,
+                     tW: "600", tCol: "#d9f4ff", subCol: "#8fd2ea", kCol: "#d9f4ff", vCol: "#9fdcf2", accCol: "rgba(159,232,255,0.7)", font: monoF, upper: true },
+        micro:     { box: "none", rule: "rgba(255,255,255,0.5)",
+                     tW: "600", tCol: "#ffffff", subCol: "#c9d2e8", kCol: "#ffffff", vCol: "#c9d2e8", accCol: "rgba(255,255,255,0.6)", shadow: true, upper: true },
+        focus:     { box: "accent", fill: "rgba(16,21,34,0.85)", border: "rgba(167,196,255,0.45)", radius: 6,
+                     tW: "650", tCol: "#eef3ff", subCol: "#a9b8d9", kCol: "#eef3ff", vCol: "#a9b8d9", accCol: ACC + "0.9)" },
+      }[style] || { box: "solid", fill: "rgba(8,10,16,0.74)", border: ACC + "0.5)", radius: 14,
+        tW: "800", tCol: "#eef2ff", subCol: "#aab8d8", kCol: "#ffffff", vCol: "#c6cfe4", accCol: ACC + "0.75)" };
+      const fam = T.font || "system-ui, sans-serif";
+
+      if (T.box !== "none") {
+        ctx.fillStyle = T.fill;
+        ctx.strokeStyle = T.border;
+        ctx.lineWidth = 1.2 * u;
+        ctx.beginPath();
+        ctx.roundRect(x0, y0, cardW, cardH, T.radius * u);
+        ctx.fill();
+        ctx.stroke();
+        if (T.box === "accent") {
+          ctx.fillStyle = T.accCol;
+          ctx.fillRect(x0, y0 + 5 * u, 3 * u, cardH - 10 * u);
+        }
+        if (T.box === "hud") {
+          // Eckklammern wie bei den HUD-Labels
+          ctx.strokeStyle = T.border;
+          ctx.lineWidth = 1.8 * u;
+          const arm = 15 * u;
+          for (const [ex, ey] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+            const cxp = x0 + ex * cardW, cyp = y0 + ey * cardH;
+            ctx.beginPath();
+            ctx.moveTo(cxp, cyp + (ey ? -arm : arm));
+            ctx.lineTo(cxp, cyp);
+            ctx.lineTo(cxp + (ex ? -arm : arm), cyp);
+            ctx.stroke();
+          }
+        }
+      }
+      if (T.shadow) {
+        ctx.shadowColor = "rgba(0,0,0,0.85)";
+        ctx.shadowBlur = 8 * u;
+      }
+      const titleTxt = T.upper ? title.toUpperCase() : title;
+      ctx.fillStyle = T.tCol;
+      ctx.font = `${T.tW} ${(T.upper ? 19 : 22) * u}px ${fam}`;
+      ctx.fillText(titleTxt, x0 + pad, y0 + 33 * u, cardW - 2 * pad);
+      if (T.box === "none") {
+        // Feine Linie unter dem Titel ersetzt den Kasten
+        ctx.strokeStyle = T.rule;
+        ctx.lineWidth = 1 * u;
+        ctx.beginPath();
+        ctx.moveTo(x0 + pad, y0 + 41 * u);
+        ctx.lineTo(x0 + cardW - pad, y0 + 41 * u);
+        ctx.stroke();
+      }
       if (typeLine) {
-        ctx.fillStyle = "#aab8d8";
-        ctx.font = `${13 * u}px system-ui, sans-serif`;
-        ctx.fillText(typeLine, x0 + pad, y0 + 52 * u, cardW - 2 * pad);
+        ctx.fillStyle = T.subCol;
+        ctx.font = `${13 * u}px ${fam}`;
+        ctx.fillText(T.upper ? typeLine.toUpperCase() : typeLine, x0 + pad, y0 + 55 * u, cardW - 2 * pad);
       }
       facts.forEach(([k, v], i) => {
         const fx = x0 + pad + (i % 2) * colW;
         const fy = y0 + (typeLine ? 76 : 58) * u + Math.floor(i / 2) * 40 * u;
-        ctx.fillStyle = "#ffffff";
-        ctx.font = `700 ${13.5 * u}px system-ui, sans-serif`;
-        ctx.fillText(k, fx, fy);
-        ctx.fillStyle = "#c6cfe4";
-        ctx.font = `${13.5 * u}px system-ui, sans-serif`;
+        ctx.fillStyle = T.kCol;
+        ctx.font = `700 ${13.5 * u}px ${fam}`;
+        ctx.fillText(T.upper ? k.toUpperCase() : k, fx, fy);
+        ctx.fillStyle = T.vCol;
+        ctx.font = `${13.5 * u}px ${fam}`;
         ctx.fillText(v, fx, fy + 17 * u, colW - 14 * u);
       });
+      ctx.shadowBlur = 0;
       // Datenquelle dezent unter der Karte
-      ctx.globalAlpha = a * 0.8;
-      ctx.fillStyle = ACC + "0.75)";
-      ctx.font = `${10.5 * u}px system-ui, sans-serif`;
+      ctx.globalAlpha = a * 0.8 * baseA;
+      ctx.fillStyle = T.accCol;
+      ctx.font = `${10.5 * u}px ${fam}`;
       ctx.fillText("Data: SIMBAD/CDS · ESA Gaia DR3", x0 + 2 * u, y0 + cardH + 15 * u);
-      ctx.globalAlpha = 1;
+      ctx.globalAlpha = baseA;
     }
   }
 
-  // ---- Feld-Beschriftungen ----
+  // ---- Feld-Beschriftungen (6 wählbare Stile) ----
   if (state.showLabels && state.labels) {
+    const style = state.labelStyle || "editorial";
+    const chipSafe = (viewAspect < 1 ? 200 : 8) * u; // Social-UI-Schutzzone
+    // Platzierungs-System: belegte Flaechen (Infokarte + bereits gesetzte
+    // Labels) sammeln und Kollisionen durch vertikales Ausweichen aufloesen -
+    // Beschriftungen konnten sich sonst ueberlappen
+    const placed = [];
+    if (cardRect) placed.push({ x: cardRect.x0, y: cardRect.y0, w: cardRect.w, h: cardRect.h });
+    const claim = (x, y, w, h, anchorY) => {
+      const rr = { x, y, w, h };
+      for (let it = 0; it < 5; it++) {
+        let hit = null;
+        for (const p of placed) {
+          if (rr.x < p.x + p.w + 6 * u && rr.x + rr.w + 6 * u > p.x &&
+              rr.y < p.y + p.h + 6 * u && rr.y + rr.h + 6 * u > p.y) { hit = p; break; }
+        }
+        if (!hit) break;
+        rr.y = anchorY >= hit.y + hit.h / 2 ? hit.y + hit.h + 7 * u : hit.y - rr.h - 7 * u;
+      }
+      rr.y = Math.min(Math.max(rr.y, 8 * u), H - rr.h - chipSafe);
+      placed.push(rr);
+      return rr.y;
+    };
     for (const L of state.labels) {
       if (!L.on) continue;
       const sp = toScreen(L);
       if (sp.x < -80 * u || sp.x > W + 80 * u || sp.y < -80 * u || sp.y > H + 80 * u) continue;
-      const r = Math.max(16 * u, (L.sizePlane * sp.scaleD * H) / 2);
-      ctx.strokeStyle = ACC + "0.75)";
-      ctx.lineWidth = 1.6 * u;
-      ctx.beginPath();
-      ctx.arc(sp.x, sp.y, r, 0, Math.PI * 2);
-      ctx.stroke();
-      // Chip rechts vom Ring, bei Platzmangel links
+      // Sanft ausblenden, wenn der Anker das Bild verlässt - vorher
+      // verschwand die Beschriftung von einem Frame auf den nächsten
+      const dOut = Math.max(0, -sp.x, sp.x - W, -sp.y, sp.y - H);
+      const edgeA = 1 - Math.min(1, dOut / (70 * u));
+      if (edgeA <= 0.01) continue;
+      ctx.globalAlpha = edgeA * baseA;
+      const r = Math.max(16 * u, (L.sizePlane * (L.sizeMul || 1) * sp.scaleD * H) / 2);
       const facts = OBJECT_FACTS[normObjId(L.id)];
       const name = L.id;
       const sub = facts
         ? `${facts[lang].name} · ${facts[lang].dist || ""}`.replace(/ · $/, "")
         : (OTYPE_NAMES[lang][L.otype] || L.otype);
-      ctx.font = `700 ${15 * u}px system-ui, sans-serif`;
-      const wName = ctx.measureText(name).width;
-      ctx.font = `${11.5 * u}px system-ui, sans-serif`;
-      const wSub = ctx.measureText(sub).width;
-      const chipW = Math.max(wName, wSub) + 24 * u;
-      const chipH = 40 * u;
-      // Seite pro Label festhalten: eine pro Frame neu getroffene Wahl
-      // springt beim Zoomen sichtbar hin und her. Gewechselt wird nur,
-      // wenn die aktuelle Seite nicht mehr passt, die andere aber schon.
-      const fitsRight = sp.x + r + 14 * u + chipW < W - 8 * u;
-      const fitsLeft = sp.x - r - 14 * u - chipW > 8 * u;
-      let side = L._chipSide || (fitsRight ? 1 : -1);
-      if (side > 0 && !fitsRight && fitsLeft) side = -1;
-      else if (side < 0 && !fitsLeft && fitsRight) side = 1;
-      L._chipSide = side;
-      const right = side > 0;
-      // Nie aus dem Bild ragen lassen
-      const cx0 = Math.min(Math.max(right ? sp.x + r + 14 * u : sp.x - r - 14 * u - chipW,
-        8 * u), W - chipW - 8 * u);
-      // Chips im Hochformat aus der unteren Social-UI-Schutzzone heraushalten
-      const chipSafe = (viewAspect < 1 ? 200 : 8) * u;
-      let cy0 = Math.min(Math.max(sp.y - chipH / 2, 8 * u), H - chipH - chipSafe);
-      // ... und nicht mit der Infokarte kollidieren lassen
-      if (cardRect && cx0 < cardRect.x0 + cardRect.w && cx0 + chipW > cardRect.x0 &&
-          cy0 + chipH > cardRect.y0) {
-        cy0 = cardRect.y0 - chipH - 8 * u;
+
+      // Seite/Richtung EINMAL pro Durchlauf waehlen und behalten: Ein
+      // Wechsel mitten im Flug liess die Beschriftung auf die andere Seite
+      // springen, sobald der Text den Rand beruehrte - die Klemmung haelt
+      // sie stattdessen kontinuierlich im Bild.
+      const pickSide = (fitsRight) => {
+        if (!L._chipSide) L._chipSide = fitsRight ? 1 : -1;
+        return L._chipSide;
+      };
+      const pickUp = (fitsUp) => {
+        if (!L._up) L._up = fitsUp ? 1 : -1;
+        return L._up;
+      };
+      const measure = (fName, fSub, subText) => {
+        ctx.font = fName;
+        const wn = ctx.measureText(name).width;
+        ctx.font = fSub;
+        return { wn, ws: ctx.measureText(subText || sub).width };
+      };
+
+      if (style === "classic") {
+        ctx.strokeStyle = ACC + "0.75)";
+        ctx.lineWidth = 1.6 * u;
+        ctx.beginPath();
+        ctx.arc(sp.x, sp.y, r, 0, Math.PI * 2);
+        ctx.stroke();
+        const { wn, ws } = measure(`700 ${15 * u}px system-ui, sans-serif`, `${11.5 * u}px system-ui, sans-serif`);
+        const chipW = Math.max(wn, ws) + 24 * u;
+        const chipH = 40 * u;
+        const side = pickSide(sp.x + r + 14 * u + chipW < W - 8 * u);
+        const right = side > 0;
+        const cx0 = Math.min(Math.max(right ? sp.x + r + 14 * u : sp.x - r - 14 * u - chipW,
+          8 * u), W - chipW - 8 * u);
+        const cy0 = claim(cx0, sp.y - chipH / 2, chipW, chipH, sp.y);
+        ctx.strokeStyle = ACC + "0.7)";
+        ctx.lineWidth = 1.4 * u;
+        ctx.beginPath();
+        ctx.moveTo(right ? sp.x + r : sp.x - r, sp.y);
+        ctx.lineTo(right ? cx0 : cx0 + chipW, cy0 + chipH / 2);
+        ctx.stroke();
+        ctx.fillStyle = "rgba(8,10,16,0.72)";
+        ctx.strokeStyle = ACC + "0.55)";
+        ctx.beginPath();
+        ctx.roundRect(cx0, cy0, chipW, chipH, 8 * u);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = "#e8eeff";
+        ctx.font = `700 ${15 * u}px system-ui, sans-serif`;
+        ctx.fillText(name, cx0 + 12 * u, cy0 + 17 * u);
+        ctx.fillStyle = "#aab8d8";
+        ctx.font = `${11.5 * u}px system-ui, sans-serif`;
+        ctx.fillText(sub, cx0 + 12 * u, cy0 + 32 * u);
+
+      } else if (style === "editorial") {
+        // Punkt am Objekt, abgewinkelte Linie, freier Text ohne Box
+        const { wn, ws } = measure(`650 ${17 * u}px system-ui, sans-serif`, `${12.5 * u}px system-ui, sans-serif`);
+        const textW = Math.max(wn, ws);
+        const diag = 52 * u;
+        const side = pickSide(sp.x + 10 * u + diag + textW + 18 * u < W - 8 * u);
+        const up = pickUp(sp.y - diag - 46 * u > 8 * u);
+        let by = sp.y - up * (10 * u + diag);
+        // Text (und Linie) horizontal ins Bild klemmen - lange Untertitel
+        // wurden sonst am Bildrand abgeschnitten
+        let tx = sp.x + side * (10 * u + diag) + side * 2 * u;
+        if (side > 0) tx = Math.min(tx, W - textW - 10 * u);
+        else tx = Math.max(tx, textW + 10 * u);
+        const bx = tx - side * 2 * u;
+        by = claim(side > 0 ? tx : tx - textW, by - 36 * u, textW + 8 * u, 42 * u, sp.y) + 36 * u;
+        ctx.strokeStyle = "rgba(234,240,255,0.8)";
+        ctx.lineWidth = 1.2 * u;
+        ctx.beginPath();
+        ctx.moveTo(sp.x + side * 8 * u, sp.y - up * 8 * u);
+        ctx.lineTo(bx, by);
+        ctx.lineTo(bx + side * (textW + 8 * u), by);
+        ctx.stroke();
+        ctx.fillStyle = "#eaf0ff";
+        ctx.beginPath();
+        ctx.arc(sp.x, sp.y, 3.2 * u, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(234,240,255,0.65)";
+        ctx.lineWidth = 1.2 * u;
+        ctx.beginPath();
+        ctx.arc(sp.x, sp.y, 7.5 * u, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.textAlign = side > 0 ? "left" : "right";
+        ctx.shadowColor = "rgba(0,0,0,0.8)";
+        ctx.shadowBlur = 8 * u;
+        ctx.fillStyle = "#f2f5ff";
+        ctx.font = `650 ${17 * u}px system-ui, sans-serif`;
+        ctx.fillText(name, tx, by - 22 * u);
+        ctx.fillStyle = "#c3cde6";
+        ctx.font = `${12.5 * u}px system-ui, sans-serif`;
+        ctx.fillText(sub, tx, by - 6 * u);
+        ctx.shadowBlur = 0;
+        ctx.textAlign = "left";
+
+      } else if (style === "glass") {
+        // Dünner Ring + Glas-Kapsel (Blur wird im Canvas durch dunklere
+        // Halbtransparenz ersetzt)
+        ctx.strokeStyle = "rgba(207,224,255,0.5)";
+        ctx.lineWidth = 1.1 * u;
+        ctx.beginPath(); ctx.arc(sp.x, sp.y, r, 0, Math.PI * 2); ctx.stroke();
+        ctx.strokeStyle = "rgba(207,224,255,0.08)";
+        ctx.lineWidth = 5 * u;
+        ctx.beginPath(); ctx.arc(sp.x, sp.y, r, 0, Math.PI * 2); ctx.stroke();
+        const { wn, ws } = measure(`650 ${15 * u}px system-ui, sans-serif`, `${11.5 * u}px system-ui, sans-serif`);
+        const gap = 9 * u, pad = 15 * u;
+        const pillW = wn + ws + gap + 2 * pad;
+        const pillH = 32 * u;
+        const diag = 40 * u;
+        const side = pickSide(sp.x + (r + diag) * 0.71 + pillW + 16 * u < W - 8 * u);
+        const ax = sp.x + side * r * 0.71, ay = sp.y - r * 0.71;
+        const bx2 = ax + side * diag * 0.71, by2 = ay - diag * 0.71;
+        ctx.strokeStyle = "rgba(207,224,255,0.55)";
+        ctx.lineWidth = 1.1 * u;
+        ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx2, by2); ctx.stroke();
+        const px0 = Math.min(Math.max(side > 0 ? bx2 + 6 * u : bx2 - 6 * u - pillW, 8 * u), W - pillW - 8 * u);
+        const py0 = claim(px0, by2 - pillH / 2, pillW, pillH, sp.y);
+        ctx.fillStyle = "rgba(18,24,38,0.55)";
+        ctx.strokeStyle = "rgba(220,232,255,0.3)";
+        ctx.lineWidth = 1 * u;
+        ctx.beginPath();
+        ctx.roundRect(px0, py0, pillW, pillH, pillH / 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = "#f2f6ff";
+        ctx.font = `650 ${15 * u}px system-ui, sans-serif`;
+        ctx.fillText(name, px0 + pad, py0 + 21 * u);
+        ctx.fillStyle = "#b9c6e4";
+        ctx.font = `${11.5 * u}px system-ui, sans-serif`;
+        ctx.fillText(sub, px0 + pad + wn + gap, py0 + 21 * u);
+
+      } else if (style === "hud") {
+        // Eckklammern + Monospace-Typo mit Trennlinie
+        const arm = Math.max(12 * u, r * 0.3);
+        ctx.strokeStyle = "rgba(159,232,255,0.85)";
+        ctx.lineWidth = 1.6 * u;
+        for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+          ctx.beginPath();
+          ctx.moveTo(sp.x + sx * r, sp.y + sy * r - sy * arm);
+          ctx.lineTo(sp.x + sx * r, sp.y + sy * r);
+          ctx.lineTo(sp.x + sx * r - sx * arm, sp.y + sy * r);
+          ctx.stroke();
+        }
+        const mono = `600 ${14 * u}px "Cascadia Code", "SF Mono", Consolas, monospace`;
+        const monoSub = `${10.5 * u}px "Cascadia Code", "SF Mono", Consolas, monospace`;
+        const subUp = sub.toUpperCase();
+        const { wn, ws } = measure(mono, monoSub, subUp);
+        const textW = Math.max(wn, ws);
+        const diag = 26 * u;
+        const side = pickSide(sp.x + r + diag + textW + 14 * u < W - 8 * u);
+        const up = pickUp(sp.y - r - diag - 40 * u > 8 * u);
+        ctx.strokeStyle = "rgba(159,232,255,0.7)";
+        ctx.lineWidth = 1.2 * u;
+        ctx.beginPath();
+        ctx.moveTo(sp.x + side * r, sp.y - up * r);
+        ctx.lineTo(sp.x + side * (r + diag), sp.y - up * (r + diag));
+        ctx.stroke();
+        const tx = Math.min(Math.max(side > 0 ? sp.x + side * (r + diag) + 6 * u
+          : sp.x + side * (r + diag) - 6 * u - textW, 8 * u), W - textW - 8 * u);
+        let ty = sp.y - up * (r + diag) - (up > 0 ? 24 * u : -14 * u);
+        ty = claim(tx, ty - 16 * u, textW, 42 * u, sp.y) + 16 * u;
+        ctx.shadowColor = "rgba(120,220,255,0.35)";
+        ctx.shadowBlur = 10 * u;
+        ctx.fillStyle = "#d9f4ff";
+        ctx.font = mono;
+        ctx.fillText(name, tx, ty);
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = "rgba(140,220,250,0.4)";
+        ctx.lineWidth = 1 * u;
+        ctx.beginPath();
+        ctx.moveTo(tx, ty + 7 * u);
+        ctx.lineTo(tx + textW, ty + 7 * u);
+        ctx.stroke();
+        ctx.fillStyle = "#8fd2ea";
+        ctx.font = monoSub;
+        ctx.fillText(subUp, tx, ty + 21 * u);
+
+      } else if (style === "micro") {
+        // Nur Typografie: gesperrte Versalien über feiner Linie + Zeiger
+        const nameSp = name.split("").join("  ");
+        const subUp = sub.toUpperCase().split("").join(" ");
+        ctx.font = `600 ${14.5 * u}px system-ui, sans-serif`;
+        const wn = ctx.measureText(nameSp).width;
+        ctx.font = `${9.5 * u}px system-ui, sans-serif`;
+        const ws = ctx.measureText(subUp).width;
+        const halfW = Math.max(wn, ws) / 2 + 14 * u;
+        const lift = 78 * u;
+        const up = pickUp(sp.y - lift - 44 * u > 8 * u);
+        let lineY = Math.min(Math.max(sp.y - up * lift, 44 * u), H - chipSafe - 10 * u);
+        const cx1 = Math.min(Math.max(sp.x, halfW + 8 * u), W - halfW - 8 * u);
+        const blockTop0 = up > 0 ? lineY - 40 * u : lineY - 4 * u;
+        lineY += claim(cx1 - halfW, blockTop0, 2 * halfW, 46 * u, sp.y) - blockTop0;
+        ctx.strokeStyle = "rgba(255,255,255,0.55)";
+        ctx.lineWidth = 1 * u;
+        ctx.beginPath();
+        ctx.moveTo(sp.x, sp.y - up * 6 * u);
+        ctx.lineTo(sp.x, lineY);
+        ctx.moveTo(cx1 - halfW, lineY);
+        ctx.lineTo(cx1 + halfW, lineY);
+        ctx.stroke();
+        ctx.fillStyle = "rgba(255,255,255,0.9)";
+        ctx.beginPath(); ctx.arc(sp.x, sp.y, 3 * u, 0, Math.PI * 2); ctx.fill();
+        ctx.textAlign = "center";
+        ctx.shadowColor = "rgba(0,0,0,0.9)";
+        ctx.shadowBlur = 8 * u;
+        const tBase = up > 0 ? lineY - 8 * u : lineY + 30 * u;
+        ctx.fillStyle = "#ffffff";
+        ctx.font = `600 ${14.5 * u}px system-ui, sans-serif`;
+        ctx.fillText(nameSp, cx1, tBase - 14 * u);
+        ctx.fillStyle = "#c9d2e8";
+        ctx.font = `${9.5 * u}px system-ui, sans-serif`;
+        ctx.fillText(subUp, cx1, tBase);
+        ctx.shadowBlur = 0;
+        ctx.textAlign = "left";
+
+      } else { // "focus"
+        // Gestrichelter Fokus-Ring + Karte mit Akzentkante
+        ctx.strokeStyle = "rgba(167,196,255,0.9)";
+        ctx.lineWidth = 1.4 * u;
+        ctx.lineCap = "round";
+        ctx.setLineDash([3 * u, 7 * u]);
+        ctx.beginPath(); ctx.arc(sp.x, sp.y, r, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.lineCap = "butt";
+        ctx.strokeStyle = "rgba(167,196,255,0.3)";
+        ctx.lineWidth = 0.8 * u;
+        ctx.beginPath(); ctx.arc(sp.x, sp.y, Math.max(6 * u, r - 7 * u), 0, Math.PI * 2); ctx.stroke();
+        const { wn, ws } = measure(`650 ${15 * u}px system-ui, sans-serif`, `${11.5 * u}px system-ui, sans-serif`);
+        const boxW = Math.max(wn, ws) + 30 * u;
+        const boxH = 42 * u;
+        const bx3 = Math.min(Math.max(sp.x - boxW / 2, 8 * u), W - boxW - 8 * u);
+        const below = pickUp(sp.y + r + 12 * u + boxH <= H - chipSafe) > 0;
+        const by3 = claim(bx3, below ? sp.y + r + 12 * u : sp.y - r - 12 * u - boxH, boxW, boxH, sp.y);
+        ctx.fillStyle = "rgba(16,21,34,0.85)";
+        ctx.strokeStyle = "rgba(167,196,255,0.45)";
+        ctx.lineWidth = 1 * u;
+        ctx.beginPath();
+        ctx.roundRect(bx3, by3, boxW, boxH, 6 * u);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = ACC + "0.9)";
+        ctx.fillRect(bx3, by3 + 4 * u, 3 * u, boxH - 8 * u);
+        ctx.fillStyle = "#eef3ff";
+        ctx.font = `650 ${15 * u}px system-ui, sans-serif`;
+        ctx.fillText(name, bx3 + 14 * u, by3 + 18 * u);
+        ctx.fillStyle = "#a9b8d9";
+        ctx.font = `${11.5 * u}px system-ui, sans-serif`;
+        ctx.fillText(sub, bx3 + 14 * u, by3 + 33 * u);
       }
-      ctx.strokeStyle = ACC + "0.7)";
-      ctx.lineWidth = 1.4 * u;
-      ctx.beginPath();
-      ctx.moveTo(right ? sp.x + r : sp.x - r, sp.y);
-      ctx.lineTo(right ? cx0 : cx0 + chipW, cy0 + chipH / 2);
-      ctx.stroke();
-      ctx.fillStyle = "rgba(8,10,16,0.72)";
-      ctx.strokeStyle = ACC + "0.55)";
-      ctx.beginPath();
-      ctx.roundRect(cx0, cy0, chipW, chipH, 8 * u);
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = "#e8eeff";
-      ctx.font = `700 ${15 * u}px system-ui, sans-serif`;
-      ctx.fillText(name, cx0 + 12 * u, cy0 + 17 * u);
-      ctx.fillStyle = "#aab8d8";
-      ctx.font = `${11.5 * u}px system-ui, sans-serif`;
-      ctx.fillText(sub, cx0 + 12 * u, cy0 + 32 * u);
     }
   }
 
@@ -1692,7 +1989,7 @@ canvas.parentElement.style.position = "relative";
 canvas.parentElement.appendChild(overlayCanvas);
 const overlayCtx = overlayCanvas.getContext("2d");
 
-function drawPreviewOverlay(loopT, cam) {
+function drawPreviewOverlay(loopT, cam, fade) {
   if (overlayCanvas.width !== canvas.width || overlayCanvas.height !== canvas.height) {
     overlayCanvas.width = canvas.width;
     overlayCanvas.height = canvas.height;
@@ -1702,7 +1999,7 @@ function drawPreviewOverlay(loopT, cam) {
   overlayCanvas.style.width = canvas.clientWidth + "px";
   overlayCanvas.style.height = canvas.clientHeight + "px";
   overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-  drawOverlayTo(overlayCtx, overlayCanvas.width, overlayCanvas.height, loopT, cam);
+  drawOverlayTo(overlayCtx, overlayCanvas.width, overlayCanvas.height, loopT, cam, fade);
 }
 
 // ---------------------------------------------------------------- Kamera & Zeit
@@ -1715,6 +2012,57 @@ function currentTime() {
 function smoothstep(x) {
   x = Math.min(1, Math.max(0, x));
   return x * x * (3 - 2 * x);
+}
+
+/**
+ * Grund-Überdeckung des Ausschnitts. Mit "strikte Ränder" (Standard) wird sie
+ * so weit vergrößert, dass Rotation, Kippen, Schwenk und Fahrt-Parallaxe den
+ * sichtbaren Ausschnitt nie über die echte Bildfläche hinausschieben - sonst
+ * spiegelt die Textur an den Rändern (sichtbar v. a. bei 21:9). Der Faktor
+ * ist über den ganzen Flug konstant (Worst Case), damit nichts "pumpt".
+ */
+function coverBase(viewAspect, imgAspect) {
+  const base = Math.max(viewAspect / imgAspect, 1) * 1.02;
+  if (!state.strictEdges) return base;
+
+  // Rotation: benötigte Halbbreite/-höhe des gedrehten Ausschnitts (bei
+  // Zoom 1); über den Drehbereich des Flugs abgetastet
+  const rotSpan = Math.abs(state.rotationSpeed) * state.duration * (state.loopMode ? 0.5 : 1);
+  let needW = viewAspect / 2, needH = 0.5;
+  const steps = 24;
+  for (let i = 0; i <= steps; i++) {
+    const th = (state.orientation + (rotSpan * i) / steps) * Math.PI / 180;
+    const ca = Math.abs(Math.cos(th)), sa = Math.abs(Math.sin(th));
+    needW = Math.max(needW, (viewAspect * ca + sa) / 2);
+    needH = Math.max(needH, (viewAspect * sa + ca) / 2);
+  }
+
+  // Seitliche Verschiebungen in Ebenen-Einheiten (Faktor 0.55 = max |d-0.45|)
+  const drK = (state.parallax / 100) * 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
+  const tilt = (Math.abs(state.tiltX) + Math.abs(state.tiltY)) / 100 * 0.08;
+  const sway = (state.swayAmp / 100) * 0.06 * 1.6;
+  const ramp = (state.tiltRampAmp / 100) * 0.08;
+  const T0 = (tilt + sway + ramp) * 0.55;
+
+  // Fahrt-Parallaxe (Lateral) hängt von der erlaubten Strecke ab, die
+  // wiederum mit der Überdeckung wächst -> kurze Fixpunkt-Iteration
+  let cover = base;
+  for (let i = 0; i < 6; i++) {
+    let tx = T0, ty = T0;
+    if (state.flightMode === "lateral") {
+      const sc = cover * state.zoomBase;
+      const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.92;
+      const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.92;
+      tx += drK * 0.55 * freeX;
+      ty += drK * 0.55 * freeY;
+    }
+    const cx = needW / Math.max(0.05, imgAspect / 2 - tx);
+    const cy = needH / Math.max(0.05, 0.5 - ty);
+    const next = Math.max(base, cx, cy);
+    if (Math.abs(next - cover) < 1e-4) { cover = next; break; }
+    cover = next;
+  }
+  return Math.min(cover, base * 2.5);
 }
 
 /**
@@ -1750,7 +2098,7 @@ function camAt(loopT) {
     const viewAspect = state.aspect;
     const imgAspect = state.starless
       ? state.starless.width / state.starless.height : 16 / 9;
-    const cover = Math.max(viewAspect / imgAspect, 1) * 1.02;
+    const cover = coverBase(viewAspect, imgAspect);
     const sc = cover * zoom;
     const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.92;
     const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.92;
@@ -1779,17 +2127,22 @@ function camAt(loopT) {
   let tiltAddX = 0, tiltAddY = 0;
   const swayA = (state.swayAmp / 100) * 0.06;
   if (swayA > 0) {
-    const period = 16 - (state.swayTempo / 100) * 12; // 16 s .. 4 s
+    // Kreisende Kippbewegung statt Hin-und-her-Pendeln: Der Kipp-Vektor
+    // läuft auf einer flachen Ellipse (Hauptachse = eingestellte Richtung).
+    // Ohne Umkehrpunkte wirkt der Schwenk ruhig statt wackelig - das
+    // Pendeln kehrte selbst bei langsamem Tempo sichtbar "hart" um.
+    const period = 24 - (state.swayTempo / 100) * 18; // 24 s .. 6 s
     const ph = te * 2 * Math.PI / period;
-    // Gerichtetes Pendeln entlang der eingestellten Richtung ...
     const dir = state.swayDir * Math.PI / 180;
-    const lin = Math.sin(ph);
-    // ... gemischt mit dem zufälligen elliptischen Wackeln
     const rnd = state.swayRandom / 100;
-    const ellX = Math.sin(ph);
-    const ellY = 0.7 * Math.sin(ph * 0.8 + 1.3);
-    tiltAddX = swayA * ((1 - rnd) * Math.cos(dir) * lin + rnd * ellX);
-    tiltAddY = swayA * ((1 - rnd) * Math.sin(dir) * lin + rnd * ellY);
+    // Zufalls-Anteil: zweite, inkommensurable Frequenz macht die Bahn organisch
+    const ex = Math.cos(ph) + rnd * 0.5 * Math.sin(ph * 0.63 + 1.3);
+    const ey = 0.55 * Math.sin(ph) + rnd * 0.35 * Math.sin(ph * 0.41 + 0.7);
+    // Sanft einschwingen (und im Loop-Modus über te wieder aus), damit der
+    // Flug nicht mit bereits gekippter Kamera beginnt
+    const ramp = smoothstep(Math.min(1, te / (period * 0.35)));
+    tiltAddX = swayA * ramp * (Math.cos(dir) * ex - Math.sin(dir) * ey);
+    tiltAddY = swayA * ramp * (Math.sin(dir) * ex + Math.cos(dir) * ey);
   }
 
   // Gerichteter Kipp-Schwenk: die Kamera kippt über die gesamte Flugdauer
@@ -1813,7 +2166,7 @@ function camAt(loopT) {
     const viewAspect = state.aspect;
     const imgAspect = state.starless
       ? state.starless.width / state.starless.height : 16 / 9;
-    const cover = Math.max(viewAspect / imgAspect, 1) * 1.02;
+    const cover = coverBase(viewAspect, imgAspect);
     const sc = cover * zoom;
     const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.98;
     const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.98;
@@ -1865,7 +2218,7 @@ function render(forcedT) {
   const { loopT, cam, fade } = animParams(t);
   const viewAspect = state.aspect;
   const imgAspect = state.starless.width / state.starless.height;
-  const cover = Math.max(viewAspect / imgAspect, 1) * 1.02;
+  const cover = coverBase(viewAspect, imgAspect);
   const parallax = state.parallax / 100;
   const warp = state.warp / 100;
   const depthRange = 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
@@ -2129,7 +2482,7 @@ function render(forcedT) {
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
   // Objekt-Overlay (Infokarte + Labels) über der Vorschau
-  drawPreviewOverlay(loopT, cam);
+  drawPreviewOverlay(loopT, cam, fade);
 
   // Transport-UI
   const prog = (loopT / state.duration) * 100;
@@ -2568,11 +2921,55 @@ $("ctlObjFar").addEventListener("change", () => {
   state.objFar = $("ctlObjFar").checked;
 });
 
+$("ctlStrictEdges").addEventListener("change", () => {
+  state.strictEdges = $("ctlStrictEdges").checked;
+});
+
 // --------------------------- Objekt-Erkennung (SIMBAD) & Overlay-Bedienung
+
+/**
+ * Infokarte nach der aktuellen Auswahl setzen. "auto" bevorzugt die erkannte
+ * Region (Gesamtkomplex), sonst das größte Objekt; ansonsten gilt die vom
+ * Nutzer getroffene Wahl (Region oder ein bestimmtes Objekt).
+ */
+function applyCardChoice() {
+  const items = state.objChoices || [];
+  if (!items.length) { state.objInfo = null; return; }
+  const reg = state.objRegion;
+  const c = state.cardChoice || "auto";
+  if (reg && (c === "auto" || c === "region")) {
+    state.objInfo = { id: reg.id, facts: { de: reg.de, en: reg.en }, otype: reg.otype };
+    return;
+  }
+  const pick = items.find((it) => it.id === c) || items[0];
+  state.objInfo = { id: pick.id, facts: OBJECT_FACTS[normObjId(pick.id)] || null, otype: pick.otype };
+}
 
 function rebuildObjList() {
   const box = $("objList");
   box.innerHTML = "";
+  const lang = I18N.lang === "de" ? "de" : "en";
+  // Auswahl, welches Objekt die Infokarte beschreibt (Auto/Region/Einzelobjekt)
+  const row = $("cardObjRow");
+  const sel = $("ctlCardObj");
+  const items = state.objChoices || [];
+  row.hidden = !items.length;
+  sel.innerHTML = "";
+  if (items.length) {
+    const add = (value, text) => {
+      const o = document.createElement("option");
+      o.value = value; o.textContent = text;
+      sel.appendChild(o);
+    };
+    add("auto", t("cardAuto"));
+    if (state.objRegion) add("region", `${t("cardRegion")}: ${state.objRegion[lang].name}`);
+    for (const it of items) {
+      const facts = OBJECT_FACTS[normObjId(it.id)];
+      add(it.id, facts ? `${it.id} – ${facts[lang].name}` : it.id);
+    }
+    sel.value = state.cardChoice || "auto";
+    if (sel.selectedIndex < 0) sel.value = "auto";
+  }
   if (!state.labels) return;
   for (const L of state.labels) {
     const lab = document.createElement("label");
@@ -2583,10 +2980,18 @@ function rebuildObjList() {
     cb.addEventListener("change", () => { L.on = cb.checked; });
     const span = document.createElement("span");
     const facts = OBJECT_FACTS[normObjId(L.id)];
-    const lang = I18N.lang === "de" ? "de" : "en";
     span.textContent = facts ? `${L.id} – ${facts[lang].name}` : L.id;
+    // Ringgröße pro Label anpassbar (SIMBAD-Größen fehlen oft oder passen
+    // nicht zum Ausschnitt)
+    const rg = document.createElement("input");
+    rg.type = "range";
+    rg.min = 30; rg.max = 300; rg.value = Math.round((L.sizeMul || 1) * 100);
+    rg.className = "objsize";
+    rg.title = t("objRingSize");
+    rg.addEventListener("input", () => { L.sizeMul = rg.value / 100; });
     lab.appendChild(cb);
     lab.appendChild(span);
+    lab.appendChild(rg);
     box.appendChild(lab);
   }
 }
@@ -2594,6 +2999,23 @@ I18N.onChange.push(rebuildObjList);
 
 $("ctlShowInfo").addEventListener("change", () => { state.showInfo = $("ctlShowInfo").checked; });
 $("ctlShowLabels").addEventListener("change", () => { state.showLabels = $("ctlShowLabels").checked; });
+$("ctlCardObj").addEventListener("change", () => {
+  state.cardChoice = $("ctlCardObj").value;
+  applyCardChoice();
+});
+
+// Beschriftungs-Stil (wird gespeichert)
+{
+  const saved = localStorage.getItem("astrofly-labelstyle");
+  if (["editorial", "glass", "hud", "micro", "focus", "classic"].includes(saved)) {
+    state.labelStyle = saved;
+  }
+  $("ctlLabelStyle").value = state.labelStyle;
+  $("ctlLabelStyle").addEventListener("change", () => {
+    state.labelStyle = $("ctlLabelStyle").value;
+    localStorage.setItem("astrofly-labelstyle", state.labelStyle);
+  });
+}
 
 $("btnObjects").addEventListener("click", async () => {
   if (!state.wcs || !state.starless) return;
@@ -2627,19 +3049,23 @@ $("btnObjects").addEventListener("click", async () => {
     }
     if (!items.length) {
       state.objInfo = null; state.labels = null;
+      state.objChoices = null; state.objRegion = null;
+      rebuildObjList();
       $("objStatus").textContent = t("objNone");
     } else {
       items.sort((a, b) => b.sizePlane - a.sizePlane);
-      const main = items[0];
-      state.objInfo = { id: main.id, facts: OBJECT_FACTS[normObjId(main.id)] || null, otype: main.otype };
+      state.objChoices = items;
+      state.objRegion = findObjectRegion(items);
+      state.cardChoice = "auto";
+      applyCardChoice();
       // Hauptobjekt nur beschriften, wenn es nicht das halbe Bild füllt
       const labels = items.filter((it, idx) => idx > 0 || it.sizePlane < 0.35).slice(0, 6);
       state.labels = labels.map((it) => ({ ...it, on: true }));
       rebuildObjList();
-      $("objStatus").textContent = t("objFound", items.length, main.id);
+      $("objStatus").textContent = t("objFound", items.length, state.objInfo.id);
     }
   } catch (e) {
-    $("objStatus").textContent = t("objNetErr");
+    $("objStatus").textContent = e.server ? t("objSrvErr", e.status) : t("objNetErr");
   }
   stageToast(null);
   $("btnObjects").disabled = !state.wcs;
@@ -2683,7 +3109,9 @@ $("btnGaia").addEventListener("click", async () => {
     const info = matchGaia(stars);
     if (!info) gaiaTransient = { key: "gaiaNoMatch", args: [] };
   } catch (e) {
-    gaiaTransient = { key: "gaiaNetErr", args: [] };
+    gaiaTransient = e.server
+      ? { key: "gaiaSrvErr", args: [e.status] }
+      : { key: "gaiaNetErr", args: [] };
   }
   updateGaiaStatus();
 });
@@ -2702,7 +3130,7 @@ canvas.addEventListener("click", (e) => {
   const rx = c * px + s * py;   // R(a) wie im Shader (mat2 ist spaltenweise)
   const ry = -s * px + c * py;
   const imgAspect = state.starless.width / state.starless.height;
-  const cover = Math.max(state.aspect / imgAspect, 1) * 1.02;
+  const cover = coverBase(state.aspect, imgAspect);
   // Fixpunkt-Iteration wie im Shader: die Tiefe des angeklickten Objekts
   // bestimmt seine effektive Zoomrate, sonst trifft der Klick daneben
   const parallax = state.parallax / 100;
@@ -3039,7 +3467,7 @@ async function exportOffline(w, h, fps) {
       if (burnOverlay) {
         compCtx.drawImage(canvas, 0, 0, w, h);
         const ap = animParams(t);
-        drawOverlayTo(compCtx, w, h, ap.loopT, ap.cam);
+        drawOverlayTo(compCtx, w, h, ap.loopT, ap.cam, ap.fade);
         src = compCanvas;
       }
       const vf = new VideoFrame(src, {
@@ -3117,7 +3545,7 @@ function exportRealtime(w, h, fps) {
     if (burnOverlay) {
       compCtx.drawImage(canvas, 0, 0, w, h);
       const ap = animParams(Math.min(t, state.duration));
-      drawOverlayTo(compCtx, w, h, ap.loopT, ap.cam);
+      drawOverlayTo(compCtx, w, h, ap.loopT, ap.cam, ap.fade);
     }
     $("exportProgress").style.width = Math.min(100, (t / state.duration) * 100) + "%";
     if (t >= state.duration) rec.stop();
@@ -3151,6 +3579,16 @@ $("btnExport").addEventListener("click", async () => {
     banner.setAttribute("data-i18n", "inappExport");
     banner.textContent = t("inappExport");
     banner.hidden = false;
+    return;
+  }
+  // Firefox kann das Video nicht zuverlässig rendern/exportieren (kein
+  // WebCodecs-MP4, MediaRecorder-Probleme) - deutliche Warnung ganz oben
+  if (/firefox/i.test(navigator.userAgent)) {
+    for (const el of [hint, $("inappBanner")]) {
+      el.setAttribute("data-i18n", "firefoxWarn");
+      el.textContent = t("firefoxWarn");
+      el.hidden = false;
+    }
     return;
   }
   if (IS_SAFARI) {
@@ -3272,9 +3710,16 @@ function depthAtPlane(qx, qy, imgAspect) {
   if (!dd) return 0.45;
   const u = Math.min(1, Math.max(0, qx / imgAspect + 0.5));
   const v = Math.min(1, Math.max(0, qy + 0.5)); // Ebene ist y-up
-  const col = Math.round(u * (dd.w - 1));
-  const row = Math.round((1 - v) * (dd.h - 1));
-  return dd.data[(row * dd.w + col) * 4] / 255;
+  // Bilinear statt Nearest-Neighbor: Die Marker-Projektion nutzt die Tiefe
+  // für den Parallaxe-Exponenten - gestufte Werte ließen die Beschriftungen
+  // bei langsamer Kamerabewegung sichtbar "zittern"
+  const fx = u * (dd.w - 1), fy = (1 - v) * (dd.h - 1);
+  const x0 = Math.floor(fx), y0 = Math.floor(fy);
+  const x1 = Math.min(dd.w - 1, x0 + 1), y1 = Math.min(dd.h - 1, y0 + 1);
+  const ax = fx - x0, ay = fy - y0;
+  const at = (x, y) => dd.data[(y * dd.w + x) * 4] / 255;
+  return (at(x0, y0) * (1 - ax) + at(x1, y0) * ax) * (1 - ay) +
+         (at(x0, y1) * (1 - ax) + at(x1, y1) * ax) * ay;
 }
 
 // Vorschaugröße (wird gespeichert)
