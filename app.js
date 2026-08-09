@@ -3277,7 +3277,24 @@ $("btnDemo").addEventListener("click", async () => {
     const stars = await fetchImg("demo/orion_starmask.jpg", "orion_demo_starmask.jpg");
     await loadFile("starless", starless);
     await loadFile("stars", stars);
-    status.textContent = t("demoLoaded", state.starCount);
+    // Plate-Solve-Lösung des Demobilds automatisch übernehmen –
+    // Gaia-Abgleich und Objekterkennung sind damit sofort nutzbar
+    try {
+      const rw = await fetch("demo/orion.wcs");
+      if (rw.ok) {
+        const wcs = parseWcsHeader(new Uint8Array(await rw.arrayBuffer()));
+        wcs._name = "orion.wcs";
+        gaiaTransient = null;
+        state.wcs = wcs;
+        state.wcsFlip = undefined;
+        state.wcsFit = null;
+        state.gaiaDepth = null; state.gaiaInfo = null; state.gaiaColorRGB = null; state.gaiaPM = null;
+        uploadStars();
+        updateGaiaStatus();
+      }
+    } catch { /* Demo funktioniert auch ohne Plate-Solve */ }
+    status.textContent = t("demoLoaded", state.starCount) +
+      (state.wcs && state.wcs._name === "orion.wcs" ? " " + t("demoWcs") : "");
   } catch (err) {
     console.error(err);
     status.classList.add("error");
