@@ -85,6 +85,7 @@ const state = {
   starDetails: true,     // Sternphysik (Größe/Alter) in Labels anzeigen
   flipH: false,          // Bild horizontal gespiegelt (Starless + Maske)
   flipV: false,          // Bild vertikal gespiegelt
+  flipOnlyStarless: false, // Spiegeln wirkt nur aufs Starless (Maske/Koordinaten bleiben)
   anchorStars: 0,       // % Sterne im Nebel verankern (Tiefe/Bewegung des Nebels)            // Nebel verdeckt dahinterliegende Sterne (0 = aus)
   objInfo: null,         // erkanntes Hauptobjekt { id, facts, otype }
   labels: null,          // Feld-Beschriftungen [{ id, x, y, sizePlane, otype, on }]
@@ -1413,8 +1414,8 @@ function matchGaia(gaiaStars) {
       const p = wcsSky2Pix(wcs, g.ra, g.dec);
       if (!p) continue;
       let u = p.px / nax1, v = flipY ? 1 - p.py / nax2 : p.py / nax2;
-      if (state.flipH) u = 1 - u;
-      if (state.flipV) v = 1 - v;
+      if (state.flipH && !state.flipOnlyStarless) u = 1 - u;
+      if (state.flipV && !state.flipOnlyStarless) v = 1 - v;
       if (u < -0.03 || u > 1.03 || v < -0.03 || v > 1.03) continue;
       pts.push({ ...g, x: (u - 0.5) * imgAspect, y: 0.5 - v });
     }
@@ -1459,8 +1460,8 @@ function matchGaia(gaiaStars) {
     const p = wcsSky2Pix(wcs, ra, dec);
     if (!p) return null;
     let u = p.px / nax1, v = flipUsed ? 1 - p.py / nax2 : p.py / nax2;
-    if (state.flipH) u = 1 - u;
-    if (state.flipV) v = 1 - v;
+    if (state.flipH && !state.flipOnlyStarless) u = 1 - u;
+    if (state.flipV && !state.flipOnlyStarless) v = 1 - v;
     let x = (u - 0.5) * imgAspect, y = 0.5 - v;
     if (fitUsed) {
       const nx = fitUsed.ax[0] * x + fitUsed.ax[1] * y + fitUsed.ax[2];
@@ -1561,8 +1562,8 @@ function planeOfSky(ra, dec) {
   if (!p) return null;
   const flip = state.wcsFlip !== false; // Standard: FITS-Zeile 1 unten
   let u = p.px / nax1, v = flip ? 1 - p.py / nax2 : p.py / nax2;
-  if (state.flipH) u = 1 - u;
-  if (state.flipV) v = 1 - v;
+  if (state.flipH && !state.flipOnlyStarless) u = 1 - u;
+  if (state.flipV && !state.flipOnlyStarless) v = 1 - v;
   let x = (u - 0.5) * imgAspect, y = 0.5 - v;
   const fit = state.wcsFit;
   if (fit) {
@@ -3578,6 +3579,16 @@ function flipImage(img, fh, fv) {
  * Gaia-Abgleich wird ungültig (Maskensterne neu extrahiert) - die
  * Beschriftungen werden über die Spiegel-Flags sofort mitgespiegelt.
  */
+function flipMask(fh, fv) {
+  if (state.starsOriginal) {
+    flipImage(state.starsOriginal, fh, fv);
+    processStarMask();
+  } else if (state.stars) {
+    flipImage(state.stars, fh, fv);
+    buildStarBuffer();
+  }
+}
+
 function applyImageFlip(fh, fv) {
   if (state.starless) {
     flipImage(state.starless, fh, fv);
@@ -3589,13 +3600,9 @@ function applyImageFlip(fh, fv) {
     buildDepthMap();
     buildSpinMask();
   }
-  if (state.starsOriginal) {
-    flipImage(state.starsOriginal, fh, fv);
-    processStarMask();
-  } else if (state.stars) {
-    flipImage(state.stars, fh, fv);
-    buildStarBuffer();
-  }
+  // "Nur Starless": Maske und damit das Koordinatensystem bleiben stehen -
+  // für den Fall, dass Starless und Maske gegeneinander gespiegelt sind
+  if (!state.flipOnlyStarless) flipMask(fh, fv);
   reprojectLabels();
   uploadStars();
   updateGaiaStatus();
@@ -3607,6 +3614,17 @@ $("ctlFlipH").addEventListener("change", () => {
 $("ctlFlipV").addEventListener("change", () => {
   state.flipV = $("ctlFlipV").checked;
   applyImageFlip(false, true);
+});
+// Umfang wechseln, während eine Spiegelung aktiv ist: die Maske zieht
+// nach (Spiegelung anwenden bzw. zurücknehmen), Labels folgen
+$("ctlFlipOnly").addEventListener("change", () => {
+  state.flipOnlyStarless = $("ctlFlipOnly").checked;
+  if (state.flipH || state.flipV) {
+    flipMask(state.flipH, state.flipV);
+    reprojectLabels();
+    uploadStars();
+    updateGaiaStatus();
+  }
 });
 
 // Demo-Bilder (Orionnebel, aufgenommen von Michael Döhler) aus dem Repo laden –
