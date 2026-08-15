@@ -1494,6 +1494,7 @@ function matchGaia(gaiaStars) {
     matched: pairs.length, total: n,
     dMin: Math.round(Math.exp(p10) * 3.262), dMax: Math.round(Math.exp(p90) * 3.262), // Lichtjahre
   };
+  reprojectLabels();
   uploadStars();
   return state.gaiaInfo;
 }
@@ -1502,6 +1503,25 @@ function matchGaia(gaiaStars) {
  * Himmelskoordinate -> Ebenen-Position mit der aktuell bekannten Transformation
  * (y-Konvention und Affin-Korrektur aus dem Gaia-Abgleich, sonst Standard).
  */
+/**
+ * Beschriftungs-Positionen mit der aktuell besten Transformation neu
+ * berechnen: Der Gaia-Abgleich ermittelt y-Konvention (Flip) und
+ * Affin-Korrektur erst NACH einer evtl. schon gelaufenen Objekterkennung -
+ * ohne Reprojektion blieben die Marker auf gespiegelten Positionen stehen.
+ */
+function reprojectLabels() {
+  if (!state.wcs) return;
+  for (const list of [state.objChoices, state.labels]) {
+    if (!list) continue;
+    for (const it of list) {
+      if (it.ra === undefined) continue;
+      const p = planeOfSky(it.ra, it.dec);
+      if (p) { it.x = p.x; it.y = p.y; }
+      delete it._chipSide; delete it._up; // Seitenwahl neu treffen lassen
+    }
+  }
+}
+
 function planeOfSky(ra, dec) {
   const wcs = state.wcs;
   const img = state.starless || state.stars;
@@ -3189,6 +3209,7 @@ $("btnObjects").addEventListener("click", async () => {
         if (!ps) continue;
         if (Math.abs(ps.x) > imgAspect / 2 || Math.abs(ps.y) > 0.5) continue;
         items.push({ id: o.id, otype: o.otype, x: ps.x, y: ps.y,
+          ra: o.ra, dec: o.dec,
           sizePlane: (3 / 60) / degPerPx / nax2, star: true });
         continue;
       }
@@ -3203,7 +3224,8 @@ $("btnObjects").addEventListener("click", async () => {
       if (!p) continue;
       if (Math.abs(p.x) > imgAspect / 2 || Math.abs(p.y) > 0.5) continue;
       const sizePlane = (o.sizeArcmin / 60) / degPerPx / nax2;
-      items.push({ id: prettyObjId(o.id), otype: o.otype, x: p.x, y: p.y, sizePlane });
+      items.push({ id: prettyObjId(o.id), otype: o.otype, x: p.x, y: p.y,
+        ra: o.ra, dec: o.dec, sizePlane });
     }
     if (!items.length) {
       state.objInfo = null; state.labels = null;
@@ -3240,7 +3262,9 @@ $("fileWcs").addEventListener("change", async () => {
     const wcs = parseWcsHeader(head);
     wcs._name = file.name;
     state.wcs = wcs;
+    state.wcsFlip = undefined; state.wcsFit = null;
     state.gaiaDepth = null; state.gaiaInfo = null; state.gaiaColorRGB = null; state.gaiaPM = null;
+    reprojectLabels();
     uploadStars();
   } catch (e) {
     state.wcs = null;
@@ -3400,8 +3424,10 @@ async function loadFile(which, file) {
     if (img.wcs) {
       img.wcs._name = file.name;
       state.wcs = img.wcs;
+      state.wcsFlip = undefined; state.wcsFit = null;
       state.gaiaDepth = null; state.gaiaInfo = null; state.gaiaColorRGB = null; state.gaiaPM = null;
       gaiaTransient = { key: "gaiaWcsAuto", args: [file.name] };
+      reprojectLabels();
       uploadStars();
       updateGaiaStatus();
     }
@@ -3447,6 +3473,7 @@ $("btnDemo").addEventListener("click", async () => {
         state.wcsFlip = undefined;
         state.wcsFit = null;
         state.gaiaDepth = null; state.gaiaInfo = null; state.gaiaColorRGB = null; state.gaiaPM = null;
+        reprojectLabels();
         uploadStars();
         updateGaiaStatus();
       }
