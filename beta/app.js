@@ -103,6 +103,12 @@ const state = {
   saturation: 0,         // -100..100
   clarity: 0,            // -100..100 (negativ = weich/Orton)
   structure: 0,          // -100..100 (feine Details, Multi-Scale-Lokalkontrast)
+  h2Sat: 100,            // Nebelfarben: Sättigung Rot/H-alpha in %
+  o3Sat: 100,            //   Türkis/OIII
+  s2Sat: 100,            //   Gold/SII
+  h2Hue: 0,              // Nebelfarben: Farbton-Shift in Grad (-45..45)
+  o3Hue: 0,
+  s2Hue: 0,
   sharpen: 0,            // 0..100
 
   viewScale: 70,         // Vorschaugröße in % der verfügbaren Fläche
@@ -204,9 +210,31 @@ uniform vec3 uSpinEll;      // Ellipse: (cos Neigung, sin Neigung, Stauchung)
 uniform float uSpinShow;    // 1 = Rotationsbereich als rote Maske einblenden
 uniform sampler2D uSpinMask; // Helligkeitsmaske (eigene Glättung)
 uniform float uSpinMaskAmt;  // 0 = ignorieren, 1 = voll gewichten
+uniform vec3 uBandSat;      // Nebelfarben: Sättigung je Band (HII, OIII, SII)
+uniform vec3 uBandHue;      // Nebelfarben: Farbton-Shift je Band (Kreisanteil)
+uniform float uBandOn;      // 1 = mindestens ein Band-Regler aktiv
 
 vec2 imgUv(vec2 q) {
   return vec2(q.x / uImgAspect, q.y) + 0.5;
+}
+
+vec3 rgb2hsv(vec3 c) {
+  vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+  vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+  vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+  float d = q.x - min(q.w, q.y);
+  float e = 1.0e-10;
+  return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+vec3 hsv2rgb(vec3 c) {
+  vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+  vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+  return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+// Gewicht eines Farbkreis-Bands mit weichem Rand (h/center als Kreisanteil)
+float bandW(float h, float center, float width) {
+  float d = abs(fract(h - center + 0.5) - 0.5);
+  return smoothstep(width, width * 0.35, d);
 }
 
 // Gewicht der Helligkeitsmaske an einem Ebenen-Punkt (1 = volle Drehung)
@@ -297,6 +325,19 @@ void main() {
     col = max(col, 0.0);
   } else {
     col = texture(uColor, uv).rgb;
+  }
+  // Nebelfarben: HII-/OIII-/SII-artige Farbbereiche gezielt anpassen.
+  // Arbeitet auf dem Farbton (Rot, Türkis, Gold) - wirkt damit auf RGB-
+  // wie auf Schmalband-Paletten; Graues bleibt unangetastet
+  if (uBandOn > 0.5) {
+    vec3 hsv = rgb2hsv(col);
+    float satW = smoothstep(0.03, 0.16, hsv.y);
+    float wH2 = bandW(hsv.x, 0.0, 0.075) * satW;    // Rot (H-alpha)
+    float wO3 = bandW(hsv.x, 0.51, 0.115) * satW;   // Türkis/Blaugrün (OIII)
+    float wS2 = bandW(hsv.x, 0.095, 0.055) * satW;  // Gold/Orange (SII)
+    hsv.x = fract(hsv.x + uBandHue.x * wH2 + uBandHue.y * wO3 + uBandHue.z * wS2 + 1.0);
+    hsv.y = clamp(hsv.y * mix(1.0, uBandSat.x, wH2) * mix(1.0, uBandSat.y, wO3) * mix(1.0, uBandSat.z, wS2), 0.0, 1.0);
+    col = hsv2rgb(hsv);
   }
   // Masken-Vorschau: rote Einfärbung entspricht exakt der Drehstärke
   // (gleiche Falloff-Kurve), plus dünner Ring am Maskenrand
@@ -519,7 +560,16 @@ void main() {
   // Sichtbarkeitsschwelle fallen - der Regler war nicht dosierbar.
   vAlpha *= 1.0 - occ;
   float lumS = dot(aColor, vec3(0.299, 0.587, 0.114));
-  vColor = max(mix(vec3(lumS), aColor, uStarSat), 0.0) * uStarBright;
+  vec3 cS = aColor;
+  if (uStarSat > 1.0) {
+    // Farb-Boost: Farbanteile relativ zum stärksten Kanal spreizen - die
+    // Maskenfarben sind Richtung Weiß angehoben, lineares Nachsättigen
+    // holt da kaum Farbe heraus; die Potenz macht zarte Tönungen kräftig,
+    // ohne die Helligkeit des Sterns anzuheben
+    float mx = max(cS.r, max(cS.g, cS.b)) + 1e-5;
+    cS = pow(cS / mx, vec3(1.0 + (uStarSat - 1.0) * 2.0)) * mx;
+  }
+  vColor = max(mix(vec3(lumS), cS, min(uStarSat, 1.0)), 0.0) * uStarBright;
 }`;
 
 const starFS = `#version 300 es
@@ -629,13 +679,18 @@ void main() {
   off = vec2(off.x / uViewAspect, off.y);
   vec2 ca = vec2(r.x / uViewAspect, r.y) * uChroma * 0.02;
 
+  // Die Sterne liegen immer auf einer eigenen Ebene (uStarsTex): so treffen
+  // Klarheit/Struktur/Schärfe nur den Nebel - Sternbearbeitung wohnt im
+  // Sterne-Tab. uSplit = 1: Sterne sind bereits als eigene Geschwindigkeits-
+  // Streifen gerendert und bekommen KEINE Composite-Unschärfe mehr
   vec3 col;
+  vec3 stars;
   if (uSplit > 0.5) {
-    // "Nur Sterne": die Sterne sind bereits als Geschwindigkeits-Streifen
-    // gerendert (pro Stern, je nach echter Geschwindigkeit) – Nebel bleibt scharf
-    col = texture(uScene, vUv).rgb + texture(uStarsTex, vUv).rgb;
+    col = texture(uScene, vUv).rgb;
+    stars = texture(uStarsTex, vUv).rgb;
   } else {
     vec3 acc = vec3(0.0);
+    vec3 accS = vec3(0.0);
     const int N = 8;
     for (int i = 0; i < N; i++) {
       float f = float(i) / float(N - 1) - 0.5;
@@ -643,8 +698,12 @@ void main() {
       acc.r += texture(uScene, vUv + o * (1.0 + uChroma) + ca).r;
       acc.g += texture(uScene, vUv + o).g;
       acc.b += texture(uScene, vUv + o * (1.0 - uChroma) - ca).b;
+      accS.r += texture(uStarsTex, vUv + o * (1.0 + uChroma) + ca).r;
+      accS.g += texture(uStarsTex, vUv + o).g;
+      accS.b += texture(uStarsTex, vUv + o * (1.0 - uChroma) - ca).b;
     }
     col = acc / float(N);
+    stars = accS / float(N);
   }
 
   // Klarheit: lokaler Kontrast gegen stark weichgezeichnete Szene
@@ -665,6 +724,9 @@ void main() {
             + texture(uScene, vUv - vec2(0.0, uTexel.y)).rgb;
     col += (texture(uScene, vUv).rgb - nb * 0.25) * uSharpen;
   }
+
+  // Sterne erst NACH Klarheit/Struktur/Schärfe dazulegen
+  col += stars;
 
   col += texture(uBloom, vUv).rgb * uBloomStrength;
 
@@ -2276,6 +2338,12 @@ function render(forcedT) {
   // Masken-Vorschau nie im Export; im "Zentrum setzen"-Modus automatisch an
   u1f(bgProg, "uSpinShow", (state.spinShow || state.spinPick) && !state.exporting ? 1 : 0);
   u1f(bgProg, "uSpinMaskAmt", texSpinMask ? state.spinMaskAmt / 100 : 0);
+  // Nebelfarben (HII/OIII/SII): Sättigung als Faktor, Farbton als Kreisanteil
+  const bandSat = [state.h2Sat / 100, state.o3Sat / 100, state.s2Sat / 100];
+  const bandHue = [state.h2Hue / 360, state.o3Hue / 360, state.s2Hue / 360];
+  u3f(bgProg, "uBandSat", bandSat[0], bandSat[1], bandSat[2]);
+  u3f(bgProg, "uBandHue", bandHue[0], bandHue[1], bandHue[2]);
+  u1f(bgProg, "uBandOn", bandSat.some((v) => v !== 1) || bandHue.some((v) => v !== 0) ? 1 : 0);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
   // Bewegungsgrößen numerisch aus der Kamerakurve ableiten (für die
@@ -2292,12 +2360,13 @@ function render(forcedT) {
   const starTilt2X = tilt2X + cam2.driftTX * drKStar;
   const starTilt2Y = tilt2Y + cam2.driftTY * drKStar;
 
+  // Sterne IMMER in die eigene Ebene rendern (nicht nur bei "nur Sterne"-
+  // Unschärfe): Klarheit/Struktur/Schärfe im Look-Tab treffen so nur das
+  // Starless-Bild - die Sternbearbeitung wohnt im Sterne-Tab
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbStars.fb);
+  gl.viewport(0, 0, fbStars.w, fbStars.h);
+  gl.clear(gl.COLOR_BUFFER_BIT);
   if (state.starCount > 0) {
-    if (splitBlur) {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, fbStars.fb);
-      gl.viewport(0, 0, fbStars.w, fbStars.h);
-      gl.clear(gl.COLOR_BUFFER_BIT);
-    }
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE);
     gl.useProgram(starProg);
@@ -2377,7 +2446,7 @@ function render(forcedT) {
     gl.useProgram(brightProg);
     gl.bindTexture(gl.TEXTURE_2D, fbScene.tex);
     gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, splitBlur ? fbStars.tex : texBlack);
+    gl.bindTexture(gl.TEXTURE_2D, fbStars.tex);
     gl.activeTexture(gl.TEXTURE0);
     u1i(brightProg, "uScene", 0);
     u1i(brightProg, "uStarsTex", 1);
@@ -2456,7 +2525,7 @@ function render(forcedT) {
   gl.activeTexture(gl.TEXTURE3);
   gl.bindTexture(gl.TEXTURE_2D, structure !== 0 ? fbMedB.tex : fbScene.tex);
   gl.activeTexture(gl.TEXTURE4);
-  gl.bindTexture(gl.TEXTURE_2D, splitBlur ? fbStars.tex : texBlack);
+  gl.bindTexture(gl.TEXTURE_2D, fbStars.tex);
   u1i(compProg, "uScene", 0);
   u1i(compProg, "uBloom", 1);
   u1i(compProg, "uSoft", 2);
@@ -2612,6 +2681,13 @@ bindSlider("ctlContrast", "outContrast", "contrast", asInt);
 bindSlider("ctlSaturation", "outSaturation", "saturation", asInt);
 bindSlider("ctlClarity", "outClarity", "clarity", asInt);
 bindSlider("ctlStructure", "outStructure", "structure", asInt);
+const asDeg = (v) => v + "°";
+bindSlider("ctlH2Sat", "outH2Sat", "h2Sat", asPct);
+bindSlider("ctlH2Hue", "outH2Hue", "h2Hue", asDeg);
+bindSlider("ctlO3Sat", "outO3Sat", "o3Sat", asPct);
+bindSlider("ctlO3Hue", "outO3Hue", "o3Hue", asDeg);
+bindSlider("ctlS2Sat", "outS2Sat", "s2Sat", asPct);
+bindSlider("ctlS2Hue", "outS2Hue", "s2Hue", asDeg);
 bindSlider("ctlSharpen", "outSharpen", "sharpen", asInt);
 
 $("ctlMblurStars").addEventListener("change", () => {
