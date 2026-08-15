@@ -82,6 +82,7 @@ const state = {
   gaiaPmYears: 0,        // Zeitraffer-Spanne in Jahren (0 = aus)
   objFar: false,         // Objekt einheitlich in die Ferne (hinter alle Sterne)
   occlude: 0,
+  starDetails: true,     // Sternphysik (Größe/Alter) in Labels anzeigen
   anchorStars: 0,       // % Sterne im Nebel verankern (Tiefe/Bewegung des Nebels)            // Nebel verdeckt dahinterliegende Sterne (0 = aus)
   objInfo: null,         // erkanntes Hauptobjekt { id, facts, otype }
   labels: null,          // Feld-Beschriftungen [{ id, x, y, sizePlane, otype, on }]
@@ -1713,9 +1714,9 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
       const facts = [];
       if (f) {
         const LBL = lang === "de"
-          ? { dist: "Entfernung", size: "Durchmesser", stars: "Sterne", age: "Alter" }
-          : { dist: "Distance", size: "Diameter", stars: "Stars", age: "Age" };
-        for (const k of ["dist", "size", "stars", "age"]) {
+          ? { dist: "Entfernung", size: "Durchmesser", radius: "Gr\u00f6\u00dfe", stars: "Sterne", mass: "Masse", age: "Alter" }
+          : { dist: "Distance", size: "Diameter", radius: "Size", stars: "Stars", mass: "Mass", age: "Age" };
+        for (const k of ["dist", "size", "radius", "stars", "mass", "age"]) {
           if (f[k]) facts.push([LBL[k], f[k]]);
         }
       }
@@ -1857,9 +1858,10 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
       const r = Math.max(16 * u, (L.sizePlane * (L.sizeMul || 1) * sp.scaleD * H) / 2);
       const facts = OBJECT_FACTS[normObjId(L.id)];
       const name = L.id;
-      const sub = facts
+      let sub = facts
         ? `${facts[lang].name} · ${facts[lang].dist || ""}`.replace(/ · $/, "")
         : (OTYPE_NAMES[lang][L.otype] || L.otype);
+      if (L.star && L.phys && state.starDetails) sub += starPhysShort(L.phys, lang);
 
       // Seite/Richtung EINMAL pro Durchlauf waehlen und behalten: Ein
       // Wechsel mitten im Flug liess die Beschriftung auf die andere Seite
@@ -3106,7 +3108,8 @@ function applyCardChoice() {
     return;
   }
   const pick = items.find((it) => it.id === c) || items[0];
-  state.objInfo = { id: pick.id, facts: OBJECT_FACTS[normObjId(pick.id)] || null, otype: pick.otype };
+  state.objInfo = { id: pick.id,
+    facts: OBJECT_FACTS[normObjId(pick.id)] || starFacts(pick) || null, otype: pick.otype };
 }
 
 function rebuildObjList() {
@@ -3163,6 +3166,7 @@ I18N.onChange.push(rebuildObjList);
 
 $("ctlShowInfo").addEventListener("change", () => { state.showInfo = $("ctlShowInfo").checked; });
 $("ctlShowLabels").addEventListener("change", () => { state.showLabels = $("ctlShowLabels").checked; });
+$("ctlStarDetails").addEventListener("change", () => { state.starDetails = $("ctlStarDetails").checked; });
 $("ctlCardObj").addEventListener("change", () => {
   state.cardChoice = $("ctlCardObj").value;
   applyCardChoice();
@@ -3227,6 +3231,9 @@ $("btnObjects").addEventListener("click", async () => {
       items.push({ id: prettyObjId(o.id), otype: o.otype, x: p.x, y: p.y,
         ra: o.ra, dec: o.dec, sizePlane });
     }
+    // Gaia-Astrophysik für die markanten Sterne (Radius/Masse/Alter) -
+    // optionaler Bonus, Fehler hier kosten nur die Zusatzinfos
+    try { await queryStarParams(items.filter((it) => it.star)); } catch { /* optional */ }
     if (!items.length) {
       state.objInfo = null; state.labels = null;
       state.objChoices = null; state.objRegion = null;

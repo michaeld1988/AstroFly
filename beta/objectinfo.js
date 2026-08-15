@@ -298,3 +298,92 @@ async function querySimbadStars(ra, dec, radiusDeg) {
   }
   return [...byMain.values()];
 }
+
+/**
+ * Gaia-DR3-Astrophysik (GSP-Phot/FLAME) für markante Sterne: Radius in
+ * Sonnenradien, Masse, Alter, Temperatur, Entfernung. Eine Abfrage für alle
+ * Positionen; Ergebnis wird als star.phys angehängt, fehlende Werte bleiben
+ * einfach weg (für sehr helle oder extreme Sterne führt Gaia oft nur Teile).
+ */
+async function queryStarParams(stars) {
+  if (!stars.length) return;
+  const circles = stars.map((s) =>
+    `1=CONTAINS(POINT('ICRS',RA_ICRS,DE_ICRS),CIRCLE('ICRS',${s.ra.toFixed(6)},${s.dec.toFixed(6)},0.0015))`);
+  const adql = `SELECT TOP ${stars.length * 4} RA_ICRS, DE_ICRS, Teff, Dist, Rad, "Mass-Flame", "Age-Flame" ` +
+    `FROM "I/355/paramp" WHERE ${circles.join(" OR ")}`;
+  const url = "https://tapvizier.cds.unistra.fr/TAPVizieR/tap/sync?REQUEST=doQuery&LANG=ADQL&FORMAT=csv&QUERY=" +
+    encodeURIComponent(adql);
+  const lines = (await fetchTapCsv(url)).trim().split("\n");
+  for (let i = 1; i < lines.length; i++) {
+    const f = csvFields(lines[i]);
+    if (f.length < 7) continue;
+    const ra = +f[0], dec = +f[1];
+    if (!isFinite(ra) || !isFinite(dec)) continue;
+    // dem nächstgelegenen angefragten Stern zuordnen (< 6 Bogensekunden)
+    let best = null, bd = 0.0017 * 0.0017;
+    for (const s of stars) {
+      const dx = (s.ra - ra) * Math.cos(dec * Math.PI / 180), dy = s.dec - dec;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < bd) { bd = d2; best = s; }
+    }
+    if (!best || best.phys) continue;
+    const num = (x) => (x !== "" && isFinite(+x) ? +x : null);
+    best.phys = { teff: num(f[2]), distPc: num(f[3]), rad: num(f[4]),
+      mass: num(f[5]), ageGyr: num(f[6]) };
+  }
+}
+
+// ---- Formatierer für die Sternphysik (Label-Kurzform + Infokarte) ----
+
+function fmtNum(x, lang) {
+  return Math.round(x).toLocaleString(lang === "de" ? "de-DE" : "en-US");
+}
+function fmtRad(rad, lang) {
+  if (rad >= 10) return String(Math.round(rad));
+  const v = (Math.round(rad * 10) / 10).toString();
+  return lang === "de" ? v.replace(".", ",") : v;
+}
+function fmtAge(gyr, lang, short) {
+  if (gyr >= 1) {
+    const v = (Math.round(gyr * 10) / 10).toLocaleString(lang === "de" ? "de-DE" : "en-US");
+    if (short) return lang === "de" ? `${v} Mrd. J.` : `${v} Gyr`;
+    return lang === "de" ? `\u2248 ${v} Mrd. Jahre` : `\u2248 ${v} billion years`;
+  }
+  const myr = Math.max(1, Math.round(gyr * 1000));
+  if (short) return lang === "de" ? `${myr} Mio. J.` : `${myr} Myr`;
+  return lang === "de" ? `\u2248 ${myr} Mio. Jahre` : `\u2248 ${myr} million years`;
+}
+
+/** Kurzzusatz fürs Feld-Label, z. B. " · ≈ 35× Sonne · 4 Mio. J." */
+function starPhysShort(phys, lang) {
+  if (!phys) return "";
+  const bits = [];
+  if (phys.rad) bits.push(`\u2248 ${fmtRad(phys.rad, lang)}\u00d7 ${lang === "de" ? "Sonne" : "Sun"}`);
+  if (phys.ageGyr) bits.push(fmtAge(phys.ageGyr, lang, true));
+  return bits.length ? " \u00b7 " + bits.join(" \u00b7 ") : "";
+}
+
+/** Infokarten-Fakten aus der Gaia-Astrophysik eines markanten Sterns. */
+function starFacts(it) {
+  if (!it || !it.phys) return null;
+  const p = it.phys;
+  const out = {};
+  for (const lang of ["de", "en"]) {
+    const f = { name: OTYPE_NAMES[lang][it.otype] || (lang === "de" ? "Stern" : "Star") };
+    if (p.teff) f.type = lang === "de"
+      ? `Oberfl\u00e4che \u2248 ${fmtNum(p.teff, lang)} K`
+      : `Surface \u2248 ${fmtNum(p.teff, lang)} K`;
+    if (p.distPc) f.dist = lang === "de"
+      ? `\u2248 ${fmtNum(p.distPc * 3.262, lang)} Lichtjahre`
+      : `\u2248 ${fmtNum(p.distPc * 3.262, lang)} light-years`;
+    if (p.rad) f.radius = lang === "de"
+      ? `\u2248 ${fmtRad(p.rad, lang)} Sonnenradien`
+      : `\u2248 ${fmtRad(p.rad, lang)} solar radii`;
+    if (p.mass) f.mass = lang === "de"
+      ? `\u2248 ${fmtRad(p.mass, lang)} Sonnenmassen`
+      : `\u2248 ${fmtRad(p.mass, lang)} solar masses`;
+    if (p.ageGyr) f.age = fmtAge(p.ageGyr, lang, false);
+    out[lang] = f;
+  }
+  return out;
+}
