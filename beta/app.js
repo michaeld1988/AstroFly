@@ -81,7 +81,8 @@ const state = {
   gaiaPM: null,          // Eigenbewegung je Masken-Stern (Ebene/Jahr)
   gaiaPmYears: 0,        // Zeitraffer-Spanne in Jahren (0 = aus)
   objFar: false,         // Objekt einheitlich in die Ferne (hinter alle Sterne)
-  occlude: 0,            // Nebel verdeckt dahinterliegende Sterne (0 = aus)
+  occlude: 0,
+  anchorStars: 0,       // % Sterne im Nebel verankern (Tiefe/Bewegung des Nebels)            // Nebel verdeckt dahinterliegende Sterne (0 = aus)
   objInfo: null,         // erkanntes Hauptobjekt { id, facts, otype }
   labels: null,          // Feld-Beschriftungen [{ id, x, y, sizePlane, otype, on }]
   showInfo: true,        // Infokarte ins Video einblenden
@@ -407,6 +408,8 @@ uniform float uPmYears;   // Zeitraffer: verstrichene Jahre zum Zeitpunkt t
 uniform float uPmYears2;  // ... und kurz danach (für die Streifen)
 // Nebel-Okklusion: Nebelschwaden, die VOR einem Stern liegen, verdecken ihn
 uniform float uOcclude;    // Stärke 0..1 (0 = aus)
+uniform float uAnchor;     // Sterne im Nebel verankern: Stärke 0..1
+uniform vec2 uTiltB2;      // Nebel-Kippwert der zweiten Kamera (für Anker-Streifen)
 uniform float uObjFarS;    // 1 = Objekt liegt einheitlich weit hinten
 uniform vec2 uTiltB;       // Kipp-Parallaxe des Hintergrunds (nicht der Sterne)
 uniform sampler2D uDepthS; // Tiefenkarte des Nebels
@@ -465,14 +468,40 @@ void main() {
     return;
   }
 
+  // Sterne im Nebel verankern: Sterne auf dichten Nebelregionen übernehmen
+  // Tiefe und Bewegung des Nebels an ihrer Bildposition - sie bleiben beim
+  // 3D-Flug IM Nebel (z. B. die Wolf-Rayet-Sterne im Löwennebel), statt
+  // davor herzufliegen. Sterne, deren Gaia-Tiefe klar vor oder hinter dem
+  // Nebel liegt, bleiben frei.
+  float anchorW = 0.0;
+  float dNA = 0.45;
+  if (uAnchor > 0.0) {
+    vec2 uvA = vec2(aPos.x / uImgAspectS, aPos.y) + 0.5;
+    if (uvA.x > 0.001 && uvA.x < 0.999 && uvA.y > 0.001 && uvA.y < 0.999) {
+      dNA = textureLod(uDepthS, uvA, 0.0).r;
+      dNA = mix(dNA, 0.02, uObjFarS);
+      vec3 cNA = textureLod(uColorS, uvA, 0.0).rgb;
+      float dens = smoothstep(0.05, 0.30, dot(cNA, vec3(0.299, 0.587, 0.114)));
+      float agree = aGaia >= 0.0
+        ? 1.0 - smoothstep(0.10, 0.28, abs(clamp(aGaia, 0.02, 1.0) - dNA))
+        : 1.0;
+      anchorW = uAnchor * dens * agree;
+    }
+  }
+
   // Sterne parallaxieren deutlich stärker als der Nebel (Faktor ~2.6 relativ
   // zur Räumlichkeit); Warp lässt sie zusätzlich beschleunigt vorbeiziehen
   float ex = 1.0 + uParallax * (depth - 0.45) * uDepthRange * 2.6 * uStarPar + uWarp * (0.4 + depth);
+  // Verankerte Sterne bewegen sich exakt wie der Nebel an ihrer Position:
+  // gleicher Zoom-Exponent, gleicher Kippwert, kein Stern-Parallax-Faktor
+  ex = mix(ex, 1.0 + uParallax * (dNA - 0.45) * uDepthRange, anchorW);
   // Ferne Sterne nie rückwärts fliegen lassen (Exponent bliebe sonst negativ)
   ex = max(ex, 0.12);
   float scale = uCover * pow(uZoom, ex);
   vec2 sp1 = spinStar(aPos + aPm * uPmYears, uSpinAngleS);
-  vec2 pr = (sp1 - uCenter - uTilt * (depth - 0.45)) * scale;
+  vec2 tOff = mix(uTilt * (depth - 0.45), uTiltB * (dNA - 0.45), anchorW);
+  vec2 pr = (sp1 - uCenter - tOff) * scale;
+  depth = mix(depth, dNA, anchorW);
   float c = cos(uAngle), s = sin(uAngle);
   // Inverse der Hintergrund-Rotation, damit Sterne auf dem Bild liegen bleiben
   vec2 p = mat2(c, s, -s, c) * pr;
@@ -515,7 +544,8 @@ void main() {
   vec2 clipMid = clip;
   if (uStreak > 0.0) {
     float scale2 = uCover * pow(uZoom2, ex);
-    vec2 pr2 = (spinStar(aPos + aPm * uPmYears2, uSpinAngleS2) - uCenter2 - uTilt2 * (depth - 0.45)) * scale2;
+    vec2 tOff2 = mix(uTilt2 * (depth - 0.45), uTiltB2 * (dNA - 0.45), anchorW);
+    vec2 pr2 = (spinStar(aPos + aPm * uPmYears2, uSpinAngleS2) - uCenter2 - tOff2) * scale2;
     float c2 = cos(uAngle2), s2 = sin(uAngle2);
     vec2 p2 = mat2(c2, s2, -s2, c2) * pr2;
     vec2 clip2 = vec2(p2.x * 2.0 / uViewAspect, p2.y * 2.0);
@@ -2423,6 +2453,8 @@ function render(forcedT) {
     u1f(starProg, "uPmYears2", state.gaiaPmYears * (cam2.te / pmSpan));
     // Nebel-Okklusion: Tiefe + Dichte des Nebels an der Sternposition
     u1f(starProg, "uOcclude", state.occlude / 100);
+    u1f(starProg, "uAnchor", state.anchorStars / 100);
+    u2f(starProg, "uTiltB2", tilt2X + cam2.driftTX * drK, tilt2Y + cam2.driftTY * drK);
     u1f(starProg, "uObjFarS", state.objFar ? 1 : 0);
     u2f(starProg, "uTiltB", bgTiltX, bgTiltY);
     gl.activeTexture(gl.TEXTURE6);
@@ -2936,6 +2968,7 @@ I18N.onChange.push(updateTargetInfo);
 bindSlider("ctlGaiaAmt", "outGaiaAmt", "gaiaAmt", (v) => v + " %");
 bindSlider("ctlGaiaPm", "outGaiaPm", "gaiaPmYears", (v) => v.toLocaleString());
 bindSlider("ctlOcclude", "outOcclude", "occlude", (v) => v + " %");
+bindSlider("ctlAnchor", "outAnchor", "anchorStars", (v) => v + " %");
 
 // Laufende Katalog-Abfragen prominent über der Vorschau anzeigen -
 // die kleine Statuszeile im Panel übersieht man leicht
@@ -3109,10 +3142,24 @@ $("btnObjects").addEventListener("click", async () => {
   $("btnObjects").disabled = true;
   try {
     const objs = await querySimbad(c.ra, c.dec, radius);
+    // Markante Sterne (Wolf-Rayet, helle Sterne mit Eigennamen) sind ein
+    // Bonus - scheitert nur diese Abfrage, fehlt lediglich die Stern-Ebene
+    let starObjs = [];
+    try { starObjs = await querySimbadStars(c.ra, c.dec, radius); } catch { /* optional */ }
     const imgAspect = img.width / img.height;
     const degPerPx = Math.sqrt(Math.abs(wcs.cd[0] * wcs.cd[3] - wcs.cd[1] * wcs.cd[2]));
     const items = [];
-    for (const o of objs) {
+    for (const o of objs.concat(starObjs)) {
+      if (o.star) {
+        // Markante Sterne: kein Katalogfilter, feste kleine Ringgröße (~3');
+        // durch die Größensortierung nie das Hauptobjekt der Infokarte
+        const ps = planeOfSky(o.ra, o.dec);
+        if (!ps) continue;
+        if (Math.abs(ps.x) > imgAspect / 2 || Math.abs(ps.y) > 0.5) continue;
+        items.push({ id: o.id, otype: o.otype, x: ps.x, y: ps.y,
+          sizePlane: (3 / 60) / degPerPx / nax2, star: true });
+        continue;
+      }
       // Kuratierte Klassiker immer durchlassen: SIMBAD führt manche Teile
       // bekannter Objekte ohne oder mit kryptischem Typ (z. B. Cirrusnebel:
       // NGC 6992 = "sh", NGC 6995 ganz ohne Typ)

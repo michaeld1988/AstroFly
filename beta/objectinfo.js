@@ -94,10 +94,27 @@ const OBJECT_FACTS = {
 
 // SIMBAD-Objekttypen -> Anzeigename (für Objekte ohne kuratierten Eintrag)
 const OTYPE_NAMES = {
-  de: { G: "Galaxie", AGN: "Galaxie (aktiver Kern)", SyG: "Seyfert-Galaxie", Sy1: "Seyfert-Galaxie", Sy2: "Seyfert-Galaxie", EmG: "Galaxie", SBG: "Starburst-Galaxie", GiG: "Galaxie", GiP: "Galaxie", LIN: "Galaxie", IG: "Galaxie", GlC: "Kugelsternhaufen", OpC: "Offener Sternhaufen", "Cl*": "Sternhaufen", HII: "Emissionsnebel", SNR: "Supernova-Überrest", PN: "Planetarischer Nebel", RNe: "Reflexionsnebel", ISM: "Nebel", Neb: "Nebel", sh: "Nebel (Gasschale)", MoC: "Molekülwolke", DNe: "Dunkelnebel", EmO: "Emissionsobjekt", glb: "Globule", SFR: "Sternentstehungsregion" },
-  en: { G: "Galaxy", AGN: "Galaxy (active nucleus)", SyG: "Seyfert galaxy", Sy1: "Seyfert galaxy", Sy2: "Seyfert galaxy", EmG: "Galaxy", SBG: "Starburst galaxy", GiG: "Galaxy", GiP: "Galaxy", LIN: "Galaxy", IG: "Galaxy", GlC: "Globular cluster", OpC: "Open cluster", "Cl*": "Star cluster", HII: "Emission nebula", SNR: "Supernova remnant", PN: "Planetary nebula", RNe: "Reflection nebula", ISM: "Nebula", Neb: "Nebula", sh: "Nebula (gas shell)", MoC: "Molecular cloud", DNe: "Dark nebula", EmO: "Emission object", glb: "Globule", SFR: "Star-forming region" },
+  de: { G: "Galaxie", AGN: "Galaxie (aktiver Kern)", SyG: "Seyfert-Galaxie", Sy1: "Seyfert-Galaxie", Sy2: "Seyfert-Galaxie", EmG: "Galaxie", SBG: "Starburst-Galaxie", GiG: "Galaxie", GiP: "Galaxie", LIN: "Galaxie", IG: "Galaxie", GlC: "Kugelsternhaufen", OpC: "Offener Sternhaufen", "Cl*": "Sternhaufen", HII: "Emissionsnebel", SNR: "Supernova-Überrest", PN: "Planetarischer Nebel", RNe: "Reflexionsnebel", ISM: "Nebel", Neb: "Nebel", sh: "Nebel (Gasschale)", MoC: "Molekülwolke", DNe: "Dunkelnebel", EmO: "Emissionsobjekt", glb: "Globule", SFR: "Sternentstehungsregion",
+        "WR*": "Wolf-Rayet-Stern", "SB*": "Doppelstern", "V*": "Veränderlicher Stern",
+        "*": "Stern", "s*b": "Blauer Überriese", "s*r": "Roter Überriese",
+        "s*y": "Gelber Überriese", "Em*": "Emissionslinien-Stern", "Be*": "Be-Stern",
+        "RG*": "Roter Riese", "C*": "Kohlenstoffstern", "cC*": "Cepheid",
+        "Y*O": "Junger Stern", "Or*": "Junger Stern (Orion-Typ)", "TT*": "T-Tauri-Stern",
+        "Pe*": "Besonderer Stern", "bC*": "Beta-Cephei-Stern", "PM*": "Stern" },
+  en: { G: "Galaxy", AGN: "Galaxy (active nucleus)", SyG: "Seyfert galaxy", Sy1: "Seyfert galaxy", Sy2: "Seyfert galaxy", EmG: "Galaxy", SBG: "Starburst galaxy", GiG: "Galaxy", GiP: "Galaxy", LIN: "Galaxy", IG: "Galaxy", GlC: "Globular cluster", OpC: "Open cluster", "Cl*": "Star cluster", HII: "Emission nebula", SNR: "Supernova remnant", PN: "Planetary nebula", RNe: "Reflection nebula", ISM: "Nebula", Neb: "Nebula", sh: "Nebula (gas shell)", MoC: "Molecular cloud", DNe: "Dark nebula", EmO: "Emission object", glb: "Globule", SFR: "Star-forming region",
+        "WR*": "Wolf-Rayet star", "SB*": "Binary star", "V*": "Variable star",
+        "*": "Star", "s*b": "Blue supergiant", "s*r": "Red supergiant",
+        "s*y": "Yellow supergiant", "Em*": "Emission-line star", "Be*": "Be star",
+        "RG*": "Red giant", "C*": "Carbon star", "cC*": "Cepheid",
+        "Y*O": "Young stellar object", "Or*": "Young star (Orion type)", "TT*": "T Tauri star",
+        "Pe*": "Peculiar star", "bC*": "Beta Cephei star", "PM*": "Star" },
 };
-const INTERESTING_OTYPES = new Set(Object.keys(OTYPE_NAMES.en));
+// Für die Katalog-Erkennung (M/NGC/IC/Sh2) interessante Typen. Bewusst NICHT
+// aus OTYPE_NAMES abgeleitet: dort stehen auch Stern-Typen für die Anzeige,
+// Einzelsterne aus Katalogen (z. B. "NGC 7235 8") sollen hier NICHT durch
+const INTERESTING_OTYPES = new Set(["G", "AGN", "SyG", "Sy1", "Sy2", "EmG",
+  "SBG", "GiG", "GiP", "LIN", "IG", "GlC", "OpC", "Cl*", "HII", "SNR", "PN",
+  "RNe", "ISM", "Neb", "sh", "MoC", "DNe", "EmO", "glb", "SFR"]);
 
 // Kuratierte Regionen/Komplexe: Sobald genug Mitglieder im Feld erkannt
 // werden, beschreibt die Infokarte den Gesamtkomplex - die Beschriftungen
@@ -245,4 +262,39 @@ async function querySimbad(ra, dec, radiusDeg) {
   const out = [...byMain.values()];
   out.sort((a, b) => b.sizeArcmin - a.sizeArcmin);
   return out;
+}
+
+/**
+ * Markante Sterne im Feld: Wolf-Rayet-Sterne sowie helle Sterne mit
+ * Eigennamen (V <= 4). Liefert { id, ra, dec, otype, star: true } -
+ * dedupliziert nach Objekt, kürzester Alias gewinnt ("WR 153" statt
+ * "WR 153ab"), "NAME "-Präfix wird entfernt ("Hatysa").
+ */
+async function querySimbadStars(ra, dec, radiusDeg) {
+  const adql = `SELECT TOP 40 b.main_id, b.ra, b.dec, b.otype_txt, f.V AS vmag, i.id ` +
+    `FROM basic AS b JOIN ident AS i ON i.oidref = b.oid ` +
+    `LEFT JOIN allfluxes AS f ON f.oidref = b.oid ` +
+    `WHERE 1=CONTAINS(POINT('ICRS',b.ra,b.dec),` +
+    `CIRCLE('ICRS',${ra.toFixed(6)},${dec.toFixed(6)},${radiusDeg.toFixed(4)})) ` +
+    `AND ((b.otype_txt = 'WR*' AND i.id LIKE 'WR %') ` +
+    `OR (i.id LIKE 'NAME %' AND f.V <= 4.0)) ORDER BY vmag`;
+  const url = "https://simbad.cds.unistra.fr/simbad/sim-tap/sync?REQUEST=doQuery&LANG=ADQL&FORMAT=csv&QUERY=" +
+    encodeURIComponent(adql);
+  const lines = (await fetchTapCsv(url)).trim().split("\n");
+  const byMain = new Map();
+  for (let i = 1; i < lines.length; i++) {
+    const f = csvFields(lines[i]);
+    if (f.length < 6) continue;
+    const mainId = f[0].trim();
+    const oRa = +f[1], oDec = +f[2];
+    const otype = f[3].replace(/"/g, "");
+    const alias = f[5].trim().replace(/^NAME\s+/, "").replace(/\s+/g, " ");
+    if (!isFinite(oRa) || !isFinite(oDec)) continue;
+    // Nur echte Sterne (Typ enthält *), keine Haufen/Assoziationen mit Eigennamen
+    if (!/\*/.test(otype) || otype === "Cl*" || otype === "As*") continue;
+    const prev = byMain.get(mainId);
+    if (prev && prev.id.length <= alias.length) continue;
+    byMain.set(mainId, { id: alias, ra: oRa, dec: oDec, otype, star: true });
+  }
+  return [...byMain.values()];
 }
