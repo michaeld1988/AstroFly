@@ -1103,7 +1103,10 @@ function buildStarBuffer() {
   }
 
   found.sort((p, q) => q.flux - p.flux);
-  const MAX = 9000;
+  // Obergrenze für Masken-Sterne: moderne GPUs schaffen das locker, das
+  // Gaia-Matching läuft über ein Suchgitter (linear) - bei dichten
+  // Milchstraßenfeldern schnitt die alte 9000er-Grenze real ab
+  const MAX = 25000;
   const list = found.slice(0, MAX);
 
   const FLOATS = 7;
@@ -1230,7 +1233,7 @@ function angSep(ra1, dec1, ra2, dec2) {
 
 /** Gaia DR3 über die VizieR-TAP-API abfragen (CSV, CORS-frei). */
 async function queryGaia(ra, dec, radiusDeg) {
-  const adql = `SELECT TOP 30000 RA_ICRS,DE_ICRS,Gmag,Plx,"BP-RP",pmRA,pmDE FROM "I/355/gaiadr3" ` +
+  const adql = `SELECT TOP 50000 RA_ICRS,DE_ICRS,Gmag,Plx,"BP-RP",pmRA,pmDE FROM "I/355/gaiadr3" ` +
     `WHERE 1=CONTAINS(POINT('ICRS',RA_ICRS,DE_ICRS),` +
     `CIRCLE('ICRS',${ra.toFixed(6)},${dec.toFixed(6)},${radiusDeg.toFixed(4)})) ` +
     `AND Plx>0.05 ORDER BY Gmag`;
