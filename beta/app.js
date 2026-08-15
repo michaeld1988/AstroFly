@@ -117,9 +117,9 @@ const state = {
   h2Det: 0,              // Erkennungs-Farbton je Band in Grad (0..360)
   o3Det: 184,
   s2Det: 34,
-  h2Width: 27,           // Erkennungs-Bereich je Band in ±Grad
-  o3Width: 41,
-  s2Width: 20,
+  h2Width: 35,           // Erkennungs-Bereich je Band in ±Grad
+  o3Width: 45,
+  s2Width: 25,
   bandShow: "off",       // Erkennungsmaske in der Vorschau: off/h2/o3/s2
   bandFeather: 50,       // weiche Kante der Banderkennung in % (50 = neutral)
   sharpen: 0,            // 0..100
@@ -248,12 +248,16 @@ vec3 hsv2rgb(vec3 c) {
   vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
   return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
-// Gewicht eines Farbkreis-Bands (h/center als Kreisanteil). Die Breite
-// kommt vom Bereichs-Regler des Bands, der Feather steuert nur noch die
-// Kantenweichheit (0 = hart, 1 = butterweich)
+// C1-stetiges Farbton-Fenster: flacher Kern (voller Griff) mit Kosinus-
+// Auslauf, Ableitung an beiden Enden 0 - keine sichtbaren Kanten in
+// Verläufen. Der Feather verschiebt das Verhältnis Kern/Auslauf
 float bandW(float h, float center, float width) {
   float d = abs(fract(h - center + 0.5) - 0.5);
-  return smoothstep(width, width * mix(0.9, 0.0, uBandFeather), d);
+  if (d >= width) return 0.0;
+  float core = width * mix(0.55, 0.1, uBandFeather);
+  if (d <= core) return 1.0;
+  float t = (d - core) / (width - core);
+  return 0.5 + 0.5 * cos(3.14159265 * t);
 }
 
 // Gewicht der Helligkeitsmaske an einem Ebenen-Punkt (1 = volle Drehung)
@@ -350,21 +354,30 @@ void main() {
   // wie auf Schmalband-Paletten; Graues bleibt unangetastet
   if (uBandOn > 0.5) {
     vec3 hsv = rgb2hsv(col);
-    // Sättigungs- UND Luminanz-Gate: Graues bleibt unberührt, und dunkles
-    // Farbrauschen (JPEG-Chroma in Schattenbereichen) wird nicht gegriffen
-    float satW = smoothstep(0.03, 0.16, hsv.y) * smoothstep(0.02, 0.12, hsv.z);
-    // Erkennungs-Farbton je Band einstellbar: greift auch, wenn das
-    // H-alpha im fertigen Bild z. B. Richtung Lila verschoben ist
-    float wH2 = bandW(hsv.x, uBandCen.x, uBandWidth.x) * satW;
-    float wO3 = bandW(hsv.x, uBandCen.y, uBandWidth.y) * satW;
-    float wS2 = bandW(hsv.x, uBandCen.z, uBandWidth.z) * satW;
-    hsv.x = fract(hsv.x + uBandHue.x * wH2 + uBandHue.y * wO3 + uBandHue.z * wS2 + 1.0);
-    hsv.y = clamp(hsv.y * mix(1.0, uBandSat.x, wH2) * mix(1.0, uBandSat.y, wO3) * mix(1.0, uBandSat.z, wS2), 0.0, 1.0);
+    // Fenster-Gewichte je Band: reine Funktion des FARBTONS. Der Shift wird
+    // bewusst NICHT mit Saettigung/Helligkeit gegated - die Wirkung skaliert
+    // ohnehin mit der Farbigkeit des Pixels, Grau bleibt von selbst stehen.
+    // (Das alte Gate verschob Nachbarpixel gleicher Farbe unterschiedlich
+    // stark, sobald ihre Saettigung differierte - das riss Verlaeufe auf.)
+    vec3 wh = vec3(
+      bandW(hsv.x, uBandCen.x, uBandWidth.x),
+      bandW(hsv.x, uBandCen.y, uBandWidth.y),
+      bandW(hsv.x, uBandCen.z, uBandWidth.z));
+    // Verschiebung so begrenzen, dass die Farbton-Abbildung monoton bleibt
+    // (Steilheit des Auslaufs) - sonst "faltet" sie sich und es entstehen
+    // harte Banding-Kanten. Fuer grosse Shifts den Bereich weiter stellen.
+    vec3 lim = (uBandWidth * (1.0 - mix(0.55, 0.1, uBandFeather))) * 0.6;
+    vec3 sh = clamp(uBandHue, -lim, lim);
+    hsv.x = fract(hsv.x + dot(sh, wh) + 1.0);
+    // Saettigungs-Regler zusaetzlich mit Saettigungs-/Helligkeits-Gate:
+    // dunkles Farbrauschen (JPEG-Chroma) wird nicht aufgesaettigt
+    float gate = smoothstep(0.03, 0.16, hsv.y) * smoothstep(0.02, 0.12, hsv.z);
+    vec3 ws = wh * gate;
+    hsv.y = clamp(hsv.y * mix(1.0, uBandSat.x, ws.x) * mix(1.0, uBandSat.y, ws.y) * mix(1.0, uBandSat.z, ws.z), 0.0, 1.0);
     col = hsv2rgb(hsv);
-    // Erkennungsmaske: hebt die Pixel hervor, die das gewählte Band packt
-    // (Rest abgedunkelt) - zum Einstellen des Erkennungs-Farbtons
+    // Erkennungsmaske: hebt die Pixel hervor, die das gewaehlte Band packt
     if (uBandShow > 0.5) {
-      float wSel = uBandShow < 1.5 ? wH2 : (uBandShow < 2.5 ? wO3 : wS2);
+      float wSel = uBandShow < 1.5 ? ws.x : (uBandShow < 2.5 ? ws.y : ws.z);
       col = col * 0.15 + wSel * (col + vec3(0.10, 0.32, 0.12));
     }
   }
