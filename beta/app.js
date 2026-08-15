@@ -83,6 +83,8 @@ const state = {
   objFar: false,         // Objekt einheitlich in die Ferne (hinter alle Sterne)
   occlude: 0,
   starDetails: true,     // Sternphysik (Größe/Alter) in Labels anzeigen
+  flipH: false,          // Bild horizontal gespiegelt (Starless + Maske)
+  flipV: false,          // Bild vertikal gespiegelt
   anchorStars: 0,       // % Sterne im Nebel verankern (Tiefe/Bewegung des Nebels)            // Nebel verdeckt dahinterliegende Sterne (0 = aus)
   objInfo: null,         // erkanntes Hauptobjekt { id, facts, otype }
   labels: null,          // Feld-Beschriftungen [{ id, x, y, sizePlane, otype, on }]
@@ -114,6 +116,9 @@ const state = {
   h2Det: 0,              // Erkennungs-Farbton je Band in Grad (0..360)
   o3Det: 184,
   s2Det: 34,
+  h2Width: 27,           // Erkennungs-Bereich je Band in ±Grad
+  o3Width: 41,
+  s2Width: 20,
   bandShow: "off",       // Erkennungsmaske in der Vorschau: off/h2/o3/s2
   bandFeather: 50,       // weiche Kante der Banderkennung in % (50 = neutral)
   sharpen: 0,            // 0..100
@@ -220,6 +225,7 @@ uniform float uSpinMaskAmt;  // 0 = ignorieren, 1 = voll gewichten
 uniform vec3 uBandSat;      // Nebelfarben: Sättigung je Band (HII, OIII, SII)
 uniform vec3 uBandHue;      // Nebelfarben: Farbton-Shift je Band (Kreisanteil)
 uniform vec3 uBandCen;      // Erkennungs-Farbton je Band (Kreisanteil, einstellbar)
+uniform vec3 uBandWidth;    // Erkennungs-Bereich je Band (Kreisanteil, einstellbar)
 uniform float uBandShow;    // Erkennungsmaske: 0 = aus, 1 = HII, 2 = OIII, 3 = SII
 uniform float uBandFeather; // weiche Kante der Banderkennung (0 = hart, 1 = sehr weich)
 uniform float uBandOn;      // 1 = mindestens ein Band-Regler aktiv
@@ -241,12 +247,12 @@ vec3 hsv2rgb(vec3 c) {
   vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
   return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
-// Gewicht eines Farbkreis-Bands (h/center als Kreisanteil). Der Feather
-// steuert Breite UND Kantenweichheit: 0.5 entspricht dem alten Verhalten
+// Gewicht eines Farbkreis-Bands (h/center als Kreisanteil). Die Breite
+// kommt vom Bereichs-Regler des Bands, der Feather steuert nur noch die
+// Kantenweichheit (0 = hart, 1 = butterweich)
 float bandW(float h, float center, float width) {
   float d = abs(fract(h - center + 0.5) - 0.5);
-  float w = width * (0.5 + uBandFeather);
-  return smoothstep(w, w * mix(0.7, 0.0, uBandFeather), d);
+  return smoothstep(width, width * mix(0.9, 0.0, uBandFeather), d);
 }
 
 // Gewicht der Helligkeitsmaske an einem Ebenen-Punkt (1 = volle Drehung)
@@ -348,9 +354,9 @@ void main() {
     float satW = smoothstep(0.03, 0.16, hsv.y) * smoothstep(0.02, 0.12, hsv.z);
     // Erkennungs-Farbton je Band einstellbar: greift auch, wenn das
     // H-alpha im fertigen Bild z. B. Richtung Lila verschoben ist
-    float wH2 = bandW(hsv.x, uBandCen.x, 0.075) * satW;
-    float wO3 = bandW(hsv.x, uBandCen.y, 0.115) * satW;
-    float wS2 = bandW(hsv.x, uBandCen.z, 0.055) * satW;
+    float wH2 = bandW(hsv.x, uBandCen.x, uBandWidth.x) * satW;
+    float wO3 = bandW(hsv.x, uBandCen.y, uBandWidth.y) * satW;
+    float wS2 = bandW(hsv.x, uBandCen.z, uBandWidth.z) * satW;
     hsv.x = fract(hsv.x + uBandHue.x * wH2 + uBandHue.y * wO3 + uBandHue.z * wS2 + 1.0);
     hsv.y = clamp(hsv.y * mix(1.0, uBandSat.x, wH2) * mix(1.0, uBandSat.y, wO3) * mix(1.0, uBandSat.z, wS2), 0.0, 1.0);
     col = hsv2rgb(hsv);
@@ -1406,7 +1412,9 @@ function matchGaia(gaiaStars) {
     for (const g of gaiaStars) {
       const p = wcsSky2Pix(wcs, g.ra, g.dec);
       if (!p) continue;
-      const u = p.px / nax1, v = flipY ? 1 - p.py / nax2 : p.py / nax2;
+      let u = p.px / nax1, v = flipY ? 1 - p.py / nax2 : p.py / nax2;
+      if (state.flipH) u = 1 - u;
+      if (state.flipV) v = 1 - v;
       if (u < -0.03 || u > 1.03 || v < -0.03 || v > 1.03) continue;
       pts.push({ ...g, x: (u - 0.5) * imgAspect, y: 0.5 - v });
     }
@@ -1450,7 +1458,9 @@ function matchGaia(gaiaStars) {
   const planeOf = (ra, dec) => {
     const p = wcsSky2Pix(wcs, ra, dec);
     if (!p) return null;
-    const u = p.px / nax1, v = flipUsed ? 1 - p.py / nax2 : p.py / nax2;
+    let u = p.px / nax1, v = flipUsed ? 1 - p.py / nax2 : p.py / nax2;
+    if (state.flipH) u = 1 - u;
+    if (state.flipV) v = 1 - v;
     let x = (u - 0.5) * imgAspect, y = 0.5 - v;
     if (fitUsed) {
       const nx = fitUsed.ax[0] * x + fitUsed.ax[1] * y + fitUsed.ax[2];
@@ -1510,6 +1520,23 @@ function matchGaia(gaiaStars) {
  * Affin-Korrektur erst NACH einer evtl. schon gelaufenen Objekterkennung -
  * ohne Reprojektion blieben die Marker auf gespiegelten Positionen stehen.
  */
+/** Nebeldichte (0..1) an einem Ebenen-Punkt - Gegenstück zum Dichte-Gate
+ *  des Anker-Features im Stern-Shader (Luminanz des Starless-Bilds). */
+function lumDensAtPlane(x, y, imgAspect) {
+  const img = state.starless;
+  if (!img) return 0;
+  const uu = x / imgAspect + 0.5, vv = 0.5 - y;
+  if (uu <= 0 || uu >= 1 || vv <= 0 || vv >= 1) return 0;
+  const c = lumDensAtPlane._c || (lumDensAtPlane._c = document.createElement("canvas"));
+  c.width = 1; c.height = 1;
+  const cx = c.getContext("2d", { willReadFrequently: true });
+  cx.drawImage(img.canvas, uu * img.width, vv * img.height, 1, 1, 0, 0, 1, 1);
+  const d = cx.getImageData(0, 0, 1, 1).data;
+  const lum = (0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]) / 255;
+  const t = Math.min(1, Math.max(0, (lum - 0.05) / 0.25));
+  return t * t * (3 - 2 * t);
+}
+
 function reprojectLabels() {
   if (!state.wcs) return;
   for (const list of [state.objChoices, state.labels]) {
@@ -1519,6 +1546,7 @@ function reprojectLabels() {
       const p = planeOfSky(it.ra, it.dec);
       if (p) { it.x = p.x; it.y = p.y; }
       delete it._chipSide; delete it._up; // Seitenwahl neu treffen lassen
+      delete it._msN; delete it._dens;     // Sterntiefe/Dichte neu ermitteln
     }
   }
 }
@@ -1532,7 +1560,9 @@ function planeOfSky(ra, dec) {
   const p = wcsSky2Pix(wcs, ra, dec);
   if (!p) return null;
   const flip = state.wcsFlip !== false; // Standard: FITS-Zeile 1 unten
-  const u = p.px / nax1, v = flip ? 1 - p.py / nax2 : p.py / nax2;
+  let u = p.px / nax1, v = flip ? 1 - p.py / nax2 : p.py / nax2;
+  if (state.flipH) u = 1 - u;
+  if (state.flipV) v = 1 - v;
   let x = (u - 0.5) * imgAspect, y = 0.5 - v;
   const fit = state.wcsFit;
   if (fit) {
@@ -1692,6 +1722,70 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
     const px = rc * prx - rs * pry, py = rs * prx + rc * pry;
     return { x: (px / viewAspect + 0.5) * W, y: (1 - (py + 0.5)) * H, scaleD };
   };
+  // Stern-Labels folgen der STERN-Ebene: Sterne parallaxieren stärker als
+  // der Nebel (Faktor 2,6 x Regler) - ein an den Nebel geklebter Marker
+  // läuft seinem Stern beim Flug sichtbar davon. Tiefe wie im Stern-Shader:
+  // Hash des nächstliegenden Maskensterns, ggf. Gaia-Tiefe, plus Verankerung
+  const starParL = state.starPar / 100;
+  const drKStarL = drK * 2.6 * starParL;
+  const stTiltX = (state.tiltX / 100) * 0.08 + cam.tiltAddX + cam.driftTX * drKStarL;
+  const stTiltY = (state.tiltY / 100) * 0.08 + cam.tiltAddY + cam.driftTY * drKStarL;
+  const warpK = state.warp / 100;
+  const sstep = (a, b, x) => {
+    const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+    return t * t * (3 - 2 * t);
+  };
+  const starLabelDepth = (L) => {
+    const m = state.maskStarFloats, n = state.maskStarCount;
+    if (!m || !n) return null;
+    if (L._msN !== n) {
+      L._msN = n; L._msIdx = -1;
+      let bd = 0.015 * 0.015; // nächster Maskenstern, max ~1,5 % Bildhöhe
+      for (let i = 0; i < n; i++) {
+        const dx = m[i * 7] - L.x, dy = m[i * 7 + 1] - L.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < bd) { bd = d2; L._msIdx = i; }
+      }
+    }
+    if (L._msIdx < 0) return null;
+    const i = L._msIdx;
+    const ax = m[i * 7], ay = m[i * 7 + 1], bright = m[i * 7 + 2];
+    let h = Math.sin(ax * 127.1 + ay * 311.7 + state.seed * 17.0) * 43758.5453;
+    h -= Math.floor(h);
+    let bs = bright * 0.12;
+    if (state.starLayers > 0.5) { h = (Math.floor(h * state.starLayers) + 0.5) / state.starLayers; bs = 0; }
+    let depth = Math.min(1, Math.max(0.02, state.starDist / 100 + (h - 0.5) * (state.spread / 100) * 1.15 + bs));
+    const gd = state.gaiaDepth ? state.gaiaDepth[i] : -1;
+    if (gd >= 0) {
+      const amt = Math.max(state.gaiaAmt / 100, state.gaiaOnly ? 1 : 0);
+      depth += (Math.min(1, Math.max(0.02, gd)) - depth) * amt;
+    }
+    return { depth, gd };
+  };
+  const toScreenStar = (L) => {
+    const sd = starLabelDepth(L);
+    if (!sd) return toScreen(L); // kein Maskenstern gefunden -> wie Nebel
+    const S = state.spinStars ? spinDisplace(L.x, L.y, spinAngle) : { x: L.x, y: L.y };
+    const dN = state.objFar ? 0.02 : depthAtPlane(L.x, L.y, imgAspect);
+    let w = 0;
+    if (state.anchorStars > 0) {
+      if (L._dens === undefined) L._dens = lumDensAtPlane(L.x, L.y, imgAspect);
+      const agree = sd.gd >= 0
+        ? 1 - sstep(0.10, 0.28, Math.abs(Math.min(1, Math.max(0.02, sd.gd)) - dN))
+        : 1;
+      w = (state.anchorStars / 100) * L._dens * agree;
+    }
+    let ex = 1 + parallax * (sd.depth - 0.45) * depthRange * 2.6 * starParL + warpK * (0.4 + sd.depth);
+    ex = ex * (1 - w) + (1 + parallax * (dN - 0.45) * depthRange) * w;
+    ex = Math.max(ex, 0.12);
+    const scaleD = cover * Math.pow(cam.zoom, ex);
+    const tx = stTiltX * (sd.depth - 0.45) * (1 - w) + bgTiltX * (dN - 0.45) * w;
+    const ty = stTiltY * (sd.depth - 0.45) * (1 - w) + bgTiltY * (dN - 0.45) * w;
+    const prx = (S.x - cam.cx - tx) * scaleD;
+    const pry = (S.y - cam.cy - ty) * scaleD;
+    const px = rc * prx - rs * pry, py = rs * prx + rc * pry;
+    return { x: (px / viewAspect + 0.5) * W, y: (1 - (py + 0.5)) * H, scaleD };
+  };
   const u = H / 1000; // Skalierungseinheit (1000er-Referenzhöhe)
   const ACC = "rgba(157,184,255,";
   ctx.save();
@@ -1847,7 +1941,7 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
     };
     for (const L of state.labels) {
       if (!L.on) continue;
-      const sp = toScreen(L);
+      const sp = L.star ? toScreenStar(L) : toScreen(L);
       if (sp.x < -80 * u || sp.x > W + 80 * u || sp.y < -80 * u || sp.y > H + 80 * u) continue;
       // Sanft ausblenden, wenn der Anker das Bild verlässt - vorher
       // verschwand die Beschriftung von einem Frame auf den nächsten
@@ -2420,6 +2514,7 @@ function render(forcedT) {
   u3f(bgProg, "uBandSat", bandSat[0], bandSat[1], bandSat[2]);
   u3f(bgProg, "uBandHue", bandHue[0], bandHue[1], bandHue[2]);
   u3f(bgProg, "uBandCen", state.h2Det / 360, state.o3Det / 360, state.s2Det / 360);
+  u3f(bgProg, "uBandWidth", state.h2Width / 360, state.o3Width / 360, state.s2Width / 360);
   u1f(bgProg, "uBandShow", bandShow);
   u1f(bgProg, "uBandFeather", state.bandFeather / 100);
   u1f(bgProg, "uBandOn",
@@ -2670,6 +2765,16 @@ fitCanvas();
 
 // ---------------------------------------------------------------- UI-Verdrahtung
 
+// Doppelklick auf einen Regler setzt ihn auf seinen Standardwert zurück
+// (wie in Lightroom); das input-Event zieht State und Anzeige nach
+document.addEventListener("dblclick", (e) => {
+  const el = e.target;
+  if (el && el.tagName === "INPUT" && el.type === "range") {
+    el.value = el.defaultValue;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+});
+
 function bindSlider(id, outId, key, fmt) {
   const el = $(id), out = $(outId);
   el.addEventListener("input", () => {
@@ -2773,6 +2878,10 @@ bindSlider("ctlS2Hue", "outS2Hue", "s2Hue", asDeg);
 bindSlider("ctlH2Det", "outH2Det", "h2Det", asDeg);
 bindSlider("ctlO3Det", "outO3Det", "o3Det", asDeg);
 bindSlider("ctlS2Det", "outS2Det", "s2Det", asDeg);
+const asDegPM = (v) => "\u00b1" + v + "\u00b0";
+bindSlider("ctlH2Width", "outH2Width", "h2Width", asDegPM);
+bindSlider("ctlO3Width", "outO3Width", "o3Width", asDegPM);
+bindSlider("ctlS2Width", "outS2Width", "s2Width", asDegPM);
 bindSlider("ctlBandFeather", "outBandFeather", "bandFeather", asPct);
 $("ctlBandShow").addEventListener("change", () => {
   state.bandShow = $("ctlBandShow").value;
@@ -3450,6 +3559,55 @@ async function loadFile(which, file) {
     status.textContent = t("loadFailed", file.name, err.message);
   }
 }
+
+/** Spiegelt ein Bildobjekt ({width, height, canvas, ...}) in place -
+ *  weitere Eigenschaften (z. B. eingebettetes WCS) bleiben erhalten. */
+function flipImage(img, fh, fv) {
+  const c = document.createElement("canvas");
+  c.width = img.width; c.height = img.height;
+  const x = c.getContext("2d");
+  x.translate(fh ? img.width : 0, fv ? img.height : 0);
+  x.scale(fh ? -1 : 1, fv ? -1 : 1);
+  x.drawImage(img.canvas, 0, 0);
+  img.canvas = c;
+}
+
+/**
+ * Bild spiegeln (Starless + Sternmaske gemeinsam, sonst passt die Maske
+ * nicht mehr aufs Bild): komplette Pipeline neu aufbauen. Ein bestehender
+ * Gaia-Abgleich wird ungültig (Maskensterne neu extrahiert) - die
+ * Beschriftungen werden über die Spiegel-Flags sofort mitgespiegelt.
+ */
+function applyImageFlip(fh, fv) {
+  if (state.starless) {
+    flipImage(state.starless, fh, fv);
+    if (texColor) gl.deleteTexture(texColor);
+    const colSrc = downscale(state.starless, 4096);
+    texColor = makeTexture(colSrc);
+    state.texColorW = colSrc.width;
+    state.texColorH = colSrc.height;
+    buildDepthMap();
+    buildSpinMask();
+  }
+  if (state.starsOriginal) {
+    flipImage(state.starsOriginal, fh, fv);
+    processStarMask();
+  } else if (state.stars) {
+    flipImage(state.stars, fh, fv);
+    buildStarBuffer();
+  }
+  reprojectLabels();
+  uploadStars();
+  updateGaiaStatus();
+}
+$("ctlFlipH").addEventListener("change", () => {
+  state.flipH = $("ctlFlipH").checked;
+  applyImageFlip(true, false);
+});
+$("ctlFlipV").addEventListener("change", () => {
+  state.flipV = $("ctlFlipV").checked;
+  applyImageFlip(false, true);
+});
 
 // Demo-Bilder (Orionnebel, aufgenommen von Michael Döhler) aus dem Repo laden –
 // so kann jeder die App sofort ausprobieren, auch ohne eigene Dateien

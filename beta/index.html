@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-16-7">
+<link rel="stylesheet" href="style.css?v=2026-08-16-8">
 </head>
 <body>
 
@@ -492,6 +492,10 @@
           <input type="range" id="ctlH2Det" class="huetrack" min="0" max="360" step="2" value="0">
         </label>
         <label class="slider">
+          <span><span data-i18n="h2Width">Hα · range</span> <output id="outH2Width">±27°</output></span>
+          <input type="range" id="ctlH2Width" min="5" max="90" step="1" value="27">
+        </label>
+        <label class="slider">
           <span><span data-i18n="h2Sat">Hα / red · saturation</span> <output id="outH2Sat">100 %</output></span>
           <input type="range" id="ctlH2Sat" min="0" max="200" step="5" value="100">
         </label>
@@ -504,6 +508,10 @@
           <input type="range" id="ctlO3Det" class="huetrack" min="0" max="360" step="2" value="184">
         </label>
         <label class="slider">
+          <span><span data-i18n="o3Width">OIII · range</span> <output id="outO3Width">±41°</output></span>
+          <input type="range" id="ctlO3Width" min="5" max="90" step="1" value="41">
+        </label>
+        <label class="slider">
           <span><span data-i18n="o3Sat">OIII / teal · saturation</span> <output id="outO3Sat">100 %</output></span>
           <input type="range" id="ctlO3Sat" min="0" max="200" step="5" value="100">
         </label>
@@ -514,6 +522,10 @@
         <label class="slider">
           <span><span data-i18n="s2Det">SII · detection hue</span> <output id="outS2Det">34°</output></span>
           <input type="range" id="ctlS2Det" class="huetrack" min="0" max="360" step="2" value="34">
+        </label>
+        <label class="slider">
+          <span><span data-i18n="s2Width">SII · range</span> <output id="outS2Width">±20°</output></span>
+          <input type="range" id="ctlS2Width" min="5" max="90" step="1" value="20">
         </label>
         <label class="slider">
           <span><span data-i18n="s2Sat">SII / gold · saturation</span> <output id="outS2Sat">100 %</output></span>
@@ -552,6 +564,19 @@
       <div id="gaiaHelp" hidden>
         <p class="tip" data-i18n-html="gaiaHelpText">…</p>
       </div>
+      <label class="check">
+        <input type="checkbox" id="ctlFlipH">
+        <span data-i18n="flipH">Mirror image horizontally (starless + mask)</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="ctlFlipV">
+        <span data-i18n="flipV">Mirror image vertically</span>
+        <button class="qm" data-help="hintFlip">?</button>
+      </label>
+      <p class="tip hint2" id="hintFlip" hidden data-i18n="flipHint">If your processed image is
+      mirrored compared to the real sky (check against Stellarium or Aladin), flip it here -
+      starless and star mask flip together, labels and the Gaia match follow automatically.
+      Re-run the Gaia match afterwards.</p>
       <button id="btnWcs" class="secondary" data-i18n="gaiaWcsBtn">Load plate-solved FITS / WCS file</button>
       <input type="file" id="fileWcs" accept=".fits,.fit,.fts,.wcs" hidden>
       <button id="btnGaia" class="secondary" disabled data-i18n="gaiaMatchBtn">Match stars with Gaia (internet)</button>
@@ -707,8 +732,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-7"></script>
-<script src="objectinfo.js?v=2026-08-16-7"></script>
-<script src="app.js?v=2026-08-16-7"></script>
+<script src="i18n.js?v=2026-08-16-8"></script>
+<script src="objectinfo.js?v=2026-08-16-8"></script>
+<script src="app.js?v=2026-08-16-8"></script>
 </body>
 </html>
