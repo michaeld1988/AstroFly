@@ -110,6 +110,11 @@ const state = {
   h2Hue: 0,              // Nebelfarben: Farbton-Shift in Grad (-45..45)
   o3Hue: 0,
   s2Hue: 0,
+  h2Det: 0,              // Erkennungs-Farbton je Band in Grad (0..360)
+  o3Det: 184,
+  s2Det: 34,
+  bandShow: "off",       // Erkennungsmaske in der Vorschau: off/h2/o3/s2
+  bandFeather: 50,       // weiche Kante der Banderkennung in % (50 = neutral)
   sharpen: 0,            // 0..100
 
   viewScale: 70,         // Vorschaugröße in % der verfügbaren Fläche
@@ -213,6 +218,9 @@ uniform sampler2D uSpinMask; // Helligkeitsmaske (eigene Glättung)
 uniform float uSpinMaskAmt;  // 0 = ignorieren, 1 = voll gewichten
 uniform vec3 uBandSat;      // Nebelfarben: Sättigung je Band (HII, OIII, SII)
 uniform vec3 uBandHue;      // Nebelfarben: Farbton-Shift je Band (Kreisanteil)
+uniform vec3 uBandCen;      // Erkennungs-Farbton je Band (Kreisanteil, einstellbar)
+uniform float uBandShow;    // Erkennungsmaske: 0 = aus, 1 = HII, 2 = OIII, 3 = SII
+uniform float uBandFeather; // weiche Kante der Banderkennung (0 = hart, 1 = sehr weich)
 uniform float uBandOn;      // 1 = mindestens ein Band-Regler aktiv
 
 vec2 imgUv(vec2 q) {
@@ -232,10 +240,12 @@ vec3 hsv2rgb(vec3 c) {
   vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
   return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
-// Gewicht eines Farbkreis-Bands mit weichem Rand (h/center als Kreisanteil)
+// Gewicht eines Farbkreis-Bands (h/center als Kreisanteil). Der Feather
+// steuert Breite UND Kantenweichheit: 0.5 entspricht dem alten Verhalten
 float bandW(float h, float center, float width) {
   float d = abs(fract(h - center + 0.5) - 0.5);
-  return smoothstep(width, width * 0.35, d);
+  float w = width * (0.5 + uBandFeather);
+  return smoothstep(w, w * mix(0.7, 0.0, uBandFeather), d);
 }
 
 // Gewicht der Helligkeitsmaske an einem Ebenen-Punkt (1 = volle Drehung)
@@ -332,13 +342,23 @@ void main() {
   // wie auf Schmalband-Paletten; Graues bleibt unangetastet
   if (uBandOn > 0.5) {
     vec3 hsv = rgb2hsv(col);
-    float satW = smoothstep(0.03, 0.16, hsv.y);
-    float wH2 = bandW(hsv.x, 0.0, 0.075) * satW;    // Rot (H-alpha)
-    float wO3 = bandW(hsv.x, 0.51, 0.115) * satW;   // Türkis/Blaugrün (OIII)
-    float wS2 = bandW(hsv.x, 0.095, 0.055) * satW;  // Gold/Orange (SII)
+    // Sättigungs- UND Luminanz-Gate: Graues bleibt unberührt, und dunkles
+    // Farbrauschen (JPEG-Chroma in Schattenbereichen) wird nicht gegriffen
+    float satW = smoothstep(0.03, 0.16, hsv.y) * smoothstep(0.02, 0.12, hsv.z);
+    // Erkennungs-Farbton je Band einstellbar: greift auch, wenn das
+    // H-alpha im fertigen Bild z. B. Richtung Lila verschoben ist
+    float wH2 = bandW(hsv.x, uBandCen.x, 0.075) * satW;
+    float wO3 = bandW(hsv.x, uBandCen.y, 0.115) * satW;
+    float wS2 = bandW(hsv.x, uBandCen.z, 0.055) * satW;
     hsv.x = fract(hsv.x + uBandHue.x * wH2 + uBandHue.y * wO3 + uBandHue.z * wS2 + 1.0);
     hsv.y = clamp(hsv.y * mix(1.0, uBandSat.x, wH2) * mix(1.0, uBandSat.y, wO3) * mix(1.0, uBandSat.z, wS2), 0.0, 1.0);
     col = hsv2rgb(hsv);
+    // Erkennungsmaske: hebt die Pixel hervor, die das gewählte Band packt
+    // (Rest abgedunkelt) - zum Einstellen des Erkennungs-Farbtons
+    if (uBandShow > 0.5) {
+      float wSel = uBandShow < 1.5 ? wH2 : (uBandShow < 2.5 ? wO3 : wS2);
+      col = col * 0.15 + wSel * (col + vec3(0.10, 0.32, 0.12));
+    }
   }
   // Masken-Vorschau: rote Einfärbung entspricht exakt der Drehstärke
   // (gleiche Falloff-Kurve), plus dünner Ring am Maskenrand
@@ -2374,9 +2394,14 @@ function render(forcedT) {
   // Nebelfarben (HII/OIII/SII): Sättigung als Faktor, Farbton als Kreisanteil
   const bandSat = [state.h2Sat / 100, state.o3Sat / 100, state.s2Sat / 100];
   const bandHue = [state.h2Hue / 360, state.o3Hue / 360, state.s2Hue / 360];
+  const bandShow = state.exporting ? 0 : ({ h2: 1, o3: 2, s2: 3 }[state.bandShow] || 0);
   u3f(bgProg, "uBandSat", bandSat[0], bandSat[1], bandSat[2]);
   u3f(bgProg, "uBandHue", bandHue[0], bandHue[1], bandHue[2]);
-  u1f(bgProg, "uBandOn", bandSat.some((v) => v !== 1) || bandHue.some((v) => v !== 0) ? 1 : 0);
+  u3f(bgProg, "uBandCen", state.h2Det / 360, state.o3Det / 360, state.s2Det / 360);
+  u1f(bgProg, "uBandShow", bandShow);
+  u1f(bgProg, "uBandFeather", state.bandFeather / 100);
+  u1f(bgProg, "uBandOn",
+    bandSat.some((v) => v !== 1) || bandHue.some((v) => v !== 0) || bandShow ? 1 : 0);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
   // Bewegungsgrößen numerisch aus der Kamerakurve ableiten (für die
@@ -2723,6 +2748,13 @@ bindSlider("ctlO3Sat", "outO3Sat", "o3Sat", asPct);
 bindSlider("ctlO3Hue", "outO3Hue", "o3Hue", asDeg);
 bindSlider("ctlS2Sat", "outS2Sat", "s2Sat", asPct);
 bindSlider("ctlS2Hue", "outS2Hue", "s2Hue", asDeg);
+bindSlider("ctlH2Det", "outH2Det", "h2Det", asDeg);
+bindSlider("ctlO3Det", "outO3Det", "o3Det", asDeg);
+bindSlider("ctlS2Det", "outS2Det", "s2Det", asDeg);
+bindSlider("ctlBandFeather", "outBandFeather", "bandFeather", asPct);
+$("ctlBandShow").addEventListener("change", () => {
+  state.bandShow = $("ctlBandShow").value;
+});
 bindSlider("ctlSharpen", "outSharpen", "sharpen", asInt);
 
 $("ctlMblurStars").addEventListener("change", () => {
