@@ -3623,19 +3623,57 @@ const UP_GROUP_CHECKS = { camera: "upIncCamera", stars: "upIncStars",
 function userPresets() {
   try { return JSON.parse(localStorage.getItem(UP_KEY)) || {}; } catch { return {}; }
 }
+function applyUserPreset(name) {
+  const p = userPresets()[name];
+  if (!p) return false;
+  for (const [id, v] of Object.entries(p.values)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (el.type === "checkbox") {
+      el.checked = !!v;
+      el.dispatchEvent(new Event("change"));
+    } else {
+      el.value = v;
+      el.dispatchEvent(new Event("input"));
+      el.dispatchEvent(new Event("change"));
+    }
+  }
+  if (p.aspect) {
+    const btn = document.querySelector(`#aspectBtns button[data-aspect="${p.aspect}"]`);
+    if (btn) btn.click();
+  }
+  return true;
+}
+
 function rebuildUserPresetList() {
   const sel = $("userPresetSel");
   const cur = sel.value;
   sel.innerHTML = "";
-  for (const name of Object.keys(userPresets()).sort()) {
+  const names = Object.keys(userPresets()).sort();
+  for (const name of names) {
     const o = document.createElement("option");
     o.value = o.textContent = name;
     sel.appendChild(o);
   }
   if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
-  const none = sel.options.length === 0;
+  const none = names.length === 0;
   $("btnPresetApply").disabled = none;
   $("btnPresetDelete").disabled = none;
+  // Easy-Seite: eigene Presets als Ein-Klick-Karten - ein Klick, und die
+  // gespeicherte Animation liegt zu 90 % fertig auf dem eigenen Bild
+  const grid = $("userPresetGrid");
+  grid.innerHTML = "";
+  for (const name of names) {
+    const b = document.createElement("button");
+    b.className = "pcard";
+    const bold = document.createElement("b");
+    bold.textContent = name;
+    b.appendChild(bold);
+    b.addEventListener("click", () => applyUserPreset(name));
+    grid.appendChild(b);
+  }
+  grid.hidden = none;
+  $("userPresetGroupHead").hidden = none;
 }
 $("btnPresetSave").addEventListener("click", () => {
   const name = $("userPresetName").value.trim();
@@ -3659,25 +3697,7 @@ $("btnPresetSave").addEventListener("click", () => {
 });
 $("btnPresetApply").addEventListener("click", () => {
   const name = $("userPresetSel").value;
-  const p = userPresets()[name];
-  if (!p) return;
-  for (const [id, v] of Object.entries(p.values)) {
-    const el = document.getElementById(id);
-    if (!el) continue;
-    if (el.type === "checkbox") {
-      el.checked = !!v;
-      el.dispatchEvent(new Event("change"));
-    } else {
-      el.value = v;
-      el.dispatchEvent(new Event("input"));
-      el.dispatchEvent(new Event("change"));
-    }
-  }
-  if (p.aspect) {
-    const btn = document.querySelector(`#aspectBtns button[data-aspect="${p.aspect}"]`);
-    if (btn) btn.click();
-  }
-  $("userPresetStatus").textContent = t("upApplied", name);
+  if (applyUserPreset(name)) $("userPresetStatus").textContent = t("upApplied", name);
 });
 $("btnPresetDelete").addEventListener("click", () => {
   const all = userPresets();
