@@ -2417,8 +2417,23 @@ function camAt(loopT) {
     const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.98;
     const fx = (state.frameX / 100) * freeX;
     const fy = (state.frameY / 100) * freeY;
-    cx = Math.min(freeX, Math.max(-freeX, fx + (state.target.x - fx) * pe));
-    cy = Math.min(freeY, Math.max(-freeY, fy + (state.target.y - fy) * pe));
+    const hasTarget = state.target.x !== 0 || state.target.y !== 0;
+    if (hasTarget) {
+      cx = Math.min(freeX, Math.max(-freeX, fx + (state.target.x - fx) * pe));
+      cy = Math.min(freeY, Math.max(-freeY, fy + (state.target.y - fy) * pe));
+    } else {
+      // Ohne Klick-Ziel zoomt die Kamera GERADE in die Mitte des
+      // verschobenen Ausschnitts: Der Punkt, den der Nutzer per Regler in
+      // die Mitte geschoben hat, bleibt fest im Zentrum (Bezug ist der
+      // Start-Zoom, sonst wandert er mit dem wachsenden Spielraum) -
+      // vorher driftete die Kamera stattdessen seitlich zur Bildmitte.
+      // Wer diesen Drift-Effekt will, klickt einfach ein Zoomziel an.
+      const sc0 = cover * state.zoomBase;
+      const freeX0 = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc0) * 0.98;
+      const freeY0 = Math.max(0, 0.5 - 0.5 / sc0) * 0.98;
+      cx = Math.min(freeX, Math.max(-freeX, (state.frameX / 100) * freeX0));
+      cy = Math.min(freeY, Math.max(-freeY, (state.frameY / 100) * freeY0));
+    }
   }
   return { zoom, angle, rate, te, tiltAddX, tiltAddY, cx, cy, driftTX, driftTY };
 }
@@ -3567,12 +3582,111 @@ async function loadFile(which, file) {
       state.t0 = performance.now();
       if (which === "starless") status.textContent = t("starlessLoaded");
     }
+    // JPEG-Kompression erzeugt in dunklen Bereichen Chroma-Artefakte, die
+    // Tiefenkarte und Nebelfarben-Masken stoeren - freundlich drauf hinweisen
+    if (/\.jpe?g$/i.test(file.name)) {
+      status.textContent = (status.textContent + " " + t("jpegWarn")).trim();
+    }
   } catch (err) {
     console.error(err);
     status.classList.add("error");
     status.textContent = t("loadFailed", file.name, err.message);
   }
 }
+
+// ------------------------------------------------- Eigene Presets (localStorage)
+
+// Welche Regler in welche Preset-Gruppe gehoeren. Bewusst NUR Regler-Werte:
+// Bilddaten, Gaia-Abgleich und Plate-Solve werden nie mitgespeichert.
+const USER_PRESET_GROUPS = {
+  camera: ["ctlFlightMode", "ctlDriftDir", "ctlZoom", "ctlSpeed", "ctlEase",
+    "ctlEaseMode", "ctlParallax", "ctlDepthBoost", "ctlRotation", "ctlOrient",
+    "ctlFrameX", "ctlFrameY", "ctlTiltX", "ctlTiltY", "ctlSwayAmp",
+    "ctlSwayTempo", "ctlSwayDir", "ctlSwayRandom", "ctlTiltRamp",
+    "ctlTiltRampDir", "ctlFade", "ctlDuration", "ctlLoop", "ctlSpinSpeed",
+    "ctlSpinRadius", "ctlSpinDiff", "ctlSpinFlat", "ctlSpinTilt",
+    "ctlSpinMaskAmt", "ctlSpinStars"],
+  stars: ["ctlSpread", "ctlStarDist", "ctlLayers", "ctlStarPar", "ctlTwinkle",
+    "ctlTwinkleSpeed", "ctlStarSize", "ctlStarBright", "ctlStarSat",
+    "ctlGenStars", "ctlOcclude", "ctlAnchor"],
+  look: ["ctlBloom", "ctlMblur", "ctlMblurStars", "ctlWarp", "ctlVignette",
+    "ctlExposure", "ctlContrast", "ctlSaturation", "ctlClarity",
+    "ctlStructure", "ctlSharpen", "ctlH2Det", "ctlH2Width", "ctlH2Sat",
+    "ctlH2Hue", "ctlO3Det", "ctlO3Width", "ctlO3Sat", "ctlO3Hue", "ctlS2Det",
+    "ctlS2Width", "ctlS2Sat", "ctlS2Hue", "ctlBandFeather", "ctlLabelStyle"],
+  format: ["ctlRes"],
+};
+const UP_KEY = "astrofly-user-presets";
+const UP_GROUP_CHECKS = { camera: "upIncCamera", stars: "upIncStars",
+  look: "upIncLook", format: "upIncFormat" };
+
+function userPresets() {
+  try { return JSON.parse(localStorage.getItem(UP_KEY)) || {}; } catch { return {}; }
+}
+function rebuildUserPresetList() {
+  const sel = $("userPresetSel");
+  const cur = sel.value;
+  sel.innerHTML = "";
+  for (const name of Object.keys(userPresets()).sort()) {
+    const o = document.createElement("option");
+    o.value = o.textContent = name;
+    sel.appendChild(o);
+  }
+  if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
+  const none = sel.options.length === 0;
+  $("btnPresetApply").disabled = none;
+  $("btnPresetDelete").disabled = none;
+}
+$("btnPresetSave").addEventListener("click", () => {
+  const name = $("userPresetName").value.trim();
+  if (!name) { $("userPresetName").focus(); return; }
+  const groups = Object.keys(UP_GROUP_CHECKS).filter((g) => $(UP_GROUP_CHECKS[g]).checked);
+  const values = {};
+  for (const g of groups) {
+    for (const id of USER_PRESET_GROUPS[g]) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      values[id] = el.type === "checkbox" ? el.checked : el.value;
+    }
+  }
+  const all = userPresets();
+  all[name] = { groups, values,
+    aspect: groups.includes("format") ? (state.aspectName || "16:9") : null };
+  localStorage.setItem(UP_KEY, JSON.stringify(all));
+  rebuildUserPresetList();
+  $("userPresetSel").value = name;
+  $("userPresetStatus").textContent = t("upSaved", name);
+});
+$("btnPresetApply").addEventListener("click", () => {
+  const name = $("userPresetSel").value;
+  const p = userPresets()[name];
+  if (!p) return;
+  for (const [id, v] of Object.entries(p.values)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (el.type === "checkbox") {
+      el.checked = !!v;
+      el.dispatchEvent(new Event("change"));
+    } else {
+      el.value = v;
+      el.dispatchEvent(new Event("input"));
+      el.dispatchEvent(new Event("change"));
+    }
+  }
+  if (p.aspect) {
+    const btn = document.querySelector(`#aspectBtns button[data-aspect="${p.aspect}"]`);
+    if (btn) btn.click();
+  }
+  $("userPresetStatus").textContent = t("upApplied", name);
+});
+$("btnPresetDelete").addEventListener("click", () => {
+  const all = userPresets();
+  delete all[$("userPresetSel").value];
+  localStorage.setItem(UP_KEY, JSON.stringify(all));
+  rebuildUserPresetList();
+  $("userPresetStatus").textContent = "";
+});
+rebuildUserPresetList();
 
 /** Spiegelt ein Bildobjekt ({width, height, canvas, ...}) in place -
  *  weitere Eigenschaften (z. B. eingebettetes WCS) bleiben erhalten. */
