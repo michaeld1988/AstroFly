@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-16-10">
+<link rel="stylesheet" href="style.css?v=2026-08-16-11">
 </head>
 <body>
 
@@ -100,6 +100,8 @@
           <span class="filename" id="nameStars" data-i18n="noFile">– no file –</span>
         </label>
       </div>
+      <p class="tip" data-i18n="jpegTip">Tip: prefer TIFF or PNG. JPEG compression creates
+      artifacts in dark areas that can affect the depth map and the nebula-color masks.</p>
       <button id="btnDemo" class="secondary" data-i18n="demoBtn">Try it with a demo image (Orion Nebula)</button>
       <details class="adv">
         <summary data-i18n="advStretch">Advanced · mask stretch</summary>
@@ -111,6 +113,26 @@
           <span><span data-i18n="stretchAmount">Stretch intensity</span> <output id="outStretch">50</output></span>
           <input type="range" id="ctlStretch" min="0" max="100" step="1" value="50">
         </label>
+      </details>
+      <details class="adv">
+        <summary data-i18n="upHead">My presets</summary>
+        <p class="tip" data-i18n="upHint">Save your current settings under a name and reapply
+        them to any image. Image data, Gaia matches and plate-solve solutions are never stored.</p>
+        <div class="exportrow">
+          <select id="userPresetSel"></select>
+          <button id="btnPresetApply" class="secondary" data-i18n="upApplyBtn">Apply</button>
+          <button id="btnPresetDelete" class="secondary" data-i18n="upDeleteBtn">Delete</button>
+        </div>
+        <label class="namerow">
+          <span data-i18n="upName">Name</span>
+          <input type="text" id="userPresetName" spellcheck="false" autocomplete="off">
+        </label>
+        <label class="check"><input type="checkbox" id="upIncCamera" checked><span data-i18n="upGrpCamera">Camera &amp; flight</span></label>
+        <label class="check"><input type="checkbox" id="upIncStars" checked><span data-i18n="upGrpStars">Stars</span></label>
+        <label class="check"><input type="checkbox" id="upIncLook" checked><span data-i18n="upGrpLook">Look &amp; nebula colors</span></label>
+        <label class="check"><input type="checkbox" id="upIncFormat" checked><span data-i18n="upGrpFormat">Format &amp; resolution</span></label>
+        <button id="btnPresetSave" class="secondary" data-i18n="upSaveBtn">Save current settings</button>
+        <p class="tip" id="userPresetStatus"></p>
       </details>
       <div id="loadStatus"></div>
     </section>
@@ -293,7 +315,7 @@
       </details>
 
       <details class="adv">
-        <summary><span data-i18n="spinHead">Galaxy spin</span><span class="grow"></span><span class="badge" data-i18n="expBadge">Experimental</span></summary>
+        <summary><span data-i18n="spinHead">Galaxy spin</span></summary>
         <p class="tip" data-i18n="spinHint">Galaxy spin: rotates only the region around the spin
         center – with a soft falloff at the edge, so the rest of the image stays untouched.
         Foreground stars do not rotate.</p>
@@ -304,7 +326,7 @@
         </label>
         <label class="slider">
           <span><span data-i18n="spinSpeed">Galaxy spin (°/s at core)</span> <output id="outSpinSpeed">0.0 °/s</output></span>
-          <input type="range" id="ctlSpinSpeed" min="-20" max="20" step="0.5" value="0">
+          <input type="range" id="ctlSpinSpeed" min="-10" max="10" step="0.1" value="0">
         </label>
         <label class="slider">
           <span><span data-i18n="spinRadius">Spin radius</span> <output id="outSpinRadius">40</output></span>
@@ -736,8 +758,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-10"></script>
-<script src="objectinfo.js?v=2026-08-16-10"></script>
-<script src="app.js?v=2026-08-16-10"></script>
+<script src="i18n.js?v=2026-08-16-11"></script>
+<script src="objectinfo.js?v=2026-08-16-11"></script>
+<script src="app.js?v=2026-08-16-11"></script>
 </body>
 </html>
