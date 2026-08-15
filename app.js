@@ -3040,7 +3040,7 @@ $("btnObjects").addEventListener("click", async () => {
       const curated = OBJECT_FACTS[normObjId(o.id)] || OBJ_ARCMIN[normObjId(o.id)];
       if (!INTERESTING_OTYPES.has(o.otype) && !curated) continue;
       // Nur die bekannten Kataloge beschriften (keine kryptischen Survey-Ids)
-      if (!/^(M|NGC|IC)\d/.test(normObjId(o.id))) continue;
+      if (!/^(M|NGC|IC|SH2-)\d/.test(normObjId(o.id))) continue;
       const p = planeOfSky(o.ra, o.dec);
       if (!p) continue;
       if (Math.abs(p.x) > imgAspect / 2 || Math.abs(p.y) > 0.5) continue;

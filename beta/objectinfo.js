@@ -80,6 +80,16 @@ const OBJECT_FACTS = {
              en: { name: "Jellyfish Nebula", type: "Supernova remnant", dist: "≈ 5,000 light-years", size: "≈ 70 light-years" } },
   "NGC7023": { de: { name: "Irisnebel", type: "Reflexionsnebel", dist: "≈ 1.300 Lichtjahre", size: "≈ 6 Lichtjahre" },
                en: { name: "Iris Nebula", type: "Reflection nebula", dist: "≈ 1,300 light-years", size: "≈ 6 light-years" } },
+  "SH2-132": { de: { name: "Löwennebel", type: "Emissionsnebel (HII-Region)", dist: "≈ 10.000 Lichtjahre", size: "≈ 180 Lichtjahre", stars: "u. a. zwei Wolf-Rayet-Sterne" },
+               en: { name: "Lion Nebula", type: "Emission nebula (H II region)", dist: "≈ 10,000 light-years", size: "≈ 180 light-years", stars: "incl. two Wolf-Rayet stars" } },
+  "SH2-101": { de: { name: "Tulpennebel", type: "Emissionsnebel", dist: "≈ 6.000 Lichtjahre", size: "≈ 70 Lichtjahre" },
+               en: { name: "Tulip Nebula", type: "Emission nebula", dist: "≈ 6,000 light-years", size: "≈ 70 light-years" } },
+  "SH2-155": { de: { name: "Höhlennebel", type: "Emissionsnebel", dist: "≈ 2.400 Lichtjahre", size: "≈ 35 Lichtjahre" },
+               en: { name: "Cave Nebula", type: "Emission nebula", dist: "≈ 2,400 light-years", size: "≈ 35 light-years" } },
+  "SH2-129": { de: { name: "Fledermaus-Flugnebel", type: "Emissionsnebel (mit OU4-Kalmar)", dist: "≈ 1.300 Lichtjahre" },
+               en: { name: "Flying Bat Nebula", type: "Emission nebula (with the OU4 Squid)", dist: "≈ 1,300 light-years" } },
+  "SH2-240": { de: { name: "Simeis 147 (Spaghettinebel)", type: "Supernova-Überrest", dist: "≈ 3.000 Lichtjahre", size: "≈ 150 Lichtjahre", age: "≈ 40.000 Jahre" },
+               en: { name: "Simeis 147 (Spaghetti Nebula)", type: "Supernova remnant", dist: "≈ 3,000 light-years", size: "≈ 150 light-years", age: "≈ 40,000 years" } },
 };
 
 // SIMBAD-Objekttypen -> Anzeigename (für Objekte ohne kuratierten Eintrag)
@@ -152,7 +162,9 @@ function normObjId(id) {
 function prettyObjId(id) {
   const n = normObjId(id);
   const m = n.match(/^(M|NGC|IC)(\d+.*)$/);
-  return m ? `${m[1]} ${m[2]}` : id.replace(/\s+/g, " ").trim();
+  if (m) return `${m[1]} ${m[2]}`;
+  const sh = n.match(/^SH2-(\d+.*)$/); // Sharpless-Katalog ("SH  2-132" -> "Sh2-132")
+  return sh ? `Sh2-${sh[1]}` : id.replace(/\s+/g, " ").trim();
 }
 
 /** Eine CSV-Zeile in Felder zerlegen (Anführungszeichen überall erlaubt). */
@@ -187,6 +199,8 @@ const OBJ_ARCMIN = {
   NGC281: 35, IC434: 60, IC443: 50, NGC7023: 18,
   // Orion-Feld (Demobild): SIMBAD führt hier keine Winkelgrößen
   M43: 20, NGC1977: 20, NGC1980: 14, NGC1981: 25, NGC1999: 2,
+  // Sharpless-Nebel (SIMBAD ohne galdim)
+  "SH2-132": 70, "SH2-101": 20, "SH2-155": 50, "SH2-129": 140, "SH2-240": 180,
 };
 
 /**
@@ -204,12 +218,13 @@ async function querySimbad(ra, dec, radiusDeg) {
     `FROM basic AS b JOIN ident AS i ON i.oidref = b.oid ` +
     `WHERE 1=CONTAINS(POINT('ICRS',b.ra,b.dec),` +
     `CIRCLE('ICRS',${ra.toFixed(6)},${dec.toFixed(6)},${radiusDeg.toFixed(4)})) ` +
-    `AND (i.id LIKE 'M %' OR i.id LIKE 'NGC %' OR i.id LIKE 'IC %') ` +
+    `AND (i.id LIKE 'M %' OR i.id LIKE 'NGC %' OR i.id LIKE 'IC %' ` +
+    `OR i.id LIKE 'SH 2-%' OR i.id LIKE 'SH  2-%') ` +
     `ORDER BY majaxis DESC`;
   const url = "https://simbad.cds.unistra.fr/simbad/sim-tap/sync?REQUEST=doQuery&LANG=ADQL&FORMAT=csv&QUERY=" +
     encodeURIComponent(adql);
   const lines = (await fetchTapCsv(url)).trim().split("\n");
-  const CAT_RANK = { M: 0, NGC: 1, IC: 2 };
+  const CAT_RANK = { M: 0, NGC: 1, IC: 2, "SH2-": 3 };
   const byMain = new Map(); // main_id -> Objekt mit bestem Katalog-Alias
   for (let i = 1; i < lines.length; i++) {
     const f = csvFields(lines[i]);
@@ -218,7 +233,7 @@ async function querySimbad(ra, dec, radiusDeg) {
     const oRa = +f[1], oDec = +f[2], size = +f[4];
     const otype = f[3].replace(/"/g, "");
     if (!isFinite(oRa) || !isFinite(oDec)) continue;
-    const m = normObjId(alias).match(/^(M|NGC|IC)\d/);
+    const m = normObjId(alias).match(/^(M|NGC|IC|SH2-)\d/);
     if (!m) continue;
     const rank = CAT_RANK[m[1]];
     const prev = byMain.get(mainId);
