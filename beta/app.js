@@ -3690,7 +3690,7 @@ $("btnGaia").addEventListener("click", async () => {
 
 // Zoomziel per Klick in die Vorschau
 canvas.addEventListener("click", (e) => {
-  if (!state.starless || state.exporting) return;
+  if (!state.starless || state.exporting || state.scenEdit) return;
   const rect = canvas.getBoundingClientRect();
   const fx = (e.clientX - rect.left) / rect.width;
   const fy = (e.clientY - rect.top) / rect.height;
@@ -3740,6 +3740,7 @@ canvas.addEventListener("click", (e) => {
   marker.style.animation = "";
 });
 canvas.addEventListener("dblclick", () => {
+  if (state.scenEdit) return;
   state.target.x = 0;
   state.target.y = 0;
   updateTargetInfo();
@@ -4094,9 +4095,10 @@ function rebuildWaypointList() {
 $("btnWpAdd").addEventListener("click", () => {
   if (!state.scenEdit) setScenEdit(true);
   const v = state.scenView;
+  const durNext = Math.min(60, Math.max(0.2, parseFloat($("wpDurNext").value) || 5));
   state.waypoints.push({
     x: v.x, y: v.y, zoom: +v.zoom.toFixed(3), angle: +v.angle.toFixed(1),
-    dur: 5, hold: 0.5, ease: "smooth",
+    dur: durNext, hold: 0.5, ease: "smooth",
   });
   rebuildWaypointList();
   updateScenarioUi();
@@ -4146,6 +4148,11 @@ function setScenEdit(on) {
     scenClampView();
   }
   state.scenEdit = on;
+  if (on && state.playing) {
+    state.pausedAt = currentTime();
+    state.playing = false;
+    $("btnPlay").textContent = "\u25b6";
+  }
   $("scenPad").hidden = !on || !state.starless;
 }
 
@@ -4166,6 +4173,49 @@ for (const btn of document.querySelectorAll("#scenPad button")) {
   btn.addEventListener("pointerdown", start);
   for (const ev of ["pointerup", "pointerleave", "pointercancel"]) btn.addEventListener(ev, stop);
 }
+
+// Maussteuerung in der Einrichtung: Mausrad zoomt, Links-Ziehen greift das
+// Bild (Kamera folgt der Maus), Rechts-Ziehen dreht die Kamera
+let scenDrag = null;
+canvas.addEventListener("wheel", (e) => {
+  if (!state.scenEdit || !state.starless) return;
+  e.preventDefault();
+  state.scenView.zoom *= Math.exp(-e.deltaY * 0.0013);
+  scenClampView();
+}, { passive: false });
+canvas.addEventListener("pointerdown", (e) => {
+  if (!state.scenEdit || !state.starless) return;
+  if (e.button !== 0 && e.button !== 2) return;
+  e.preventDefault();
+  scenDrag = { b: e.button, x: e.clientX, y: e.clientY };
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener("pointermove", (e) => {
+  if (!scenDrag || !state.scenEdit) return;
+  const dx = e.clientX - scenDrag.x, dy = e.clientY - scenDrag.y;
+  scenDrag.x = e.clientX; scenDrag.y = e.clientY;
+  const v = state.scenView;
+  if (scenDrag.b === 2) {
+    v.angle += dx * 0.25;
+    return;
+  }
+  const rect = canvas.getBoundingClientRect();
+  const imgAspect = state.starless.width / state.starless.height;
+  const cover = coverBase(state.aspect, imgAspect);
+  const k = 1 / (rect.height * cover * v.zoom);
+  const a = (state.orientation + v.angle) * Math.PI / 180;
+  const c = Math.cos(a), s = Math.sin(a);
+  const mx = -dx * k, my = dy * k;
+  v.x += mx * c + my * s;
+  v.y += -mx * s + my * c;
+  scenClampView();
+});
+for (const evName of ["pointerup", "pointercancel"]) {
+  canvas.addEventListener(evName, () => { scenDrag = null; });
+}
+canvas.addEventListener("contextmenu", (e) => {
+  if (state.scenEdit) e.preventDefault();
+});
 
 $("btnScenReset").addEventListener("click", () => {
   if (!state.scenEdit) setScenEdit(true);

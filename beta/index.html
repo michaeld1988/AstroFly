@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-16-17">
+<link rel="stylesheet" href="style.css?v=2026-08-16-18">
 </head>
 <body>
 
@@ -163,6 +163,10 @@
       center button (or the one below) to save it as a waypoint, then steer on to the
       next object. Resetting the view never deletes waypoints. Press play to preview
       the flight; click this tab again to continue editing.</p>
+      <label class="wpnext">
+        <span data-i18n="scenNextDur">Travel time to this waypoint (s)</span>
+        <input type="number" id="wpDurNext" min="0.2" max="60" step="0.1" value="5">
+      </label>
       <div class="exportrow">
         <button id="btnWpAdd" class="secondary" data-i18n="scenAdd">Save this view as waypoint</button>
         <button id="btnScenReset" class="secondary" data-i18n="scenResetView">Reset view</button>
@@ -842,8 +846,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-17"></script>
-<script src="objectinfo.js?v=2026-08-16-17"></script>
-<script src="app.js?v=2026-08-16-17"></script>
+<script src="i18n.js?v=2026-08-16-18"></script>
+<script src="objectinfo.js?v=2026-08-16-18"></script>
+<script src="app.js?v=2026-08-16-18"></script>
 </body>
 </html>
