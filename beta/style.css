@@ -437,3 +437,17 @@ button.primary:not(:disabled):hover { border-color: var(--accent); }
   border-radius: 6px; padding: 2px 8px; cursor: pointer;
 }
 .wpbtn:hover { color: #d7dce8; border-color: #8fb0ff; }
+
+/* Flugplan: Steuerkreuz in der Vorschau */
+#scenPad {
+  position: absolute; right: 26px; bottom: 26px; z-index: 5;
+  display: grid; grid-template-columns: repeat(3, 44px); gap: 5px;
+}
+#scenPad button {
+  width: 44px; height: 44px; border-radius: 10px; cursor: pointer;
+  background: rgba(14, 18, 28, 0.82); border: 1px solid #2e3547;
+  color: #c7cede; font-size: 17px; line-height: 1;
+  touch-action: none; user-select: none;
+}
+#scenPad button:hover { border-color: #8fb0ff; color: #fff; }
+#scenPad button[data-p="set"] { color: #8fb0ff; font-size: 20px; }
