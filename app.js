@@ -81,7 +81,12 @@ const state = {
   gaiaPM: null,          // Eigenbewegung je Masken-Stern (Ebene/Jahr)
   gaiaPmYears: 0,        // Zeitraffer-Spanne in Jahren (0 = aus)
   objFar: false,         // Objekt einheitlich in die Ferne (hinter alle Sterne)
-  occlude: 0,            // Nebel verdeckt dahinterliegende Sterne (0 = aus)
+  occlude: 0,
+  starDetails: true,     // Sternphysik (Größe/Alter) in Labels anzeigen
+  flipH: false,          // Bild horizontal gespiegelt (Starless + Maske)
+  flipV: false,          // Bild vertikal gespiegelt
+  flipOnlyStarless: false, // Spiegeln wirkt nur aufs Starless (Maske/Koordinaten bleiben)
+  anchorStars: 0,       // % Sterne im Nebel verankern (Tiefe/Bewegung des Nebels)            // Nebel verdeckt dahinterliegende Sterne (0 = aus)
   objInfo: null,         // erkanntes Hauptobjekt { id, facts, otype }
   labels: null,          // Feld-Beschriftungen [{ id, x, y, sizePlane, otype, on }]
   showInfo: true,        // Infokarte ins Video einblenden
@@ -103,6 +108,20 @@ const state = {
   saturation: 0,         // -100..100
   clarity: 0,            // -100..100 (negativ = weich/Orton)
   structure: 0,          // -100..100 (feine Details, Multi-Scale-Lokalkontrast)
+  h2Sat: 100,            // Nebelfarben: Sättigung Rot/H-alpha in %
+  o3Sat: 100,            //   Türkis/OIII
+  s2Sat: 100,            //   Gold/SII
+  h2Hue: 0,              // Nebelfarben: Farbton-Shift in Grad (-45..45)
+  o3Hue: 0,
+  s2Hue: 0,
+  h2Det: 0,              // Erkennungs-Farbton je Band in Grad (0..360)
+  o3Det: 184,
+  s2Det: 34,
+  h2Width: 35,           // Erkennungs-Bereich je Band in ±Grad
+  o3Width: 45,
+  s2Width: 25,
+  bandShow: "off",       // Erkennungsmaske in der Vorschau: off/h2/o3/s2
+  bandFeather: 50,       // weiche Kante der Banderkennung in % (50 = neutral)
   sharpen: 0,            // 0..100
 
   viewScale: 70,         // Vorschaugröße in % der verfügbaren Fläche
@@ -204,9 +223,41 @@ uniform vec3 uSpinEll;      // Ellipse: (cos Neigung, sin Neigung, Stauchung)
 uniform float uSpinShow;    // 1 = Rotationsbereich als rote Maske einblenden
 uniform sampler2D uSpinMask; // Helligkeitsmaske (eigene Glättung)
 uniform float uSpinMaskAmt;  // 0 = ignorieren, 1 = voll gewichten
+uniform vec3 uBandSat;      // Nebelfarben: Sättigung je Band (HII, OIII, SII)
+uniform vec3 uBandHue;      // Nebelfarben: Farbton-Shift je Band (Kreisanteil)
+uniform vec3 uBandCen;      // Erkennungs-Farbton je Band (Kreisanteil, einstellbar)
+uniform vec3 uBandWidth;    // Erkennungs-Bereich je Band (Kreisanteil, einstellbar)
+uniform float uBandShow;    // Erkennungsmaske: 0 = aus, 1 = HII, 2 = OIII, 3 = SII
+uniform float uBandFeather; // weiche Kante der Banderkennung (0 = hart, 1 = sehr weich)
+uniform float uBandOn;      // 1 = mindestens ein Band-Regler aktiv
 
 vec2 imgUv(vec2 q) {
   return vec2(q.x / uImgAspect, q.y) + 0.5;
+}
+
+vec3 rgb2hsv(vec3 c) {
+  vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+  vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+  vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+  float d = q.x - min(q.w, q.y);
+  float e = 1.0e-10;
+  return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+vec3 hsv2rgb(vec3 c) {
+  vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+  vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+  return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+// C1-stetiges Farbton-Fenster: flacher Kern (voller Griff) mit Kosinus-
+// Auslauf, Ableitung an beiden Enden 0 - keine sichtbaren Kanten in
+// Verläufen. Der Feather verschiebt das Verhältnis Kern/Auslauf
+float bandW(float h, float center, float width) {
+  float d = abs(fract(h - center + 0.5) - 0.5);
+  if (d >= width) return 0.0;
+  float core = width * mix(0.55, 0.1, uBandFeather);
+  if (d <= core) return 1.0;
+  float t = (d - core) / (width - core);
+  return 0.5 + 0.5 * cos(3.14159265 * t);
 }
 
 // Gewicht der Helligkeitsmaske an einem Ebenen-Punkt (1 = volle Drehung)
@@ -298,6 +349,38 @@ void main() {
   } else {
     col = texture(uColor, uv).rgb;
   }
+  // Nebelfarben: HII-/OIII-/SII-artige Farbbereiche gezielt anpassen.
+  // Arbeitet auf dem Farbton (Rot, Türkis, Gold) - wirkt damit auf RGB-
+  // wie auf Schmalband-Paletten; Graues bleibt unangetastet
+  if (uBandOn > 0.5) {
+    vec3 hsv = rgb2hsv(col);
+    // Fenster-Gewichte je Band: reine Funktion des FARBTONS. Der Shift wird
+    // bewusst NICHT mit Saettigung/Helligkeit gegated - die Wirkung skaliert
+    // ohnehin mit der Farbigkeit des Pixels, Grau bleibt von selbst stehen.
+    // (Das alte Gate verschob Nachbarpixel gleicher Farbe unterschiedlich
+    // stark, sobald ihre Saettigung differierte - das riss Verlaeufe auf.)
+    vec3 wh = vec3(
+      bandW(hsv.x, uBandCen.x, uBandWidth.x),
+      bandW(hsv.x, uBandCen.y, uBandWidth.y),
+      bandW(hsv.x, uBandCen.z, uBandWidth.z));
+    // Verschiebung so begrenzen, dass die Farbton-Abbildung monoton bleibt
+    // (Steilheit des Auslaufs) - sonst "faltet" sie sich und es entstehen
+    // harte Banding-Kanten. Fuer grosse Shifts den Bereich weiter stellen.
+    vec3 lim = (uBandWidth * (1.0 - mix(0.55, 0.1, uBandFeather))) * 0.6;
+    vec3 sh = clamp(uBandHue, -lim, lim);
+    hsv.x = fract(hsv.x + dot(sh, wh) + 1.0);
+    // Saettigungs-Regler zusaetzlich mit Saettigungs-/Helligkeits-Gate:
+    // dunkles Farbrauschen (JPEG-Chroma) wird nicht aufgesaettigt
+    float gate = smoothstep(0.03, 0.16, hsv.y) * smoothstep(0.02, 0.12, hsv.z);
+    vec3 ws = wh * gate;
+    hsv.y = clamp(hsv.y * mix(1.0, uBandSat.x, ws.x) * mix(1.0, uBandSat.y, ws.y) * mix(1.0, uBandSat.z, ws.z), 0.0, 1.0);
+    col = hsv2rgb(hsv);
+    // Erkennungsmaske: hebt die Pixel hervor, die das gewaehlte Band packt
+    if (uBandShow > 0.5) {
+      float wSel = uBandShow < 1.5 ? ws.x : (uBandShow < 2.5 ? ws.y : ws.z);
+      col = col * 0.15 + wSel * (col + vec3(0.10, 0.32, 0.12));
+    }
+  }
   // Masken-Vorschau: rote Einfärbung entspricht exakt der Drehstärke
   // (gleiche Falloff-Kurve), plus dünner Ring am Maskenrand
   if (uSpinShow > 0.5) {
@@ -366,6 +449,8 @@ uniform float uPmYears;   // Zeitraffer: verstrichene Jahre zum Zeitpunkt t
 uniform float uPmYears2;  // ... und kurz danach (für die Streifen)
 // Nebel-Okklusion: Nebelschwaden, die VOR einem Stern liegen, verdecken ihn
 uniform float uOcclude;    // Stärke 0..1 (0 = aus)
+uniform float uAnchor;     // Sterne im Nebel verankern: Stärke 0..1
+uniform vec2 uTiltB2;      // Nebel-Kippwert der zweiten Kamera (für Anker-Streifen)
 uniform float uObjFarS;    // 1 = Objekt liegt einheitlich weit hinten
 uniform vec2 uTiltB;       // Kipp-Parallaxe des Hintergrunds (nicht der Sterne)
 uniform sampler2D uDepthS; // Tiefenkarte des Nebels
@@ -424,14 +509,40 @@ void main() {
     return;
   }
 
+  // Sterne im Nebel verankern: Sterne auf dichten Nebelregionen übernehmen
+  // Tiefe und Bewegung des Nebels an ihrer Bildposition - sie bleiben beim
+  // 3D-Flug IM Nebel (z. B. die Wolf-Rayet-Sterne im Löwennebel), statt
+  // davor herzufliegen. Sterne, deren Gaia-Tiefe klar vor oder hinter dem
+  // Nebel liegt, bleiben frei.
+  float anchorW = 0.0;
+  float dNA = 0.45;
+  if (uAnchor > 0.0) {
+    vec2 uvA = vec2(aPos.x / uImgAspectS, aPos.y) + 0.5;
+    if (uvA.x > 0.001 && uvA.x < 0.999 && uvA.y > 0.001 && uvA.y < 0.999) {
+      dNA = textureLod(uDepthS, uvA, 0.0).r;
+      dNA = mix(dNA, 0.02, uObjFarS);
+      vec3 cNA = textureLod(uColorS, uvA, 0.0).rgb;
+      float dens = smoothstep(0.05, 0.30, dot(cNA, vec3(0.299, 0.587, 0.114)));
+      float agree = aGaia >= 0.0
+        ? 1.0 - smoothstep(0.10, 0.28, abs(clamp(aGaia, 0.02, 1.0) - dNA))
+        : 1.0;
+      anchorW = uAnchor * dens * agree;
+    }
+  }
+
   // Sterne parallaxieren deutlich stärker als der Nebel (Faktor ~2.6 relativ
   // zur Räumlichkeit); Warp lässt sie zusätzlich beschleunigt vorbeiziehen
   float ex = 1.0 + uParallax * (depth - 0.45) * uDepthRange * 2.6 * uStarPar + uWarp * (0.4 + depth);
+  // Verankerte Sterne bewegen sich exakt wie der Nebel an ihrer Position:
+  // gleicher Zoom-Exponent, gleicher Kippwert, kein Stern-Parallax-Faktor
+  ex = mix(ex, 1.0 + uParallax * (dNA - 0.45) * uDepthRange, anchorW);
   // Ferne Sterne nie rückwärts fliegen lassen (Exponent bliebe sonst negativ)
   ex = max(ex, 0.12);
   float scale = uCover * pow(uZoom, ex);
   vec2 sp1 = spinStar(aPos + aPm * uPmYears, uSpinAngleS);
-  vec2 pr = (sp1 - uCenter - uTilt * (depth - 0.45)) * scale;
+  vec2 tOff = mix(uTilt * (depth - 0.45), uTiltB * (dNA - 0.45), anchorW);
+  vec2 pr = (sp1 - uCenter - tOff) * scale;
+  depth = mix(depth, dNA, anchorW);
   float c = cos(uAngle), s = sin(uAngle);
   // Inverse der Hintergrund-Rotation, damit Sterne auf dem Bild liegen bleiben
   vec2 p = mat2(c, s, -s, c) * pr;
@@ -474,7 +585,8 @@ void main() {
   vec2 clipMid = clip;
   if (uStreak > 0.0) {
     float scale2 = uCover * pow(uZoom2, ex);
-    vec2 pr2 = (spinStar(aPos + aPm * uPmYears2, uSpinAngleS2) - uCenter2 - uTilt2 * (depth - 0.45)) * scale2;
+    vec2 tOff2 = mix(uTilt2 * (depth - 0.45), uTiltB2 * (dNA - 0.45), anchorW);
+    vec2 pr2 = (spinStar(aPos + aPm * uPmYears2, uSpinAngleS2) - uCenter2 - tOff2) * scale2;
     float c2 = cos(uAngle2), s2 = sin(uAngle2);
     vec2 p2 = mat2(c2, s2, -s2, c2) * pr2;
     vec2 clip2 = vec2(p2.x * 2.0 / uViewAspect, p2.y * 2.0);
@@ -519,7 +631,16 @@ void main() {
   // Sichtbarkeitsschwelle fallen - der Regler war nicht dosierbar.
   vAlpha *= 1.0 - occ;
   float lumS = dot(aColor, vec3(0.299, 0.587, 0.114));
-  vColor = max(mix(vec3(lumS), aColor, uStarSat), 0.0) * uStarBright;
+  vec3 cS = aColor;
+  if (uStarSat > 1.0) {
+    // Farb-Boost: Farbanteile relativ zum stärksten Kanal spreizen - die
+    // Maskenfarben sind Richtung Weiß angehoben, lineares Nachsättigen
+    // holt da kaum Farbe heraus; die Potenz macht zarte Tönungen kräftig,
+    // ohne die Helligkeit des Sterns anzuheben
+    float mx = max(cS.r, max(cS.g, cS.b)) + 1e-5;
+    cS = pow(cS / mx, vec3(1.0 + (uStarSat - 1.0) * 2.0)) * mx;
+  }
+  vColor = max(mix(vec3(lumS), cS, min(uStarSat, 1.0)), 0.0) * uStarBright;
 }`;
 
 const starFS = `#version 300 es
@@ -629,13 +750,18 @@ void main() {
   off = vec2(off.x / uViewAspect, off.y);
   vec2 ca = vec2(r.x / uViewAspect, r.y) * uChroma * 0.02;
 
+  // Die Sterne liegen immer auf einer eigenen Ebene (uStarsTex): so treffen
+  // Klarheit/Struktur/Schärfe nur den Nebel - Sternbearbeitung wohnt im
+  // Sterne-Tab. uSplit = 1: Sterne sind bereits als eigene Geschwindigkeits-
+  // Streifen gerendert und bekommen KEINE Composite-Unschärfe mehr
   vec3 col;
+  vec3 stars;
   if (uSplit > 0.5) {
-    // "Nur Sterne": die Sterne sind bereits als Geschwindigkeits-Streifen
-    // gerendert (pro Stern, je nach echter Geschwindigkeit) – Nebel bleibt scharf
-    col = texture(uScene, vUv).rgb + texture(uStarsTex, vUv).rgb;
+    col = texture(uScene, vUv).rgb;
+    stars = texture(uStarsTex, vUv).rgb;
   } else {
     vec3 acc = vec3(0.0);
+    vec3 accS = vec3(0.0);
     const int N = 8;
     for (int i = 0; i < N; i++) {
       float f = float(i) / float(N - 1) - 0.5;
@@ -643,8 +769,12 @@ void main() {
       acc.r += texture(uScene, vUv + o * (1.0 + uChroma) + ca).r;
       acc.g += texture(uScene, vUv + o).g;
       acc.b += texture(uScene, vUv + o * (1.0 - uChroma) - ca).b;
+      accS.r += texture(uStarsTex, vUv + o * (1.0 + uChroma) + ca).r;
+      accS.g += texture(uStarsTex, vUv + o).g;
+      accS.b += texture(uStarsTex, vUv + o * (1.0 - uChroma) - ca).b;
     }
     col = acc / float(N);
+    stars = accS / float(N);
   }
 
   // Klarheit: lokaler Kontrast gegen stark weichgezeichnete Szene
@@ -665,6 +795,9 @@ void main() {
             + texture(uScene, vUv - vec2(0.0, uTexel.y)).rgb;
     col += (texture(uScene, vUv).rgb - nb * 0.25) * uSharpen;
   }
+
+  // Sterne erst NACH Klarheit/Struktur/Schärfe dazulegen
+  col += stars;
 
   col += texture(uBloom, vUv).rgb * uBloomStrength;
 
@@ -1041,7 +1174,10 @@ function buildStarBuffer() {
   }
 
   found.sort((p, q) => q.flux - p.flux);
-  const MAX = 9000;
+  // Obergrenze für Masken-Sterne: moderne GPUs schaffen das locker, das
+  // Gaia-Matching läuft über ein Suchgitter (linear) - bei dichten
+  // Milchstraßenfeldern schnitt die alte 9000er-Grenze real ab
+  const MAX = 25000;
   const list = found.slice(0, MAX);
 
   const FLOATS = 7;
@@ -1065,10 +1201,15 @@ function buildStarBuffer() {
 
   state.maskStarCount = list.length;
   state.maskStarFloats = buf;
-  // Neue Maske -> alte Gaia-Zuordnung passt nicht mehr
+  // Neue Maske -> alte Gaia-Zuordnung passt nicht mehr. Wenn der Katalog
+  // gecacht ist, gleichen wir sofort neu ab - der Wissenschafts-Modus soll
+  // einen Masken-Neuaufbau überleben, statt kommentarlos herauszufallen
   state.gaiaDepth = null;
   state.gaiaColorRGB = null;
   state.gaiaPM = null;
+  if (state.gaiaCatalog && state.wcs && typeof matchGaia === "function") {
+    try { matchGaia(state.gaiaCatalog); } catch { /* dann eben neu abgleichen */ }
+  }
   if (typeof updateGaiaStatus === "function") updateGaiaStatus();
   uploadStars();
 }
@@ -1168,7 +1309,7 @@ function angSep(ra1, dec1, ra2, dec2) {
 
 /** Gaia DR3 über die VizieR-TAP-API abfragen (CSV, CORS-frei). */
 async function queryGaia(ra, dec, radiusDeg) {
-  const adql = `SELECT TOP 30000 RA_ICRS,DE_ICRS,Gmag,Plx,"BP-RP",pmRA,pmDE FROM "I/355/gaiadr3" ` +
+  const adql = `SELECT TOP 50000 RA_ICRS,DE_ICRS,Gmag,Plx,"BP-RP",pmRA,pmDE FROM "I/355/gaiadr3" ` +
     `WHERE 1=CONTAINS(POINT('ICRS',RA_ICRS,DE_ICRS),` +
     `CIRCLE('ICRS',${ra.toFixed(6)},${dec.toFixed(6)},${radiusDeg.toFixed(4)})) ` +
     `AND Plx>0.05 ORDER BY Gmag`;
@@ -1290,7 +1431,9 @@ function matchGaia(gaiaStars) {
     for (const g of gaiaStars) {
       const p = wcsSky2Pix(wcs, g.ra, g.dec);
       if (!p) continue;
-      const u = p.px / nax1, v = flipY ? 1 - p.py / nax2 : p.py / nax2;
+      let u = p.px / nax1, v = flipY ? 1 - p.py / nax2 : p.py / nax2;
+      if (state.flipH && !state.flipOnlyStarless) u = 1 - u;
+      if (state.flipV && !state.flipOnlyStarless) v = 1 - v;
       if (u < -0.03 || u > 1.03 || v < -0.03 || v > 1.03) continue;
       pts.push({ ...g, x: (u - 0.5) * imgAspect, y: 0.5 - v });
     }
@@ -1334,7 +1477,9 @@ function matchGaia(gaiaStars) {
   const planeOf = (ra, dec) => {
     const p = wcsSky2Pix(wcs, ra, dec);
     if (!p) return null;
-    const u = p.px / nax1, v = flipUsed ? 1 - p.py / nax2 : p.py / nax2;
+    let u = p.px / nax1, v = flipUsed ? 1 - p.py / nax2 : p.py / nax2;
+    if (state.flipH && !state.flipOnlyStarless) u = 1 - u;
+    if (state.flipV && !state.flipOnlyStarless) v = 1 - v;
     let x = (u - 0.5) * imgAspect, y = 0.5 - v;
     if (fitUsed) {
       const nx = fitUsed.ax[0] * x + fitUsed.ax[1] * y + fitUsed.ax[2];
@@ -1379,6 +1524,7 @@ function matchGaia(gaiaStars) {
     matched: pairs.length, total: n,
     dMin: Math.round(Math.exp(p10) * 3.262), dMax: Math.round(Math.exp(p90) * 3.262), // Lichtjahre
   };
+  reprojectLabels();
   uploadStars();
   return state.gaiaInfo;
 }
@@ -1387,6 +1533,43 @@ function matchGaia(gaiaStars) {
  * Himmelskoordinate -> Ebenen-Position mit der aktuell bekannten Transformation
  * (y-Konvention und Affin-Korrektur aus dem Gaia-Abgleich, sonst Standard).
  */
+/**
+ * Beschriftungs-Positionen mit der aktuell besten Transformation neu
+ * berechnen: Der Gaia-Abgleich ermittelt y-Konvention (Flip) und
+ * Affin-Korrektur erst NACH einer evtl. schon gelaufenen Objekterkennung -
+ * ohne Reprojektion blieben die Marker auf gespiegelten Positionen stehen.
+ */
+/** Nebeldichte (0..1) an einem Ebenen-Punkt - Gegenstück zum Dichte-Gate
+ *  des Anker-Features im Stern-Shader (Luminanz des Starless-Bilds). */
+function lumDensAtPlane(x, y, imgAspect) {
+  const img = state.starless;
+  if (!img) return 0;
+  const uu = x / imgAspect + 0.5, vv = 0.5 - y;
+  if (uu <= 0 || uu >= 1 || vv <= 0 || vv >= 1) return 0;
+  const c = lumDensAtPlane._c || (lumDensAtPlane._c = document.createElement("canvas"));
+  c.width = 1; c.height = 1;
+  const cx = c.getContext("2d", { willReadFrequently: true });
+  cx.drawImage(img.canvas, uu * img.width, vv * img.height, 1, 1, 0, 0, 1, 1);
+  const d = cx.getImageData(0, 0, 1, 1).data;
+  const lum = (0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]) / 255;
+  const t = Math.min(1, Math.max(0, (lum - 0.05) / 0.25));
+  return t * t * (3 - 2 * t);
+}
+
+function reprojectLabels() {
+  if (!state.wcs) return;
+  for (const list of [state.objChoices, state.labels]) {
+    if (!list) continue;
+    for (const it of list) {
+      if (it.ra === undefined) continue;
+      const p = planeOfSky(it.ra, it.dec);
+      if (p) { it.x = p.x; it.y = p.y; }
+      delete it._chipSide; delete it._up; // Seitenwahl neu treffen lassen
+      delete it._msN; delete it._dens;     // Sterntiefe/Dichte neu ermitteln
+    }
+  }
+}
+
 function planeOfSky(ra, dec) {
   const wcs = state.wcs;
   const img = state.starless || state.stars;
@@ -1396,7 +1579,9 @@ function planeOfSky(ra, dec) {
   const p = wcsSky2Pix(wcs, ra, dec);
   if (!p) return null;
   const flip = state.wcsFlip !== false; // Standard: FITS-Zeile 1 unten
-  const u = p.px / nax1, v = flip ? 1 - p.py / nax2 : p.py / nax2;
+  let u = p.px / nax1, v = flip ? 1 - p.py / nax2 : p.py / nax2;
+  if (state.flipH && !state.flipOnlyStarless) u = 1 - u;
+  if (state.flipV && !state.flipOnlyStarless) v = 1 - v;
   let x = (u - 0.5) * imgAspect, y = 0.5 - v;
   const fit = state.wcsFit;
   if (fit) {
@@ -1556,6 +1741,70 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
     const px = rc * prx - rs * pry, py = rs * prx + rc * pry;
     return { x: (px / viewAspect + 0.5) * W, y: (1 - (py + 0.5)) * H, scaleD };
   };
+  // Stern-Labels folgen der STERN-Ebene: Sterne parallaxieren stärker als
+  // der Nebel (Faktor 2,6 x Regler) - ein an den Nebel geklebter Marker
+  // läuft seinem Stern beim Flug sichtbar davon. Tiefe wie im Stern-Shader:
+  // Hash des nächstliegenden Maskensterns, ggf. Gaia-Tiefe, plus Verankerung
+  const starParL = state.starPar / 100;
+  const drKStarL = drK * 2.6 * starParL;
+  const stTiltX = (state.tiltX / 100) * 0.08 + cam.tiltAddX + cam.driftTX * drKStarL;
+  const stTiltY = (state.tiltY / 100) * 0.08 + cam.tiltAddY + cam.driftTY * drKStarL;
+  const warpK = state.warp / 100;
+  const sstep = (a, b, x) => {
+    const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+    return t * t * (3 - 2 * t);
+  };
+  const starLabelDepth = (L) => {
+    const m = state.maskStarFloats, n = state.maskStarCount;
+    if (!m || !n) return null;
+    if (L._msN !== n) {
+      L._msN = n; L._msIdx = -1;
+      let bd = 0.015 * 0.015; // nächster Maskenstern, max ~1,5 % Bildhöhe
+      for (let i = 0; i < n; i++) {
+        const dx = m[i * 7] - L.x, dy = m[i * 7 + 1] - L.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < bd) { bd = d2; L._msIdx = i; }
+      }
+    }
+    if (L._msIdx < 0) return null;
+    const i = L._msIdx;
+    const ax = m[i * 7], ay = m[i * 7 + 1], bright = m[i * 7 + 2];
+    let h = Math.sin(ax * 127.1 + ay * 311.7 + state.seed * 17.0) * 43758.5453;
+    h -= Math.floor(h);
+    let bs = bright * 0.12;
+    if (state.starLayers > 0.5) { h = (Math.floor(h * state.starLayers) + 0.5) / state.starLayers; bs = 0; }
+    let depth = Math.min(1, Math.max(0.02, state.starDist / 100 + (h - 0.5) * (state.spread / 100) * 1.15 + bs));
+    const gd = state.gaiaDepth ? state.gaiaDepth[i] : -1;
+    if (gd >= 0) {
+      const amt = Math.max(state.gaiaAmt / 100, state.gaiaOnly ? 1 : 0);
+      depth += (Math.min(1, Math.max(0.02, gd)) - depth) * amt;
+    }
+    return { depth, gd };
+  };
+  const toScreenStar = (L) => {
+    const sd = starLabelDepth(L);
+    if (!sd) return toScreen(L); // kein Maskenstern gefunden -> wie Nebel
+    const S = state.spinStars ? spinDisplace(L.x, L.y, spinAngle) : { x: L.x, y: L.y };
+    const dN = state.objFar ? 0.02 : depthAtPlane(L.x, L.y, imgAspect);
+    let w = 0;
+    if (state.anchorStars > 0) {
+      if (L._dens === undefined) L._dens = lumDensAtPlane(L.x, L.y, imgAspect);
+      const agree = sd.gd >= 0
+        ? 1 - sstep(0.10, 0.28, Math.abs(Math.min(1, Math.max(0.02, sd.gd)) - dN))
+        : 1;
+      w = (state.anchorStars / 100) * L._dens * agree;
+    }
+    let ex = 1 + parallax * (sd.depth - 0.45) * depthRange * 2.6 * starParL + warpK * (0.4 + sd.depth);
+    ex = ex * (1 - w) + (1 + parallax * (dN - 0.45) * depthRange) * w;
+    ex = Math.max(ex, 0.12);
+    const scaleD = cover * Math.pow(cam.zoom, ex);
+    const tx = stTiltX * (sd.depth - 0.45) * (1 - w) + bgTiltX * (dN - 0.45) * w;
+    const ty = stTiltY * (sd.depth - 0.45) * (1 - w) + bgTiltY * (dN - 0.45) * w;
+    const prx = (S.x - cam.cx - tx) * scaleD;
+    const pry = (S.y - cam.cy - ty) * scaleD;
+    const px = rc * prx - rs * pry, py = rs * prx + rc * pry;
+    return { x: (px / viewAspect + 0.5) * W, y: (1 - (py + 0.5)) * H, scaleD };
+  };
   const u = H / 1000; // Skalierungseinheit (1000er-Referenzhöhe)
   const ACC = "rgba(157,184,255,";
   ctx.save();
@@ -1578,9 +1827,9 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
       const facts = [];
       if (f) {
         const LBL = lang === "de"
-          ? { dist: "Entfernung", size: "Durchmesser", stars: "Sterne", age: "Alter" }
-          : { dist: "Distance", size: "Diameter", stars: "Stars", age: "Age" };
-        for (const k of ["dist", "size", "stars", "age"]) {
+          ? { dist: "Entfernung", size: "Durchmesser", radius: "Gr\u00f6\u00dfe", stars: "Sterne", mass: "Masse", age: "Alter" }
+          : { dist: "Distance", size: "Diameter", radius: "Size", stars: "Stars", mass: "Mass", age: "Age" };
+        for (const k of ["dist", "size", "radius", "stars", "mass", "age"]) {
           if (f[k]) facts.push([LBL[k], f[k]]);
         }
       }
@@ -1711,7 +1960,7 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
     };
     for (const L of state.labels) {
       if (!L.on) continue;
-      const sp = toScreen(L);
+      const sp = L.star ? toScreenStar(L) : toScreen(L);
       if (sp.x < -80 * u || sp.x > W + 80 * u || sp.y < -80 * u || sp.y > H + 80 * u) continue;
       // Sanft ausblenden, wenn der Anker das Bild verlässt - vorher
       // verschwand die Beschriftung von einem Frame auf den nächsten
@@ -1722,9 +1971,10 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
       const r = Math.max(16 * u, (L.sizePlane * (L.sizeMul || 1) * sp.scaleD * H) / 2);
       const facts = OBJECT_FACTS[normObjId(L.id)];
       const name = L.id;
-      const sub = facts
+      let sub = facts
         ? `${facts[lang].name} · ${facts[lang].dist || ""}`.replace(/ · $/, "")
         : (OTYPE_NAMES[lang][L.otype] || L.otype);
+      if (L.star && L.phys && state.starDetails) sub += starPhysShort(L.phys, lang);
 
       // Seite/Richtung EINMAL pro Durchlauf waehlen und behalten: Ein
       // Wechsel mitten im Flug liess die Beschriftung auf die andere Seite
@@ -2172,8 +2422,23 @@ function camAt(loopT) {
     const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.98;
     const fx = (state.frameX / 100) * freeX;
     const fy = (state.frameY / 100) * freeY;
-    cx = Math.min(freeX, Math.max(-freeX, fx + (state.target.x - fx) * pe));
-    cy = Math.min(freeY, Math.max(-freeY, fy + (state.target.y - fy) * pe));
+    const hasTarget = state.target.x !== 0 || state.target.y !== 0;
+    if (hasTarget) {
+      cx = Math.min(freeX, Math.max(-freeX, fx + (state.target.x - fx) * pe));
+      cy = Math.min(freeY, Math.max(-freeY, fy + (state.target.y - fy) * pe));
+    } else {
+      // Ohne Klick-Ziel zoomt die Kamera GERADE in die Mitte des
+      // verschobenen Ausschnitts: Der Punkt, den der Nutzer per Regler in
+      // die Mitte geschoben hat, bleibt fest im Zentrum (Bezug ist der
+      // Start-Zoom, sonst wandert er mit dem wachsenden Spielraum) -
+      // vorher driftete die Kamera stattdessen seitlich zur Bildmitte.
+      // Wer diesen Drift-Effekt will, klickt einfach ein Zoomziel an.
+      const sc0 = cover * state.zoomBase;
+      const freeX0 = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc0) * 0.98;
+      const freeY0 = Math.max(0, 0.5 - 0.5 / sc0) * 0.98;
+      cx = Math.min(freeX, Math.max(-freeX, (state.frameX / 100) * freeX0));
+      cy = Math.min(freeY, Math.max(-freeY, (state.frameY / 100) * freeY0));
+    }
   }
   return { zoom, angle, rate, te, tiltAddX, tiltAddY, cx, cy, driftTX, driftTY };
 }
@@ -2276,6 +2541,18 @@ function render(forcedT) {
   // Masken-Vorschau nie im Export; im "Zentrum setzen"-Modus automatisch an
   u1f(bgProg, "uSpinShow", (state.spinShow || state.spinPick) && !state.exporting ? 1 : 0);
   u1f(bgProg, "uSpinMaskAmt", texSpinMask ? state.spinMaskAmt / 100 : 0);
+  // Nebelfarben (HII/OIII/SII): Sättigung als Faktor, Farbton als Kreisanteil
+  const bandSat = [state.h2Sat / 100, state.o3Sat / 100, state.s2Sat / 100];
+  const bandHue = [state.h2Hue / 360, state.o3Hue / 360, state.s2Hue / 360];
+  const bandShow = state.exporting ? 0 : ({ h2: 1, o3: 2, s2: 3 }[state.bandShow] || 0);
+  u3f(bgProg, "uBandSat", bandSat[0], bandSat[1], bandSat[2]);
+  u3f(bgProg, "uBandHue", bandHue[0], bandHue[1], bandHue[2]);
+  u3f(bgProg, "uBandCen", state.h2Det / 360, state.o3Det / 360, state.s2Det / 360);
+  u3f(bgProg, "uBandWidth", state.h2Width / 360, state.o3Width / 360, state.s2Width / 360);
+  u1f(bgProg, "uBandShow", bandShow);
+  u1f(bgProg, "uBandFeather", state.bandFeather / 100);
+  u1f(bgProg, "uBandOn",
+    bandSat.some((v) => v !== 1) || bandHue.some((v) => v !== 0) || bandShow ? 1 : 0);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
   // Bewegungsgrößen numerisch aus der Kamerakurve ableiten (für die
@@ -2292,12 +2569,13 @@ function render(forcedT) {
   const starTilt2X = tilt2X + cam2.driftTX * drKStar;
   const starTilt2Y = tilt2Y + cam2.driftTY * drKStar;
 
+  // Sterne IMMER in die eigene Ebene rendern (nicht nur bei "nur Sterne"-
+  // Unschärfe): Klarheit/Struktur/Schärfe im Look-Tab treffen so nur das
+  // Starless-Bild - die Sternbearbeitung wohnt im Sterne-Tab
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbStars.fb);
+  gl.viewport(0, 0, fbStars.w, fbStars.h);
+  gl.clear(gl.COLOR_BUFFER_BIT);
   if (state.starCount > 0) {
-    if (splitBlur) {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, fbStars.fb);
-      gl.viewport(0, 0, fbStars.w, fbStars.h);
-      gl.clear(gl.COLOR_BUFFER_BIT);
-    }
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE);
     gl.useProgram(starProg);
@@ -2351,6 +2629,8 @@ function render(forcedT) {
     u1f(starProg, "uPmYears2", state.gaiaPmYears * (cam2.te / pmSpan));
     // Nebel-Okklusion: Tiefe + Dichte des Nebels an der Sternposition
     u1f(starProg, "uOcclude", state.occlude / 100);
+    u1f(starProg, "uAnchor", state.anchorStars / 100);
+    u2f(starProg, "uTiltB2", tilt2X + cam2.driftTX * drK, tilt2Y + cam2.driftTY * drK);
     u1f(starProg, "uObjFarS", state.objFar ? 1 : 0);
     u2f(starProg, "uTiltB", bgTiltX, bgTiltY);
     gl.activeTexture(gl.TEXTURE6);
@@ -2377,7 +2657,7 @@ function render(forcedT) {
     gl.useProgram(brightProg);
     gl.bindTexture(gl.TEXTURE_2D, fbScene.tex);
     gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, splitBlur ? fbStars.tex : texBlack);
+    gl.bindTexture(gl.TEXTURE_2D, fbStars.tex);
     gl.activeTexture(gl.TEXTURE0);
     u1i(brightProg, "uScene", 0);
     u1i(brightProg, "uStarsTex", 1);
@@ -2456,7 +2736,7 @@ function render(forcedT) {
   gl.activeTexture(gl.TEXTURE3);
   gl.bindTexture(gl.TEXTURE_2D, structure !== 0 ? fbMedB.tex : fbScene.tex);
   gl.activeTexture(gl.TEXTURE4);
-  gl.bindTexture(gl.TEXTURE_2D, splitBlur ? fbStars.tex : texBlack);
+  gl.bindTexture(gl.TEXTURE_2D, fbStars.tex);
   u1i(compProg, "uScene", 0);
   u1i(compProg, "uBloom", 1);
   u1i(compProg, "uSoft", 2);
@@ -2518,6 +2798,16 @@ window.addEventListener("resize", fitCanvas);
 fitCanvas();
 
 // ---------------------------------------------------------------- UI-Verdrahtung
+
+// Doppelklick auf einen Regler setzt ihn auf seinen Standardwert zurück
+// (wie in Lightroom); das input-Event zieht State und Anzeige nach
+document.addEventListener("dblclick", (e) => {
+  const el = e.target;
+  if (el && el.tagName === "INPUT" && el.type === "range") {
+    el.value = el.defaultValue;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+});
 
 function bindSlider(id, outId, key, fmt) {
   const el = $(id), out = $(outId);
@@ -2612,6 +2902,24 @@ bindSlider("ctlContrast", "outContrast", "contrast", asInt);
 bindSlider("ctlSaturation", "outSaturation", "saturation", asInt);
 bindSlider("ctlClarity", "outClarity", "clarity", asInt);
 bindSlider("ctlStructure", "outStructure", "structure", asInt);
+const asDeg = (v) => v + "°";
+bindSlider("ctlH2Sat", "outH2Sat", "h2Sat", asPct);
+bindSlider("ctlH2Hue", "outH2Hue", "h2Hue", asDeg);
+bindSlider("ctlO3Sat", "outO3Sat", "o3Sat", asPct);
+bindSlider("ctlO3Hue", "outO3Hue", "o3Hue", asDeg);
+bindSlider("ctlS2Sat", "outS2Sat", "s2Sat", asPct);
+bindSlider("ctlS2Hue", "outS2Hue", "s2Hue", asDeg);
+bindSlider("ctlH2Det", "outH2Det", "h2Det", asDeg);
+bindSlider("ctlO3Det", "outO3Det", "o3Det", asDeg);
+bindSlider("ctlS2Det", "outS2Det", "s2Det", asDeg);
+const asDegPM = (v) => "\u00b1" + v + "\u00b0";
+bindSlider("ctlH2Width", "outH2Width", "h2Width", asDegPM);
+bindSlider("ctlO3Width", "outO3Width", "o3Width", asDegPM);
+bindSlider("ctlS2Width", "outS2Width", "s2Width", asDegPM);
+bindSlider("ctlBandFeather", "outBandFeather", "bandFeather", asPct);
+$("ctlBandShow").addEventListener("change", () => {
+  state.bandShow = $("ctlBandShow").value;
+});
 bindSlider("ctlSharpen", "outSharpen", "sharpen", asInt);
 
 $("ctlMblurStars").addEventListener("change", () => {
@@ -2857,6 +3165,7 @@ I18N.onChange.push(updateTargetInfo);
 bindSlider("ctlGaiaAmt", "outGaiaAmt", "gaiaAmt", (v) => v + " %");
 bindSlider("ctlGaiaPm", "outGaiaPm", "gaiaPmYears", (v) => v.toLocaleString());
 bindSlider("ctlOcclude", "outOcclude", "occlude", (v) => v + " %");
+bindSlider("ctlAnchor", "outAnchor", "anchorStars", (v) => v + " %");
 
 // Laufende Katalog-Abfragen prominent über der Vorschau anzeigen -
 // die kleine Statuszeile im Panel übersieht man leicht
@@ -2880,6 +3189,13 @@ function updateGaiaStatus() {
   const pct = g ? Math.round((g.matched / Math.max(1, g.total)) * 100) : 0;
   const sciAllowed = pct >= 75;
   $("ctlGaiaOnly").disabled = !sciAllowed;
+  // Solange NUR echte Gaia-Tiefen zählen, sind die Zufalls-Tiefen-Regler
+  // und die Mischstärke ohne Funktion - sichtbar ausgrauen
+  const gaiaLock = state.gaiaOnly && sciAllowed;
+  for (const id of ["ctlStarDist", "ctlSpread", "ctlLayers", "ctlGaiaAmt"]) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = gaiaLock;
+  }
   $("ctlGaiaColors").disabled = !state.gaiaDepth;
   $("btnObjects").disabled = !(state.wcs && state.starless);
   if (!sciAllowed && state.gaiaOnly) {
@@ -2906,6 +3222,7 @@ $("btnGaiaHelp").addEventListener("click", () => {
 
 $("ctlGaiaOnly").addEventListener("change", () => {
   state.gaiaOnly = $("ctlGaiaOnly").checked;
+  updateGaiaStatus();
 });
 
 $("ctlSpinStars").addEventListener("change", () => {
@@ -2942,7 +3259,8 @@ function applyCardChoice() {
     return;
   }
   const pick = items.find((it) => it.id === c) || items[0];
-  state.objInfo = { id: pick.id, facts: OBJECT_FACTS[normObjId(pick.id)] || null, otype: pick.otype };
+  state.objInfo = { id: pick.id,
+    facts: OBJECT_FACTS[normObjId(pick.id)] || starFacts(pick) || null, otype: pick.otype };
 }
 
 function rebuildObjList() {
@@ -2999,6 +3317,7 @@ I18N.onChange.push(rebuildObjList);
 
 $("ctlShowInfo").addEventListener("change", () => { state.showInfo = $("ctlShowInfo").checked; });
 $("ctlShowLabels").addEventListener("change", () => { state.showLabels = $("ctlShowLabels").checked; });
+$("ctlStarDetails").addEventListener("change", () => { state.starDetails = $("ctlStarDetails").checked; });
 $("ctlCardObj").addEventListener("change", () => {
   state.cardChoice = $("ctlCardObj").value;
   applyCardChoice();
@@ -3030,10 +3349,25 @@ $("btnObjects").addEventListener("click", async () => {
   $("btnObjects").disabled = true;
   try {
     const objs = await querySimbad(c.ra, c.dec, radius);
+    // Markante Sterne (Wolf-Rayet, helle Sterne mit Eigennamen) sind ein
+    // Bonus - scheitert nur diese Abfrage, fehlt lediglich die Stern-Ebene
+    let starObjs = [];
+    try { starObjs = await querySimbadStars(c.ra, c.dec, radius); } catch { /* optional */ }
     const imgAspect = img.width / img.height;
     const degPerPx = Math.sqrt(Math.abs(wcs.cd[0] * wcs.cd[3] - wcs.cd[1] * wcs.cd[2]));
     const items = [];
-    for (const o of objs) {
+    for (const o of objs.concat(starObjs)) {
+      if (o.star) {
+        // Markante Sterne: kein Katalogfilter, feste kleine Ringgröße (~3');
+        // durch die Größensortierung nie das Hauptobjekt der Infokarte
+        const ps = planeOfSky(o.ra, o.dec);
+        if (!ps) continue;
+        if (Math.abs(ps.x) > imgAspect / 2 || Math.abs(ps.y) > 0.5) continue;
+        items.push({ id: o.id, otype: o.otype, x: ps.x, y: ps.y,
+          ra: o.ra, dec: o.dec,
+          sizePlane: (3 / 60) / degPerPx / nax2, star: true });
+        continue;
+      }
       // Kuratierte Klassiker immer durchlassen: SIMBAD führt manche Teile
       // bekannter Objekte ohne oder mit kryptischem Typ (z. B. Cirrusnebel:
       // NGC 6992 = "sh", NGC 6995 ganz ohne Typ)
@@ -3045,8 +3379,12 @@ $("btnObjects").addEventListener("click", async () => {
       if (!p) continue;
       if (Math.abs(p.x) > imgAspect / 2 || Math.abs(p.y) > 0.5) continue;
       const sizePlane = (o.sizeArcmin / 60) / degPerPx / nax2;
-      items.push({ id: prettyObjId(o.id), otype: o.otype, x: p.x, y: p.y, sizePlane });
+      items.push({ id: prettyObjId(o.id), otype: o.otype, x: p.x, y: p.y,
+        ra: o.ra, dec: o.dec, sizePlane });
     }
+    // Gaia-Astrophysik für die markanten Sterne (Radius/Masse/Alter) -
+    // optionaler Bonus, Fehler hier kosten nur die Zusatzinfos
+    try { await queryStarParams(items.filter((it) => it.star)); } catch { /* optional */ }
     if (!items.length) {
       state.objInfo = null; state.labels = null;
       state.objChoices = null; state.objRegion = null;
@@ -3082,7 +3420,10 @@ $("fileWcs").addEventListener("change", async () => {
     const wcs = parseWcsHeader(head);
     wcs._name = file.name;
     state.wcs = wcs;
+    state.wcsFlip = undefined; state.wcsFit = null;
+    state.gaiaCatalog = null;
     state.gaiaDepth = null; state.gaiaInfo = null; state.gaiaColorRGB = null; state.gaiaPM = null;
+    reprojectLabels();
     uploadStars();
   } catch (e) {
     state.wcs = null;
@@ -3106,6 +3447,9 @@ $("btnGaia").addEventListener("click", async () => {
   try {
     const stars = await queryGaia(c.ra, c.dec, radius);
     gaiaTransient = null;
+    // Katalog behalten: Damit übersteht der Abgleich einen Masken-Neuaufbau
+    // (Stretch, Spiegeln, neue Maske) ohne neue Netzabfrage
+    state.gaiaCatalog = stars;
     const info = matchGaia(stars);
     if (!info) gaiaTransient = { key: "gaiaNoMatch", args: [] };
   } catch (e) {
@@ -3242,8 +3586,11 @@ async function loadFile(which, file) {
     if (img.wcs) {
       img.wcs._name = file.name;
       state.wcs = img.wcs;
+      state.wcsFlip = undefined; state.wcsFit = null;
+      state.gaiaCatalog = null;
       state.gaiaDepth = null; state.gaiaInfo = null; state.gaiaColorRGB = null; state.gaiaPM = null;
       gaiaTransient = { key: "gaiaWcsAuto", args: [file.name] };
+      reprojectLabels();
       uploadStars();
       updateGaiaStatus();
     }
@@ -3253,12 +3600,203 @@ async function loadFile(which, file) {
       state.t0 = performance.now();
       if (which === "starless") status.textContent = t("starlessLoaded");
     }
+    // JPEG-Kompression erzeugt in dunklen Bereichen Chroma-Artefakte, die
+    // Tiefenkarte und Nebelfarben-Masken stoeren - freundlich drauf hinweisen
+    if (/\.jpe?g$/i.test(file.name)) {
+      status.textContent = (status.textContent + " " + t("jpegWarn")).trim();
+    }
   } catch (err) {
     console.error(err);
     status.classList.add("error");
     status.textContent = t("loadFailed", file.name, err.message);
   }
 }
+
+// ------------------------------------------------- Eigene Presets (localStorage)
+
+// Welche Regler in welche Preset-Gruppe gehoeren. Bewusst NUR Regler-Werte:
+// Bilddaten, Gaia-Abgleich und Plate-Solve werden nie mitgespeichert.
+const USER_PRESET_GROUPS = {
+  camera: ["ctlFlightMode", "ctlDriftDir", "ctlZoom", "ctlSpeed", "ctlEase",
+    "ctlEaseMode", "ctlParallax", "ctlDepthBoost", "ctlRotation", "ctlOrient",
+    "ctlFrameX", "ctlFrameY", "ctlTiltX", "ctlTiltY", "ctlSwayAmp",
+    "ctlSwayTempo", "ctlSwayDir", "ctlSwayRandom", "ctlTiltRamp",
+    "ctlTiltRampDir", "ctlFade", "ctlDuration", "ctlLoop", "ctlSpinSpeed",
+    "ctlSpinRadius", "ctlSpinDiff", "ctlSpinFlat", "ctlSpinTilt",
+    "ctlSpinMaskAmt", "ctlSpinStars"],
+  stars: ["ctlSpread", "ctlStarDist", "ctlLayers", "ctlStarPar", "ctlTwinkle",
+    "ctlTwinkleSpeed", "ctlStarSize", "ctlStarBright", "ctlStarSat",
+    "ctlGenStars", "ctlOcclude", "ctlAnchor"],
+  look: ["ctlBloom", "ctlMblur", "ctlMblurStars", "ctlWarp", "ctlVignette",
+    "ctlExposure", "ctlContrast", "ctlSaturation", "ctlClarity",
+    "ctlStructure", "ctlSharpen", "ctlH2Det", "ctlH2Width", "ctlH2Sat",
+    "ctlH2Hue", "ctlO3Det", "ctlO3Width", "ctlO3Sat", "ctlO3Hue", "ctlS2Det",
+    "ctlS2Width", "ctlS2Sat", "ctlS2Hue", "ctlBandFeather", "ctlLabelStyle"],
+  format: ["ctlRes"],
+};
+const UP_KEY = "astrofly-user-presets";
+const UP_GROUP_CHECKS = { camera: "upIncCamera", stars: "upIncStars",
+  look: "upIncLook", format: "upIncFormat" };
+
+function userPresets() {
+  try { return JSON.parse(localStorage.getItem(UP_KEY)) || {}; } catch { return {}; }
+}
+function applyUserPreset(name) {
+  const p = userPresets()[name];
+  if (!p) return false;
+  for (const [id, v] of Object.entries(p.values)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (el.type === "checkbox") {
+      el.checked = !!v;
+      el.dispatchEvent(new Event("change"));
+    } else {
+      el.value = v;
+      el.dispatchEvent(new Event("input"));
+      el.dispatchEvent(new Event("change"));
+    }
+  }
+  if (p.aspect) {
+    const btn = document.querySelector(`#aspectBtns button[data-aspect="${p.aspect}"]`);
+    if (btn) btn.click();
+  }
+  return true;
+}
+
+function rebuildUserPresetList() {
+  const sel = $("userPresetSel");
+  const cur = sel.value;
+  sel.innerHTML = "";
+  const names = Object.keys(userPresets()).sort();
+  for (const name of names) {
+    const o = document.createElement("option");
+    o.value = o.textContent = name;
+    sel.appendChild(o);
+  }
+  if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
+  const none = names.length === 0;
+  $("btnPresetApply").disabled = none;
+  $("btnPresetDelete").disabled = none;
+  // Eigene Presets als Ein-Klick-Karten - auf der Easy-Seite UND im
+  // Presets-Tab: ein Klick, und die gespeicherte Animation liegt zu 90 %
+  // fertig auf dem eigenen Bild
+  for (const [gridId, headId] of [["userPresetGrid", "userPresetGroupHead"],
+                                  ["userPresetGrid2", "userPresetGroupHead2"]]) {
+    const grid = document.getElementById(gridId);
+    const head = document.getElementById(headId);
+    if (!grid || !head) continue;
+    grid.innerHTML = "";
+    for (const name of names) {
+      const b = document.createElement("button");
+      b.className = "pcard";
+      const bold = document.createElement("b");
+      bold.textContent = name;
+      b.appendChild(bold);
+      b.addEventListener("click", () => applyUserPreset(name));
+      grid.appendChild(b);
+    }
+    grid.hidden = none;
+    head.hidden = none;
+  }
+}
+$("btnPresetSave").addEventListener("click", () => {
+  const name = $("userPresetName").value.trim();
+  if (!name) { $("userPresetName").focus(); return; }
+  const groups = Object.keys(UP_GROUP_CHECKS).filter((g) => $(UP_GROUP_CHECKS[g]).checked);
+  const values = {};
+  for (const g of groups) {
+    for (const id of USER_PRESET_GROUPS[g]) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      values[id] = el.type === "checkbox" ? el.checked : el.value;
+    }
+  }
+  const all = userPresets();
+  all[name] = { groups, values,
+    aspect: groups.includes("format") ? (state.aspectName || "16:9") : null };
+  localStorage.setItem(UP_KEY, JSON.stringify(all));
+  rebuildUserPresetList();
+  $("userPresetSel").value = name;
+  $("userPresetStatus").textContent = t("upSaved", name);
+});
+$("btnPresetApply").addEventListener("click", () => {
+  const name = $("userPresetSel").value;
+  if (applyUserPreset(name)) $("userPresetStatus").textContent = t("upApplied", name);
+});
+$("btnPresetDelete").addEventListener("click", () => {
+  const all = userPresets();
+  delete all[$("userPresetSel").value];
+  localStorage.setItem(UP_KEY, JSON.stringify(all));
+  rebuildUserPresetList();
+  $("userPresetStatus").textContent = "";
+});
+rebuildUserPresetList();
+
+/** Spiegelt ein Bildobjekt ({width, height, canvas, ...}) in place -
+ *  weitere Eigenschaften (z. B. eingebettetes WCS) bleiben erhalten. */
+function flipImage(img, fh, fv) {
+  const c = document.createElement("canvas");
+  c.width = img.width; c.height = img.height;
+  const x = c.getContext("2d");
+  x.translate(fh ? img.width : 0, fv ? img.height : 0);
+  x.scale(fh ? -1 : 1, fv ? -1 : 1);
+  x.drawImage(img.canvas, 0, 0);
+  img.canvas = c;
+}
+
+/**
+ * Bild spiegeln (Starless + Sternmaske gemeinsam, sonst passt die Maske
+ * nicht mehr aufs Bild): komplette Pipeline neu aufbauen. Ein bestehender
+ * Gaia-Abgleich wird ungültig (Maskensterne neu extrahiert) - die
+ * Beschriftungen werden über die Spiegel-Flags sofort mitgespiegelt.
+ */
+function flipMask(fh, fv) {
+  if (state.starsOriginal) {
+    flipImage(state.starsOriginal, fh, fv);
+    processStarMask();
+  } else if (state.stars) {
+    flipImage(state.stars, fh, fv);
+    buildStarBuffer();
+  }
+}
+
+function applyImageFlip(fh, fv) {
+  if (state.starless) {
+    flipImage(state.starless, fh, fv);
+    if (texColor) gl.deleteTexture(texColor);
+    const colSrc = downscale(state.starless, 4096);
+    texColor = makeTexture(colSrc);
+    state.texColorW = colSrc.width;
+    state.texColorH = colSrc.height;
+    buildDepthMap();
+    buildSpinMask();
+  }
+  // "Nur Starless": Maske und damit das Koordinatensystem bleiben stehen -
+  // für den Fall, dass Starless und Maske gegeneinander gespiegelt sind
+  if (!state.flipOnlyStarless) flipMask(fh, fv);
+  reprojectLabels();
+  uploadStars();
+  updateGaiaStatus();
+}
+$("ctlFlipH").addEventListener("change", () => {
+  state.flipH = $("ctlFlipH").checked;
+  applyImageFlip(true, false);
+});
+$("ctlFlipV").addEventListener("change", () => {
+  state.flipV = $("ctlFlipV").checked;
+  applyImageFlip(false, true);
+});
+// Umfang wechseln, während eine Spiegelung aktiv ist: die Maske zieht
+// nach (Spiegelung anwenden bzw. zurücknehmen), Labels folgen
+$("ctlFlipOnly").addEventListener("change", () => {
+  state.flipOnlyStarless = $("ctlFlipOnly").checked;
+  if (state.flipH || state.flipV) {
+    flipMask(state.flipH, state.flipV);
+    reprojectLabels();
+    uploadStars();
+    updateGaiaStatus();
+  }
+});
 
 // Demo-Bilder (Orionnebel, aufgenommen von Michael Döhler) aus dem Repo laden –
 // so kann jeder die App sofort ausprobieren, auch ohne eigene Dateien
@@ -3288,7 +3826,9 @@ $("btnDemo").addEventListener("click", async () => {
         state.wcs = wcs;
         state.wcsFlip = undefined;
         state.wcsFit = null;
+        state.gaiaCatalog = null;
         state.gaiaDepth = null; state.gaiaInfo = null; state.gaiaColorRGB = null; state.gaiaPM = null;
+        reprojectLabels();
         uploadStars();
         updateGaiaStatus();
       }

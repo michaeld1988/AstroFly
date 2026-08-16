@@ -17,15 +17,35 @@ kein Build-Schritt, alles läuft lokal im Browser.
 
 - 3D-Parallaxe aus automatischer Tiefenkarte; Zoom- und Lateral-Flugmodus,
   Loop-Modus, Zoomziel per Klick (tiefenbewusst)
-- Sterne als GPU-Partikel mit eigener Tiefe, Funkeln, Sterngenerator,
-  Geschwindigkeits-Streifen bei Bewegungsunschärfe
-- Easy-Modus (8 Presets + Effektstärkeregler) / Pro-Modus (6 Tabs:
-  Bilder · Kamera · Sterne · Look · Wissenschaft · Export)
+- Sterne als GPU-Partikel mit eigener Tiefe (bis 25 000 Gaia-Matches),
+  Funkeln, Sterngenerator, Geschwindigkeits-Streifen bei Bewegungsunschärfe;
+  Sterne werden auf separater Ebene gerendert – Clarity/Structure/Sharpen
+  wirken nur auf den Nebel; Sternfarb-Boost bis 300 %; „Sterne verankern"-
+  Regler (Sci-Tab) fixiert Gaia-Sterne im Nebel
+- **Nebelfarben (Look-Tab):** Hα/OIII/SII getrennt bearbeiten – je Band
+  Erkennungs-Farbton, Erkennungs-Bereich (°), Sättigung, Farbton-Shift,
+  dazu globaler Feather und eine einblendbare Erkennungsmaske; Shader mit
+  flachem Kern + Kosinus-Auslauf und Monotonie-Clamp (artefaktfrei)
+- Easy-Modus (8 Presets + eigene Preset-Karten + Effektstärkeregler) /
+  Pro-Modus (7 Tabs: Bilder · Kamera · Sterne · Look · Presets ·
+  Wissenschaft · Export)
+- **Eigene Presets:** benennbar, Gruppen wählbar (Kamera/Sterne/Look/Format),
+  localStorage `astrofly-user-presets`; speichert NIE Gaia-Daten, FITS-Header
+  oder Bilddaten (explizite Vorgabe von Michael)
 - **Wissenschaft:** Plate-Solve (FITS/WCS, Auto-Übernahme aus FITS-Headern),
   Gaia-DR3-Abgleich (echte Sternentfernungen/-farben, Eigenbewegungs-
-  Zeitraffer, wissenschaftlicher Modus), SIMBAD-Objekterkennung mit
-  Infokarte + Feld-Beschriftungen (6 wählbare Stile), kuratierte Regionen
-  (z. B. Cygnusbogen), Galaxienrotation, Nebel-Okklusion
+  Zeitraffer, wissenschaftlicher Modus; Katalog-Cache übersteht Masken-
+  Neuaufbau, inaktive Regler ausgegraut), SIMBAD-Objekterkennung mit
+  Infokarte + Feld-Beschriftungen (6 wählbare Stile) inkl. Sharpless und
+  markanter Einzelsterne (WR-Sterne u. a.) mit Gaia-Astrophysik (Teff,
+  Entfernung, Radius/Masse relativ zur Sonne, Alter), Labels folgen dem
+  jeweiligen Layer (Nebel-Labels dem Starless-Bild, Stern-Labels den
+  Stern-Partikeln), Spiegeln H/V (wahlweise nur Starless), kuratierte
+  Regionen (z. B. Cygnusbogen), Galaxienrotation (±10°/s in 0,1°-Schritten),
+  Nebel-Okklusion
+- **QoL:** Doppelklick setzt jeden Slider auf Standard zurück (wie
+  Lightroom), Zoom ohne seitlichen Drift bei verschobenem Ausschnitt,
+  JPEG-Warnhinweis bei der Bildauswahl
 - Export: MP4 (WebCodecs) bis 4K, alle gängigen Seitenverhältnisse,
   9:16 mit Social-Media-Schutzzone für Overlays
 
