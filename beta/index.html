@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-16-14">
+<link rel="stylesheet" href="style.css?v=2026-08-16-15">
 </head>
 <body>
 
@@ -26,6 +26,12 @@
     <path d="M12 12 L5.5 17.5"/>
     <path d="M12 12 L20.2 9"/>
     <path d="M12 12 L3.8 9"/>
+  </symbol>
+  <symbol id="i-route" viewBox="0 0 24 24">
+    <circle cx="5" cy="19" r="2.2"/>
+    <circle cx="12" cy="7" r="2.2"/>
+    <circle cx="19" cy="16" r="2.2"/>
+    <path d="M6.4 17.3 10.6 8.8 M13.6 8.5 17.7 14.4" fill="none"/>
   </symbol>
   <symbol id="i-star" viewBox="0 0 24 24">
     <path d="M12 3 L13.6 10.4 L21 12 L13.6 13.6 L12 21 L10.4 13.6 L3 12 L10.4 10.4 Z"/>
@@ -78,6 +84,7 @@
       <button data-tab="bilder" class="active"><svg class="ic"><use href="#i-img"/></svg><small data-i18n="tabBilder">Images</small></button>
       <button data-tab="presets"><svg class="ic"><use href="#i-preset"/></svg><small data-i18n="tabPresets">Presets</small></button>
       <button data-tab="kamera"><svg class="ic"><use href="#i-cam"/></svg><small data-i18n="tabKamera">Camera</small></button>
+      <button data-tab="szenario"><svg class="ic"><use href="#i-route"/></svg><small data-i18n="tabSzenario">Flight plan</small></button>
       <button data-tab="sterne"><svg class="ic"><use href="#i-star"/></svg><small data-i18n="tabSterne">Stars</small></button>
       <button data-tab="look"><svg class="ic"><use href="#i-look"/></svg><small data-i18n="tabLook">Look</small></button>
       <button data-tab="sci"><svg class="ic"><use href="#i-sci"/></svg><small data-i18n="tabSci">Science</small></button>
@@ -123,6 +130,24 @@
     </section>
 
     <!-- ==================== PRESETS ==================== -->
+    <section data-tab="szenario">
+      <h2><span data-i18n="scenHead">Flight plan (waypoints)</span> <button class="qm" data-help="hintScen">?</button></h2>
+      <p class="tip hint2" id="hintScen" hidden data-i18n="scenHint">Chain camera moves:
+      zoom into the center, glide to a detail, pull back out. Each waypoint stores a
+      position, a zoom level, travel seconds and an easing. The camera visits them in
+      order; the video length adapts automatically. Rotation and sway keep working on top.</p>
+      <label class="check">
+        <input type="checkbox" id="ctlScenOn">
+        <span data-i18n="scenOn">Fly the waypoint plan (replaces the flight mode)</span>
+      </label>
+      <p class="tip" data-i18n="scenAddTip">Click a spot in the preview to set the target,
+      then add it as a waypoint. The first waypoint is the starting view. Zoom, seconds
+      per leg and pause can be edited per waypoint.</p>
+      <button id="btnWpAdd" class="secondary" data-i18n="scenAdd">Add waypoint from current target</button>
+      <div id="wpList"></div>
+      <p class="tip" id="scenStatus"></p>
+    </section>
+
     <section data-tab="presets">
       <h2 data-i18n="tabPresets">Presets</h2>
       <div class="pgroup" id="userPresetGroupHead2" hidden data-i18n="upHead">My presets</div>
@@ -800,8 +825,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-14"></script>
-<script src="objectinfo.js?v=2026-08-16-14"></script>
-<script src="app.js?v=2026-08-16-14"></script>
+<script src="i18n.js?v=2026-08-16-15"></script>
+<script src="objectinfo.js?v=2026-08-16-15"></script>
+<script src="app.js?v=2026-08-16-15"></script>
 </body>
 </html>

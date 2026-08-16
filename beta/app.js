@@ -82,6 +82,8 @@ const state = {
   gaiaPmYears: 0,        // Zeitraffer-Spanne in Jahren (0 = aus)
   objFar: false,         // Objekt einheitlich in die Ferne (hinter alle Sterne)
   occlude: 0,
+  scenarioOn: false,     // Szenario-Flug: Kamera fliegt die Wegpunkte ab
+  waypoints: [],         // [{ x, y, zoom, dur, hold, ease }] in Ebenen-Einheiten
   moonMode: false,       // Mond-Modus: Kugel-Tiefe statt Luminanz-Tiefe
   moonDisk: null,        // erkannte Mondscheibe { cx, cy, r } (normiert auf Bildbreite)
   starDetails: true,     // Sternphysik (Größe/Alter) in Labels anzeigen
@@ -2439,6 +2441,66 @@ function coverBase(viewAspect, imgAspect) {
  * Ablauf: Rohzeit -> Loop-Dreieck (hin & zurück) -> Easing -> effektive
  * Flugzeit te, aus der Zoom, Rotation, Ziel-Fahrt und Schwenk berechnet werden.
  */
+
+// ------------------------------------------------- Szenario-Flug (Wegpunkte)
+
+/** Gesamtdauer des Wegpunkt-Plans in Sekunden (Etappen + Pausen). */
+function scenarioTotal() {
+  const wps = state.waypoints;
+  let total = 0;
+  for (let i = 0; i < wps.length; i++) {
+    total += Math.max(0, wps[i].hold || 0);
+    if (i > 0) total += Math.max(0.2, wps[i].dur || 0.2);
+  }
+  return Math.max(0.4, total);
+}
+
+/**
+ * Kameraposition entlang des Wegpunkt-Plans bei Fortschritt p (0..1).
+ * Jede Etappe hat eigenes Easing; der Zoom interpoliert geometrisch
+ * (wirkt gleichmaessig statt am Ende zu rasen). Position wird wie im
+ * Zoom-Modus an die Bildkanten geklemmt.
+ */
+function scenarioAt(p) {
+  const wps = state.waypoints;
+  const total = scenarioTotal();
+  let s = Math.min(1, Math.max(0, p)) * total;
+  let ax = wps[0].x, ay = wps[0].y, zoom = Math.max(1, wps[0].zoom || 1);
+  outer:
+  for (let i = 0; i < wps.length; i++) {
+    if (i > 0) {
+      const dur = Math.max(0.2, wps[i].dur || 0.2);
+      if (s <= dur) {
+        let k = s / dur;
+        if ((wps[i].ease || "smooth") !== "linear") k = smoothstep(k);
+        const a = wps[i - 1], b = wps[i];
+        const za = Math.max(1, a.zoom || 1), zb = Math.max(1, b.zoom || 1);
+        ax = a.x + (b.x - a.x) * k;
+        ay = a.y + (b.y - a.y) * k;
+        zoom = za * Math.pow(zb / za, k);
+        break outer;
+      }
+      s -= dur;
+    }
+    ax = wps[i].x; ay = wps[i].y; zoom = Math.max(1, wps[i].zoom || 1);
+    const hold = Math.max(0, wps[i].hold || 0);
+    if (s <= hold) break;
+    s -= hold;
+  }
+  const viewAspect = state.aspect;
+  const imgAspect = state.starless
+    ? state.starless.width / state.starless.height : 16 / 9;
+  const cover = coverBase(viewAspect, imgAspect);
+  const sc = cover * zoom;
+  const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.98;
+  const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.98;
+  return { zoom, cx: Math.min(freeX, Math.max(-freeX, ax)), cy: Math.min(freeY, Math.max(-freeY, ay)) };
+}
+
+function scenarioActive() {
+  return state.scenarioOn && state.waypoints.length >= 2;
+}
+
 function camAt(loopT) {
   const D = state.duration;
   const u = Math.min(1, Math.max(0, loopT / D));
@@ -2459,7 +2521,10 @@ function camAt(loopT) {
 
   // Flugmodus: entweder in den Nebel zoomen oder seitlich übers Bild gleiten
   let zoom, cx, cy, driftTX = 0, driftTY = 0;
-  if (state.flightMode === "lateral") {
+  if (scenarioActive()) {
+    const sp = scenarioAt(p);
+    zoom = sp.zoom; cx = sp.cx; cy = sp.cy;
+  } else if (state.flightMode === "lateral") {
     // Konstanter Zoom; die Kamera fährt entlang der eingestellten Richtung
     // durch das Ziel (Klickpunkt). Die Strecke ist so begrenzt, dass der
     // Bildausschnitt nicht über den Rand hinausläuft.
@@ -2531,7 +2596,7 @@ function camAt(loopT) {
   // Loop-Modus nahtlos hin & zurück). Startpunkt ist der per Regler
   // verschiebbare Ausschnitt; beides wird an die Bildkanten geklemmt, damit
   // nie über den Bildrand hinaus geschwenkt wird.
-  if (state.flightMode !== "lateral") {
+  if (state.flightMode !== "lateral" && !scenarioActive()) {
     const viewAspect = state.aspect;
     const imgAspect = state.starless
       ? state.starless.width / state.starless.height : 16 / 9;
@@ -3058,6 +3123,7 @@ $("btnSpinCenter").addEventListener("click", () => {
 
 $("ctlLoop").addEventListener("change", () => {
   state.loopMode = $("ctlLoop").checked;
+  updateScenarioUi();
   state.t0 = performance.now();
   state.pausedAt = 0;
 });
@@ -3908,6 +3974,93 @@ function applyImageFlip(fh, fv) {
   uploadStars();
   updateGaiaStatus();
 }
+// ------------------------------------------------- Szenario-Tab (Wegpunkte)
+
+/** Kamera-Regler sperren/freigeben und Videolaenge an den Plan koppeln. */
+function updateScenarioUi() {
+  const on = scenarioActive();
+  for (const id of ["ctlFlightMode", "ctlDriftDir", "ctlZoom", "ctlSpeed",
+    "ctlEaseMode", "ctlEase", "ctlDuration"]) {
+    const el = $(id);
+    if (el) el.disabled = on;
+  }
+  if (on) {
+    const total = scenarioTotal();
+    state.duration = state.loopMode ? total * 2 : total;
+    $("outDuration").textContent = state.duration.toFixed(1).replace(/\.0$/, "") + " s";
+    $("scenStatus").textContent = t("scenActive", state.waypoints.length,
+      state.duration.toFixed(1).replace(/\.0$/, ""));
+  } else {
+    state.duration = parseFloat($("ctlDuration").value);
+    $("outDuration").textContent = state.duration + " s";
+    $("scenStatus").textContent = state.scenarioOn && state.waypoints.length < 2
+      ? t("scenNeedTwo") : "";
+  }
+}
+
+/** Wegpunkt-Liste als editierbare Zeilen neu aufbauen. */
+function rebuildWaypointList() {
+  const list = $("wpList");
+  list.innerHTML = "";
+  const imgAspect = state.starless
+    ? state.starless.width / state.starless.height : 16 / 9;
+  state.waypoints.forEach((wp, i) => {
+    const row = document.createElement("div");
+    row.className = "wprow";
+    const pos = `${Math.round(wp.x / imgAspect * 200)} | ${Math.round(wp.y * 200)}`;
+    row.innerHTML =
+      `<b>${i + 1}</b><span class="wppos">${pos}</span>` +
+      `<label>${t("wpZoom")} <input type="number" data-k="zoom" min="1" max="8" step="0.05" value="${wp.zoom}"></label>` +
+      (i > 0 ? `<label>${t("wpDur")} <input type="number" data-k="dur" min="0.2" max="60" step="0.1" value="${wp.dur}"></label>` : "") +
+      `<label>${t("wpHold")} <input type="number" data-k="hold" min="0" max="30" step="0.1" value="${wp.hold}"></label>` +
+      (i > 0 ? `<select data-k="ease"><option value="smooth">${t("wpEaseSmooth")}</option><option value="linear">${t("wpEaseLinear")}</option></select>` : "") +
+      `<button class="wpbtn" data-a="up" title="\u2191">\u2191</button>` +
+      `<button class="wpbtn" data-a="down" title="\u2193">\u2193</button>` +
+      `<button class="wpbtn" data-a="del" title="\u2715">\u2715</button>`;
+    const sel = row.querySelector('select[data-k="ease"]');
+    if (sel) sel.value = wp.ease || "smooth";
+    row.querySelectorAll("input[data-k], select[data-k]").forEach((el) => {
+      el.addEventListener("change", () => {
+        const k = el.dataset.k;
+        wp[k] = k === "ease" ? el.value : parseFloat(el.value);
+        updateScenarioUi();
+      });
+    });
+    row.querySelectorAll("button[data-a]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const a = btn.dataset.a;
+        if (a === "del") state.waypoints.splice(i, 1);
+        if (a === "up" && i > 0) [state.waypoints[i - 1], state.waypoints[i]] = [state.waypoints[i], state.waypoints[i - 1]];
+        if (a === "down" && i < state.waypoints.length - 1) [state.waypoints[i + 1], state.waypoints[i]] = [state.waypoints[i], state.waypoints[i + 1]];
+        rebuildWaypointList();
+        updateScenarioUi();
+      });
+    });
+    list.appendChild(row);
+  });
+}
+
+$("btnWpAdd").addEventListener("click", () => {
+  const last = state.waypoints[state.waypoints.length - 1];
+  state.waypoints.push({
+    x: state.target.x, y: state.target.y,
+    zoom: last ? last.zoom : state.zoomBase,
+    dur: 5, hold: 0.5, ease: "smooth",
+  });
+  rebuildWaypointList();
+  updateScenarioUi();
+});
+
+$("ctlScenOn").addEventListener("change", () => {
+  state.scenarioOn = $("ctlScenOn").checked;
+  // Leerer Plan beim Einschalten: aktueller Ausschnitt wird der Startpunkt
+  if (state.scenarioOn && state.waypoints.length === 0) {
+    state.waypoints.push({ x: 0, y: 0, zoom: state.zoomBase, dur: 5, hold: 0.5, ease: "smooth" });
+    rebuildWaypointList();
+  }
+  updateScenarioUi();
+});
+
 // Mond-Modus: Scheibe erkennen und Kugel-Tiefe aktivieren (Prototyp)
 $("ctlMoonMode").addEventListener("change", () => {
   const on = $("ctlMoonMode").checked;
