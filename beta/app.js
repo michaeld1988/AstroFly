@@ -86,6 +86,7 @@ const state = {
   waypoints: [],         // [{ x, y, zoom, dur, hold, ease }] in Ebenen-Einheiten
   moonMode: false,       // Mond-Modus: Kugel-Tiefe statt Luminanz-Tiefe
   moonDisk: null,        // erkannte Mondscheibe { cx, cy, r } (normiert auf Bildbreite)
+  moonObj: "moon",       // Auswahl im Bilder-Tab: moon | planet (gleiche Kugel-Logik)
   starDetails: true,     // Sternphysik (Größe/Alter) in Labels anzeigen
   flipH: false,          // Bild horizontal gespiegelt (Starless + Maske)
   flipV: false,          // Bild vertikal gespiegelt
@@ -212,6 +213,9 @@ uniform float uBicubic;     // 1 = bikubisch abtasten (beim Hineinzoomen)
 uniform float uObjFar;      // 1 = Objekt einheitlich in die Ferne legen
 uniform float uViewAspect;  // Breite/Höhe des Ausgabeformats
 uniform float uImgAspect;   // Breite/Höhe des Bildes
+uniform float uMoonMode;    // Mond-Modus: Himmel ausserhalb der Scheibe schwarz
+uniform vec2 uMoonC;        // Scheibenzentrum in Textur-UV
+uniform float uMoonR;       // Scheibenradius als Anteil der Bildbreite
 uniform float uZoom;        // aktueller Gesamtzoom
 uniform float uParallax;    // 0..1
 uniform float uAngle;       // rad
@@ -394,6 +398,14 @@ void main() {
     float ring = smoothstep(0.05, 0.0, abs(r - 1.0));
     col = mix(col, vec3(1.0, 0.35, 0.25), ring * 0.85);
   }
+  // Mond-Modus: alles ausserhalb der erkannten Scheibe ist Himmel - schwarz.
+  // Ohne diese Maske sampeln Hintergrund-Pixel (ferne Tiefe) mit anderem
+  // Zoom-Exponenten in die helle Scheibe hinein -> Echo-Ring um den Mond;
+  // beim Rauszoomen erschienen zudem gespiegelte Kopien (Textur-Wrap)
+  if (uMoonMode > 0.5) {
+    vec2 ddM = vec2(uv.x - uMoonC.x, (uv.y - uMoonC.y) / uImgAspect);
+    col *= 1.0 - smoothstep(uMoonR * 1.005, uMoonR * 1.04, length(ddM));
+  }
   outColor = vec4(col, 1.0);
 }`;
 
@@ -454,6 +466,8 @@ uniform float uPmYears2;  // ... und kurz danach (für die Streifen)
 // Nebel-Okklusion: Nebelschwaden, die VOR einem Stern liegen, verdecken ihn
 uniform float uOcclude;    // Stärke 0..1 (0 = aus)
 uniform float uMoonMode;   // Mond-Modus: Sterne hinter die Mondscheibe zwingen
+uniform vec2 uMoonCS;      // Scheibenzentrum in Textur-UV
+uniform float uMoonRS;     // Scheibenradius als Anteil der Bildbreite
 uniform float uAnchor;     // Sterne im Nebel verankern: Stärke 0..1
 uniform vec2 uTiltB2;      // Nebel-Kippwert der zweiten Kamera (für Anker-Streifen)
 uniform float uObjFarS;    // 1 = Objekt liegt einheitlich weit hinten
@@ -514,9 +528,9 @@ void main() {
     return;
   }
 
-  // Mond-Modus: alle Sterne liegen HINTER der Mondkugel (Scheibe verdeckt sie).
-  // Die Kugel reicht bis Tiefe ~0.5 am Rand - 0.30 laesst sicher Luft dazwischen
-  if (uMoonMode > 0.5) depth = min(depth, 0.30);
+  // Mond-Modus: Sterne stehen quasi im Unendlichen - weit hinter dem Mond
+  // und nahezu unbewegt (der Mond ist das einzig nahe Objekt im Bild)
+  if (uMoonMode > 0.5) depth = min(depth, 0.03);
 
   // Sterne im Nebel verankern: Sterne auf dichten Nebelregionen übernehmen
   // Tiefe und Bewegung des Nebels an ihrer Bildposition - sie bleiben beim
@@ -547,6 +561,9 @@ void main() {
   ex = mix(ex, 1.0 + uParallax * (dNA - 0.45) * uDepthRange, anchorW);
   // Ferne Sterne nie rückwärts fliegen lassen (Exponent bliebe sonst negativ)
   ex = max(ex, 0.12);
+  // Mond-Modus: Sterne stehen fest am Himmel (Exponent 0 = kein Mitzoomen).
+  // Wer bewusst Bewegung will, zieht die Stern-Parallaxe ueber 100 %
+  if (uMoonMode > 0.5) ex = 0.3 * max(0.0, uStarPar - 1.0);
   float scale = uCover * pow(uZoom, ex);
   vec2 sp1 = spinStar(aPos + aPm * uPmYears, uSpinAngleS);
   vec2 tOff = mix(uTilt * (depth - 0.45), uTiltB * (dNA - 0.45), anchorW);
@@ -580,6 +597,10 @@ void main() {
       float lum = dot(cN, vec3(0.299, 0.587, 0.114));
       float front = smoothstep(0.02, 0.14, dN - depth);
       float dens = smoothstep(0.04, 0.45, lum);
+      if (uMoonMode > 0.5) {
+        vec2 ddM = vec2(uvN.x - uMoonCS.x, (uvN.y - uMoonCS.y) / uImgAspectS);
+        dens = 1.0 - smoothstep(uMoonRS * 0.99, uMoonRS * 1.02, length(ddM));
+      }
       occ = occStr * front * dens;
     }
   }
@@ -2718,6 +2739,10 @@ function render(forcedT) {
   // Galaxien-Rotation (te-basiert -> im Loop-Modus nahtlos hin & zurück)
   u1f(bgProg, "uSpinAngle", state.spinSpeed * Math.PI / 180 * cam.te);
   u2f(bgProg, "uSpinCenter", state.spinCenter.x, state.spinCenter.y);
+  const mdU = state.moonMode && state.moonDisk ? state.moonDisk : null;
+  u1f(bgProg, "uMoonMode", mdU ? 1 : 0);
+  u2f(bgProg, "uMoonC", mdU ? mdU.cx : 0, mdU ? 1 - mdU.cy : 0);
+  u1f(bgProg, "uMoonR", mdU ? mdU.r : 1);
   u1f(bgProg, "uSpinRadius", Math.max(0.02, (state.spinRadius / 100) * 0.75));
   u1f(bgProg, "uSpinDiff", state.spinDiff / 100);
   const spinTiltRad = state.spinTilt * Math.PI / 180;
@@ -2813,7 +2838,10 @@ function render(forcedT) {
     u1f(starProg, "uPmYears2", state.gaiaPmYears * (cam2.te / pmSpan));
     // Nebel-Okklusion: Tiefe + Dichte des Nebels an der Sternposition
     u1f(starProg, "uOcclude", state.occlude / 100);
-    u1f(starProg, "uMoonMode", state.moonMode ? 1 : 0);
+    const mdS = state.moonMode && state.moonDisk ? state.moonDisk : null;
+    u1f(starProg, "uMoonMode", mdS ? 1 : 0);
+    u2f(starProg, "uMoonCS", mdS ? mdS.cx : 0, mdS ? 1 - mdS.cy : 0);
+    u1f(starProg, "uMoonRS", mdS ? mdS.r : 1);
     u1f(starProg, "uAnchor", state.anchorStars / 100);
     u2f(starProg, "uTiltB2", tilt2X + cam2.driftTX * drK, tilt2Y + cam2.driftTY * drK);
     u1f(starProg, "uObjFarS", state.objFar ? 1 : 0);
@@ -4051,6 +4079,10 @@ $("btnWpAdd").addEventListener("click", () => {
   updateScenarioUi();
 });
 
+$("selMoonObj").addEventListener("change", () => {
+  state.moonObj = $("selMoonObj").value;
+});
+
 $("ctlScenOn").addEventListener("change", () => {
   state.scenarioOn = $("ctlScenOn").checked;
   // Leerer Plan beim Einschalten: aktueller Ausschnitt wird der Startpunkt
@@ -4065,6 +4097,7 @@ $("ctlScenOn").addEventListener("change", () => {
 $("ctlMoonMode").addEventListener("change", () => {
   const on = $("ctlMoonMode").checked;
   const status = $("moonStatus");
+  $("moonObjRow").hidden = !on;
   if (on) {
     if (!state.starless) {
       $("ctlMoonMode").checked = false;

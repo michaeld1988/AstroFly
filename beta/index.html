@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-16-15">
+<link rel="stylesheet" href="style.css?v=2026-08-16-16">
 </head>
 <body>
 
@@ -114,6 +114,24 @@
       </div>
       <p class="tip" data-i18n="jpegTip">Tip: prefer TIFF or PNG. JPEG compression creates
       artifacts in dark areas that can affect the depth map and the nebula-color masks.</p>
+      <label class="check">
+        <input type="checkbox" id="ctlMoonMode">
+        <span data-i18n="moonMode">Subject is the Moon / a planet (no star mask needed)</span>
+        <button class="qm" data-help="hintMoon">?</button>
+      </label>
+      <div class="selrow" id="moonObjRow" hidden>
+        <label for="selMoonObj" data-i18n="moonObjLabel">Object</label>
+        <select id="selMoonObj">
+          <option value="moon" data-i18n="moonObjMoon">Moon</option>
+          <option value="planet" data-i18n="moonObjPlanet">Planet (sphere)</option>
+        </select>
+      </div>
+      <p class="tip hint2" id="hintMoon" hidden data-i18n="moonHint">For single moon shots,
+      no star mask needed: AstroFly detects the lunar disk and replaces the brightness depth
+      map with a true sphere, so the moon reads as round during camera moves. Generated
+      background stars (Stars tab) stay behind the disk. Works best with a bright, (nearly)
+      full moon against dark sky.</p>
+      <p class="tip" id="moonStatus"></p>
       <button id="btnDemo" class="secondary" data-i18n="demoBtn">Try it with a demo image (Orion Nebula)</button>
       <details class="adv">
         <summary data-i18n="advStretch">Advanced · mask stretch</summary>
@@ -634,17 +652,6 @@
         <p class="tip" data-i18n-html="gaiaHelpText">…</p>
       </div>
       <label class="check">
-        <input type="checkbox" id="ctlMoonMode">
-        <span data-i18n="moonMode">Moon mode: spherical depth (prototype)</span>
-        <button class="qm" data-help="hintMoon">?</button>
-      </label>
-      <p class="tip hint2" id="hintMoon" hidden data-i18n="moonHint">For single moon shots,
-      no star mask needed: AstroFly detects the lunar disk and replaces the brightness depth
-      map with a true sphere, so the moon reads as round during camera moves. Generated
-      background stars (Stars tab) stay behind the disk. Works best with a bright, (nearly)
-      full moon against dark sky.</p>
-      <p class="tip" id="moonStatus"></p>
-      <label class="check">
         <input type="checkbox" id="ctlFlipH">
         <span data-i18n="flipH">Mirror image horizontally (starless + mask)</span>
       </label>
@@ -825,8 +832,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-15"></script>
-<script src="objectinfo.js?v=2026-08-16-15"></script>
-<script src="app.js?v=2026-08-16-15"></script>
+<script src="i18n.js?v=2026-08-16-16"></script>
+<script src="objectinfo.js?v=2026-08-16-16"></script>
+<script src="app.js?v=2026-08-16-16"></script>
 </body>
 </html>
