@@ -4248,6 +4248,12 @@ $("btnEaseClose").addEventListener("click", () => {
   easeEditIdx = -1;
 });
 
+// Sprachwechsel: dynamisch gebaute Wegpunkt-Zeilen und Status neu uebersetzen
+I18N.onChange.push(() => {
+  rebuildWaypointList();
+  updateScenarioUi();
+});
+
 $("wpDurNextR").addEventListener("input", () => {
   $("wpDurNext").value = $("wpDurNextR").value;
 });
