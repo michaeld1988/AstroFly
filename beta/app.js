@@ -61,6 +61,7 @@ const state = {
   loopMode: false,       // hin & zurück, nahtlos
   smooth: 18,
   depthRes: 768,        // Kantenlaenge der Tiefenkarte (768/1536/2048)
+  customDepth: null,     // eigene, importierte Tiefenkarte { canvas, width, height }
   invertDepth: false,
   target: { x: 0, y: 0 }, // Zoomziel in Bildebenen-Einheiten (0,0 = Mitte)
 
@@ -1052,11 +1053,12 @@ function downscale(img, maxEdge) {
 // ---------------------------------------------------------------- Tiefenkarte
 
 /** Geglättete, kontrastgestreckte Luminanzkarte des Starless-Bildes. */
-function computeLuminanceMap(radius, invert) {
-  const src = downscale(state.starless, state.depthRes);
+function computeLuminanceMap(radius, invert, maxEdge) {
+  const res = maxEdge || state.depthRes;
+  const src = downscale(state.starless, res);
   // Radius ist in Karten-Pixeln: bei hoeherer Aufloesung mitskalieren,
   // damit die Glaettung optisch identisch bleibt
-  radius = Math.max(1, Math.round(radius * state.depthRes / 768));
+  radius = Math.max(1, Math.round(radius * res / 768));
   const w = src.width, h = src.height;
   const data = src.getContext("2d").getImageData(0, 0, w, h).data;
 
@@ -1207,11 +1209,48 @@ function computeMoonSphereMap() {
   return { canvas: c, data: dst, w, h };
 }
 
+
+/**
+ * Importierte Tiefenkarte aufbereiten: Luminanz wird 1:1 uebernommen
+ * (keine Kontraststreckung - gemalte Werte bleiben exakt), Glaettung
+ * und Invertieren wirken wie bei der automatischen Karte.
+ */
+function computeCustomDepthMap(radius, invert, maxEdge) {
+  const res = maxEdge || state.depthRes;
+  const src = downscale(state.customDepth, res);
+  const w = src.width, h = src.height;
+  const data = src.getContext("2d").getImageData(0, 0, w, h).data;
+  let a = new Float32Array(w * h);
+  for (let i = 0, j = 0; i < a.length; i++, j += 4) {
+    a[i] = (0.299 * data[j] + 0.587 * data[j + 1] + 0.114 * data[j + 2]) / 255;
+  }
+  const r = Math.max(1, Math.round(radius * res / 768));
+  const b = new Float32Array(w * h);
+  for (let pass = 0; pass < 3; pass++) {
+    boxBlurH(a, b, w, h, r);
+    boxBlurV(b, a, w, h, r);
+  }
+  const dst = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0, j = 0; i < a.length; i++, j += 4) {
+    let d = a[i];
+    if (invert) d = 1 - d;
+    const v = Math.round(Math.min(1, Math.max(0, d)) * 255);
+    dst[j] = dst[j + 1] = dst[j + 2] = v;
+    dst[j + 3] = 255;
+  }
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  c.getContext("2d").putImageData(new ImageData(dst, w, h), 0, 0);
+  return { canvas: c, data: dst, w, h };
+}
+
 function buildDepthMap() {
   if (!state.starless) return;
   const m = state.moonMode && state.moonDisk
     ? computeMoonSphereMap()
-    : computeLuminanceMap(state.smooth, state.invertDepth);
+    : state.customDepth
+      ? computeCustomDepthMap(state.smooth, state.invertDepth)
+      : computeLuminanceMap(state.smooth, state.invertDepth);
   state.depthCanvas = m.canvas;
   state.depthData = { data: m.data, w: m.w, h: m.h }; // CPU-Kopie für die Klick-Zuordnung
 
@@ -3396,6 +3435,71 @@ $("ctlInvert").addEventListener("change", () => {
   state.invertDepth = $("ctlInvert").checked;
   buildDepthMap();
 });
+// Tiefenkarte exportieren / eigene Tiefenkarte importieren
+function updateDepthCustomUi(msg) {
+  const status = $("depthCustomStatus");
+  const active = !!state.customDepth;
+  status.hidden = !msg && !active;
+  status.textContent = msg || (active
+    ? t("depthCustomActive", state.customDepth.width + "\u00d7" + state.customDepth.height) : "");
+  $("btnDepthClear").hidden = !active;
+}
+
+$("btnDepthExport").addEventListener("click", () => {
+  if (!state.starless) return;
+  // In nativer Bildaufloesung rechnen, damit in Photoshop & Co.
+  // pixelgenau auf dem Original gearbeitet werden kann
+  const native = Math.max(state.starless.width, state.starless.height);
+  const m = state.customDepth
+    ? computeCustomDepthMap(state.smooth, state.invertDepth, native)
+    : computeLuminanceMap(state.smooth, state.invertDepth, native);
+  m.canvas.toBlob((blob) => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    const base = (state.starless.name || "astrofly").replace(/\.[^.]+$/, "");
+    a.download = base + "-depthmap.png";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }, "image/png");
+});
+
+$("btnDepthImport").addEventListener("click", () => {
+  if (!state.starless) {
+    updateDepthCustomUi(t("depthNoStarless"));
+    return;
+  }
+  $("fileDepth").click();
+});
+
+$("fileDepth").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file || !state.starless) return;
+  try {
+    const img = await decodeFile(file);
+    const aImg = img.width / img.height;
+    const aStar = state.starless.width / state.starless.height;
+    if (Math.abs(aImg - aStar) / aStar > 0.01) {
+      updateDepthCustomUi(t("depthAspectErr"));
+      return;
+    }
+    state.customDepth = img;
+    updateDepthCustomUi();
+    buildDepthMap();
+  } catch (err) {
+    console.error(err);
+    updateDepthCustomUi(t("loadFailed", file.name, err.message));
+  }
+});
+
+$("btnDepthClear").addEventListener("click", () => {
+  state.customDepth = null;
+  updateDepthCustomUi();
+  buildDepthMap();
+});
+
 $("ctlDepthRes").addEventListener("change", () => {
   state.depthRes = parseInt($("ctlDepthRes").value, 10);
   buildDepthMap();
@@ -3845,6 +3949,10 @@ async function loadFile(which, file) {
       texColor = makeTexture(colSrc);
       state.texColorW = colSrc.width;
       state.texColorH = colSrc.height;
+      if (state.customDepth) {
+        state.customDepth = null;
+        updateDepthCustomUi(t("depthCustomCleared"));
+      }
       if (state.moonMode) {
         state.moonDisk = detectMoonDisk();
         if (!state.moonDisk) {
@@ -4051,6 +4159,7 @@ function flipMask(fh, fv) {
 function applyImageFlip(fh, fv) {
   if (state.starless) {
     flipImage(state.starless, fh, fv);
+    if (state.customDepth) flipImage(state.customDepth, fh, fv);
     if (texColor) gl.deleteTexture(texColor);
     const colSrc = downscale(state.starless, 4096);
     texColor = makeTexture(colSrc);
