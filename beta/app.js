@@ -1190,7 +1190,12 @@ function computeMoonSphereMap() {
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const rr = Math.hypot(x - cx, y - cy) / R;
-      a[y * w + x] = rr >= 1 ? 0.18 : 0.5 + 0.38 * Math.sqrt(1 - rr * rr);
+      // Himmel liegt auf derselben Grundtiefe wie der Mondrand (0.5):
+      // KEIN Tiefensprung an der Scheibenkante - der Sprung erzeugte beim
+      // Vorbeiflug ein Echo/Doppelbild des Mondes (die Warp-Iteration fand
+      // am Rand die falsche von zwei Loesungen). Der Himmel ist schwarz,
+      // seine Bewegung ist unsichtbar - die Kugel waechst nur nach vorn
+      a[y * w + x] = rr >= 1 ? 0.5 : 0.5 + 0.38 * Math.sqrt(1 - rr * rr);
     }
   }
   const b = new Float32Array(w * h);
