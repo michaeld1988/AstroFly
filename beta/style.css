@@ -471,3 +471,5 @@ button.primary:not(:disabled):hover { border-color: var(--accent); }
 }
 #easePresets { flex-wrap: wrap; }
 #easePresets button { flex: 1 1 40%; padding: 6px 4px; font-size: 12px; }
+.wprow input[type="range"] { width: 86px; }
+.wpnext input[type="range"] { flex: 1; min-width: 70px; }

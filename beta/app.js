@@ -4094,8 +4094,8 @@ function rebuildWaypointList() {
       `<b>${i + 1}</b><span class="wppos">${pos}</span>` +
       `<label>${t("wpZoom")} <input type="number" data-k="zoom" min="1" max="8" step="0.05" value="${wp.zoom}"></label>` +
       `<label>${t("wpAngle")} <input type="number" data-k="angle" min="-180" max="180" step="0.5" value="${wp.angle || 0}"></label>` +
-      (i > 0 ? `<label>${t("wpDur")} <input type="number" data-k="dur" min="0.2" max="60" step="0.1" value="${wp.dur}"></label>` : "") +
-      `<label>${t("wpHold")} <input type="number" data-k="hold" min="0" max="30" step="0.1" value="${wp.hold}"></label>` +
+      (i > 0 ? `<label>${t("wpDur")} <input type="range" data-r="dur" min="0.2" max="10" step="0.1" value="${Math.min(10, wp.dur)}"><input type="number" data-k="dur" min="0.2" max="60" step="0.1" value="${wp.dur}"></label>` : "") +
+      `<label>${t("wpHold")} <input type="range" data-r="hold" min="0" max="10" step="0.1" value="${Math.min(10, wp.hold)}"><input type="number" data-k="hold" min="0" max="30" step="0.1" value="${wp.hold}"></label>` +
       (i > 0 ? `<select data-k="ease"><option value="smooth">${t("wpEaseSmooth")}</option><option value="linear">${t("wpEaseLinear")}</option><option value="custom">${t("wpEaseCustom")}</option></select>` : "") +
       (i > 0 ? `<button class="wpbtn" data-a="curve" title="${t("wpCurve")}">&#8767;</button>` : "") +
       `<button class="wpbtn" data-a="goto" title="${t("wpGoto")}">\u2316</button>` +
@@ -4109,6 +4109,17 @@ function rebuildWaypointList() {
         const k = el.dataset.k;
         wp[k] = k === "ease" ? el.value : parseFloat(el.value);
         if (k === "ease" && el.value === "custom") openEaseEditor(i);
+        const rng = row.querySelector(`input[data-r="${k}"]`);
+        if (rng) rng.value = String(Math.min(10, wp[k]));
+        updateScenarioUi();
+      });
+    });
+    row.querySelectorAll("input[data-r]").forEach((el) => {
+      el.addEventListener("input", () => {
+        const k = el.dataset.r;
+        wp[k] = parseFloat(el.value);
+        const num = row.querySelector(`input[data-k="${k}"]`);
+        if (num) num.value = el.value;
         updateScenarioUi();
       });
     });
@@ -4237,6 +4248,13 @@ $("btnEaseClose").addEventListener("click", () => {
   easeEditIdx = -1;
 });
 
+$("wpDurNextR").addEventListener("input", () => {
+  $("wpDurNext").value = $("wpDurNextR").value;
+});
+$("wpDurNext").addEventListener("change", () => {
+  $("wpDurNextR").value = String(Math.min(10, parseFloat($("wpDurNext").value) || 5));
+});
+
 $("btnWpAdd").addEventListener("click", () => {
   if (!state.scenEdit) setScenEdit(true);
   const v = state.scenView;
@@ -4330,7 +4348,7 @@ canvas.addEventListener("wheel", (e) => {
 }, { passive: false });
 canvas.addEventListener("pointerdown", (e) => {
   if (!state.scenEdit || !state.starless) return;
-  if (e.button !== 0 && e.button !== 2) return;
+  if (e.button !== 0 && e.button !== 1 && e.button !== 2) return;
   e.preventDefault();
   scenDrag = { b: e.button, x: e.clientX, y: e.clientY };
   canvas.setPointerCapture(e.pointerId);
@@ -4340,7 +4358,7 @@ canvas.addEventListener("pointermove", (e) => {
   const dx = e.clientX - scenDrag.x, dy = e.clientY - scenDrag.y;
   scenDrag.x = e.clientX; scenDrag.y = e.clientY;
   const v = state.scenView;
-  if (scenDrag.b === 2) {
+  if (scenDrag.b === 1 || scenDrag.b === 2) {
     v.angle += dx * 0.25;
     return;
   }
