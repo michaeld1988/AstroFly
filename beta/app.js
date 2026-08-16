@@ -1201,10 +1201,15 @@ function buildStarBuffer() {
 
   state.maskStarCount = list.length;
   state.maskStarFloats = buf;
-  // Neue Maske -> alte Gaia-Zuordnung passt nicht mehr
+  // Neue Maske -> alte Gaia-Zuordnung passt nicht mehr. Wenn der Katalog
+  // gecacht ist, gleichen wir sofort neu ab - der Wissenschafts-Modus soll
+  // einen Masken-Neuaufbau überleben, statt kommentarlos herauszufallen
   state.gaiaDepth = null;
   state.gaiaColorRGB = null;
   state.gaiaPM = null;
+  if (state.gaiaCatalog && state.wcs && typeof matchGaia === "function") {
+    try { matchGaia(state.gaiaCatalog); } catch { /* dann eben neu abgleichen */ }
+  }
   if (typeof updateGaiaStatus === "function") updateGaiaStatus();
   uploadStars();
 }
@@ -3184,6 +3189,13 @@ function updateGaiaStatus() {
   const pct = g ? Math.round((g.matched / Math.max(1, g.total)) * 100) : 0;
   const sciAllowed = pct >= 75;
   $("ctlGaiaOnly").disabled = !sciAllowed;
+  // Solange NUR echte Gaia-Tiefen zählen, sind die Zufalls-Tiefen-Regler
+  // und die Mischstärke ohne Funktion - sichtbar ausgrauen
+  const gaiaLock = state.gaiaOnly && sciAllowed;
+  for (const id of ["ctlStarDist", "ctlSpread", "ctlLayers", "ctlGaiaAmt"]) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = gaiaLock;
+  }
   $("ctlGaiaColors").disabled = !state.gaiaDepth;
   $("btnObjects").disabled = !(state.wcs && state.starless);
   if (!sciAllowed && state.gaiaOnly) {
@@ -3210,6 +3222,7 @@ $("btnGaiaHelp").addEventListener("click", () => {
 
 $("ctlGaiaOnly").addEventListener("change", () => {
   state.gaiaOnly = $("ctlGaiaOnly").checked;
+  updateGaiaStatus();
 });
 
 $("ctlSpinStars").addEventListener("change", () => {
@@ -3408,6 +3421,7 @@ $("fileWcs").addEventListener("change", async () => {
     wcs._name = file.name;
     state.wcs = wcs;
     state.wcsFlip = undefined; state.wcsFit = null;
+    state.gaiaCatalog = null;
     state.gaiaDepth = null; state.gaiaInfo = null; state.gaiaColorRGB = null; state.gaiaPM = null;
     reprojectLabels();
     uploadStars();
@@ -3433,6 +3447,9 @@ $("btnGaia").addEventListener("click", async () => {
   try {
     const stars = await queryGaia(c.ra, c.dec, radius);
     gaiaTransient = null;
+    // Katalog behalten: Damit übersteht der Abgleich einen Masken-Neuaufbau
+    // (Stretch, Spiegeln, neue Maske) ohne neue Netzabfrage
+    state.gaiaCatalog = stars;
     const info = matchGaia(stars);
     if (!info) gaiaTransient = { key: "gaiaNoMatch", args: [] };
   } catch (e) {
@@ -3570,6 +3587,7 @@ async function loadFile(which, file) {
       img.wcs._name = file.name;
       state.wcs = img.wcs;
       state.wcsFlip = undefined; state.wcsFit = null;
+      state.gaiaCatalog = null;
       state.gaiaDepth = null; state.gaiaInfo = null; state.gaiaColorRGB = null; state.gaiaPM = null;
       gaiaTransient = { key: "gaiaWcsAuto", args: [file.name] };
       reprojectLabels();
@@ -3659,21 +3677,27 @@ function rebuildUserPresetList() {
   const none = names.length === 0;
   $("btnPresetApply").disabled = none;
   $("btnPresetDelete").disabled = none;
-  // Easy-Seite: eigene Presets als Ein-Klick-Karten - ein Klick, und die
-  // gespeicherte Animation liegt zu 90 % fertig auf dem eigenen Bild
-  const grid = $("userPresetGrid");
-  grid.innerHTML = "";
-  for (const name of names) {
-    const b = document.createElement("button");
-    b.className = "pcard";
-    const bold = document.createElement("b");
-    bold.textContent = name;
-    b.appendChild(bold);
-    b.addEventListener("click", () => applyUserPreset(name));
-    grid.appendChild(b);
+  // Eigene Presets als Ein-Klick-Karten - auf der Easy-Seite UND im
+  // Presets-Tab: ein Klick, und die gespeicherte Animation liegt zu 90 %
+  // fertig auf dem eigenen Bild
+  for (const [gridId, headId] of [["userPresetGrid", "userPresetGroupHead"],
+                                  ["userPresetGrid2", "userPresetGroupHead2"]]) {
+    const grid = document.getElementById(gridId);
+    const head = document.getElementById(headId);
+    if (!grid || !head) continue;
+    grid.innerHTML = "";
+    for (const name of names) {
+      const b = document.createElement("button");
+      b.className = "pcard";
+      const bold = document.createElement("b");
+      bold.textContent = name;
+      b.appendChild(bold);
+      b.addEventListener("click", () => applyUserPreset(name));
+      grid.appendChild(b);
+    }
+    grid.hidden = none;
+    head.hidden = none;
   }
-  grid.hidden = none;
-  $("userPresetGroupHead").hidden = none;
 }
 $("btnPresetSave").addEventListener("click", () => {
   const name = $("userPresetName").value.trim();
@@ -3802,6 +3826,7 @@ $("btnDemo").addEventListener("click", async () => {
         state.wcs = wcs;
         state.wcsFlip = undefined;
         state.wcsFit = null;
+        state.gaiaCatalog = null;
         state.gaiaDepth = null; state.gaiaInfo = null; state.gaiaColorRGB = null; state.gaiaPM = null;
         reprojectLabels();
         uploadStars();
