@@ -2467,6 +2467,37 @@ function coverBase(viewAspect, imgAspect) {
 
 // ------------------------------------------------- Szenario-Flug (Wegpunkte)
 
+
+/**
+ * Kubisches Bezier-Easing wie CSS cubic-bezier(x1,y1,x2,y2):
+ * P0=(0,0), P3=(1,1); fuer die Zeit k wird t mit Newton-Iteration
+ * (Bisektion als Rueckfall) aus x(t)=k bestimmt, Ergebnis ist y(t).
+ */
+function bezierEase(x1, y1, x2, y2, k) {
+  if (k <= 0) return 0;
+  if (k >= 1) return 1;
+  const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx;
+  const cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
+  const sampleX = (t) => ((ax * t + bx) * t + cx) * t;
+  const sampleY = (t) => ((ay * t + by) * t + cy) * t;
+  const slopeX = (t) => (3 * ax * t + 2 * bx) * t + cx;
+  let t = k;
+  for (let i = 0; i < 6; i++) {
+    const d = slopeX(t);
+    if (Math.abs(d) < 1e-6) break;
+    t -= (sampleX(t) - k) / d;
+    t = Math.min(1, Math.max(0, t));
+  }
+  if (Math.abs(sampleX(t) - k) > 1e-4) {
+    let lo = 0, hi = 1;
+    for (let i = 0; i < 24; i++) {
+      t = (lo + hi) / 2;
+      if (sampleX(t) < k) lo = t; else hi = t;
+    }
+  }
+  return sampleY(t);
+}
+
 /** Gesamtdauer des Wegpunkt-Plans in Sekunden (Etappen + Pausen). */
 function scenarioTotal() {
   const wps = state.waypoints;
@@ -2496,7 +2527,13 @@ function scenarioAt(p) {
       const dur = Math.max(0.2, wps[i].dur || 0.2);
       if (s <= dur) {
         let k = s / dur;
-        if ((wps[i].ease || "smooth") !== "linear") k = smoothstep(k);
+        const easeMode = wps[i].ease || "smooth";
+        if (easeMode === "custom") {
+          const cv = wps[i].curve || [0.42, 0, 0.58, 1];
+          k = bezierEase(cv[0], cv[1], cv[2], cv[3], k);
+        } else if (easeMode !== "linear") {
+          k = smoothstep(k);
+        }
         const a = wps[i - 1], b = wps[i];
         const za = Math.max(1, a.zoom || 1), zb = Math.max(1, b.zoom || 1);
         ax = a.x + (b.x - a.x) * k;
@@ -4059,7 +4096,8 @@ function rebuildWaypointList() {
       `<label>${t("wpAngle")} <input type="number" data-k="angle" min="-180" max="180" step="0.5" value="${wp.angle || 0}"></label>` +
       (i > 0 ? `<label>${t("wpDur")} <input type="number" data-k="dur" min="0.2" max="60" step="0.1" value="${wp.dur}"></label>` : "") +
       `<label>${t("wpHold")} <input type="number" data-k="hold" min="0" max="30" step="0.1" value="${wp.hold}"></label>` +
-      (i > 0 ? `<select data-k="ease"><option value="smooth">${t("wpEaseSmooth")}</option><option value="linear">${t("wpEaseLinear")}</option></select>` : "") +
+      (i > 0 ? `<select data-k="ease"><option value="smooth">${t("wpEaseSmooth")}</option><option value="linear">${t("wpEaseLinear")}</option><option value="custom">${t("wpEaseCustom")}</option></select>` : "") +
+      (i > 0 ? `<button class="wpbtn" data-a="curve" title="${t("wpCurve")}">&#8767;</button>` : "") +
       `<button class="wpbtn" data-a="goto" title="${t("wpGoto")}">\u2316</button>` +
       `<button class="wpbtn" data-a="up" title="\u2191">\u2191</button>` +
       `<button class="wpbtn" data-a="down" title="\u2193">\u2193</button>` +
@@ -4070,18 +4108,24 @@ function rebuildWaypointList() {
       el.addEventListener("change", () => {
         const k = el.dataset.k;
         wp[k] = k === "ease" ? el.value : parseFloat(el.value);
+        if (k === "ease" && el.value === "custom") openEaseEditor(i);
         updateScenarioUi();
       });
     });
     row.querySelectorAll("button[data-a]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const a = btn.dataset.a;
+        if (a === "curve") {
+          openEaseEditor(i);
+          return;
+        }
         if (a === "goto") {
           state.scenView = { x: wp.x, y: wp.y, zoom: wp.zoom, angle: wp.angle || 0 };
           setScenEdit(true);
           return;
         }
         if (a === "del") state.waypoints.splice(i, 1);
+        $("easeEditor").hidden = true; easeEditIdx = -1;
         if (a === "up" && i > 0) [state.waypoints[i - 1], state.waypoints[i]] = [state.waypoints[i], state.waypoints[i - 1]];
         if (a === "down" && i < state.waypoints.length - 1) [state.waypoints[i + 1], state.waypoints[i]] = [state.waypoints[i], state.waypoints[i + 1]];
         rebuildWaypointList();
@@ -4091,6 +4135,107 @@ function rebuildWaypointList() {
     list.appendChild(row);
   });
 }
+
+// Kurven-Editor fuer eigenes Easing je Etappe (Bezier wie in Schnittprogrammen)
+let easeEditIdx = -1;
+
+function easeEditorLayout() {
+  const cv = $("easeCanvas");
+  const P = 24; // Innenabstand
+  return { cv, g: cv.getContext("2d"), P, w: cv.width - P * 2, h: cv.height - P * 2 };
+}
+
+function drawEaseEditor() {
+  const wp = state.waypoints[easeEditIdx];
+  if (!wp) return;
+  const { cv, g, P, w, h } = easeEditorLayout();
+  const c = wp.curve || [0.42, 0, 0.58, 1];
+  const X = (x) => P + x * w;
+  const Y = (y) => P + (1 - y) * h;
+  g.clearRect(0, 0, cv.width, cv.height);
+  // Raster
+  g.strokeStyle = "#1d2331"; g.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    g.beginPath(); g.moveTo(X(i / 4), Y(0)); g.lineTo(X(i / 4), Y(1)); g.stroke();
+    g.beginPath(); g.moveTo(X(0), Y(i / 4)); g.lineTo(X(1), Y(i / 4)); g.stroke();
+  }
+  // Diagonale (linear) als Referenz
+  g.strokeStyle = "#2a3145";
+  g.beginPath(); g.moveTo(X(0), Y(0)); g.lineTo(X(1), Y(1)); g.stroke();
+  // Griff-Linien
+  g.strokeStyle = "#4a5570";
+  g.beginPath(); g.moveTo(X(0), Y(0)); g.lineTo(X(c[0]), Y(c[1])); g.stroke();
+  g.beginPath(); g.moveTo(X(1), Y(1)); g.lineTo(X(c[2]), Y(c[3])); g.stroke();
+  // Kurve
+  g.strokeStyle = "#8fb0ff"; g.lineWidth = 2;
+  g.beginPath();
+  for (let i = 0; i <= 60; i++) {
+    const k = i / 60;
+    const y = bezierEase(c[0], c[1], c[2], c[3], k);
+    if (i === 0) g.moveTo(X(k), Y(y)); else g.lineTo(X(k), Y(y));
+  }
+  g.stroke();
+  // Griffe
+  for (const [hx, hy] of [[c[0], c[1]], [c[2], c[3]]]) {
+    g.fillStyle = "#eef2ff";
+    g.beginPath(); g.arc(X(hx), Y(hy), 6, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = "#8fb0ff"; g.lineWidth = 1.5;
+    g.beginPath(); g.arc(X(hx), Y(hy), 6, 0, Math.PI * 2); g.stroke();
+  }
+}
+
+function openEaseEditor(i) {
+  easeEditIdx = i;
+  const wp = state.waypoints[i];
+  if (!wp.curve) wp.curve = wp.ease === "linear" ? [0.25, 0.25, 0.75, 0.75] : [0.42, 0, 0.58, 1];
+  wp.ease = "custom";
+  $("easeEditor").hidden = false;
+  $("easeEditWp").textContent = String(i + 1);
+  rebuildWaypointList();
+  drawEaseEditor();
+}
+
+let easeDrag = -1;
+$("easeCanvas").addEventListener("pointerdown", (e) => {
+  const wp = state.waypoints[easeEditIdx];
+  if (!wp) return;
+  const { cv, P, w, h } = easeEditorLayout();
+  const r = cv.getBoundingClientRect();
+  const sx = cv.width / r.width, sy = cv.height / r.height;
+  const px = (e.clientX - r.left) * sx, py = (e.clientY - r.top) * sy;
+  const c = wp.curve;
+  const d = (hx, hy) => Math.hypot(px - (P + hx * w), py - (P + (1 - hy) * h));
+  easeDrag = d(c[0], c[1]) < d(c[2], c[3]) ? 0 : 2;
+  if (Math.min(d(c[0], c[1]), d(c[2], c[3])) > 30) { easeDrag = -1; return; }
+  $("easeCanvas").setPointerCapture(e.pointerId);
+});
+$("easeCanvas").addEventListener("pointermove", (e) => {
+  if (easeDrag < 0) return;
+  const wp = state.waypoints[easeEditIdx];
+  if (!wp) return;
+  const { cv, P, w, h } = easeEditorLayout();
+  const r = cv.getBoundingClientRect();
+  const sx = cv.width / r.width, sy = cv.height / r.height;
+  const px = (e.clientX - r.left) * sx, py = (e.clientY - r.top) * sy;
+  wp.curve[easeDrag] = Math.min(1, Math.max(0, (px - P) / w));
+  wp.curve[easeDrag + 1] = Math.min(1.4, Math.max(-0.4, 1 - (py - P) / h));
+  drawEaseEditor();
+});
+for (const evName of ["pointerup", "pointercancel"]) {
+  $("easeCanvas").addEventListener(evName, () => { easeDrag = -1; });
+}
+for (const btn of document.querySelectorAll("#easePresets button")) {
+  btn.addEventListener("click", () => {
+    const wp = state.waypoints[easeEditIdx];
+    if (!wp) return;
+    wp.curve = btn.dataset.c.split(",").map(Number);
+    drawEaseEditor();
+  });
+}
+$("btnEaseClose").addEventListener("click", () => {
+  $("easeEditor").hidden = true;
+  easeEditIdx = -1;
+});
 
 $("btnWpAdd").addEventListener("click", () => {
   if (!state.scenEdit) setScenEdit(true);

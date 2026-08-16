@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-16-18">
+<link rel="stylesheet" href="style.css?v=2026-08-16-19">
 </head>
 <body>
 
@@ -172,6 +172,19 @@
         <button id="btnScenReset" class="secondary" data-i18n="scenResetView">Reset view</button>
       </div>
       <div id="wpList"></div>
+      <div id="easeEditor" hidden>
+        <p class="tip"><span data-i18n="easeEditHead">Easing curve for the leg to waypoint</span> <b id="easeEditWp">2</b>
+          <button id="btnEaseClose" class="wpbtn" style="float:right">&#10005;</button></p>
+        <canvas id="easeCanvas" width="300" height="200"></canvas>
+        <div id="easePresets" class="exportrow">
+          <button class="secondary" data-c="0.42,0,0.58,1" data-i18n="easePreSmooth">Smooth</button>
+          <button class="secondary" data-c="0.55,0,1,0.45" data-i18n="easePreIn">Ease in</button>
+          <button class="secondary" data-c="0,0.55,0.45,1" data-i18n="easePreOut">Ease out</button>
+          <button class="secondary" data-c="0.25,0.25,0.75,0.75" data-i18n="easePreLin">Linear</button>
+        </div>
+        <p class="tip" data-i18n="easeEditTip">Drag the two handles: horizontal = timing,
+        vertical = progress. Left handle shapes the start of the leg, right handle the end.</p>
+      </div>
       <p class="tip" id="scenStatus"></p>
     </section>
 
@@ -846,8 +859,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-18"></script>
-<script src="objectinfo.js?v=2026-08-16-18"></script>
-<script src="app.js?v=2026-08-16-18"></script>
+<script src="i18n.js?v=2026-08-16-19"></script>
+<script src="objectinfo.js?v=2026-08-16-19"></script>
+<script src="app.js?v=2026-08-16-19"></script>
 </body>
 </html>
