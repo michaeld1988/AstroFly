@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-16-13">
+<link rel="stylesheet" href="style.css?v=2026-08-16-14">
 </head>
 <body>
 
@@ -609,6 +609,17 @@
         <p class="tip" data-i18n-html="gaiaHelpText">…</p>
       </div>
       <label class="check">
+        <input type="checkbox" id="ctlMoonMode">
+        <span data-i18n="moonMode">Moon mode: spherical depth (prototype)</span>
+        <button class="qm" data-help="hintMoon">?</button>
+      </label>
+      <p class="tip hint2" id="hintMoon" hidden data-i18n="moonHint">For single moon shots,
+      no star mask needed: AstroFly detects the lunar disk and replaces the brightness depth
+      map with a true sphere, so the moon reads as round during camera moves. Generated
+      background stars (Stars tab) stay behind the disk. Works best with a bright, (nearly)
+      full moon against dark sky.</p>
+      <p class="tip" id="moonStatus"></p>
+      <label class="check">
         <input type="checkbox" id="ctlFlipH">
         <span data-i18n="flipH">Mirror image horizontally (starless + mask)</span>
       </label>
@@ -789,8 +800,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-13"></script>
-<script src="objectinfo.js?v=2026-08-16-13"></script>
-<script src="app.js?v=2026-08-16-13"></script>
+<script src="i18n.js?v=2026-08-16-14"></script>
+<script src="objectinfo.js?v=2026-08-16-14"></script>
+<script src="app.js?v=2026-08-16-14"></script>
 </body>
 </html>

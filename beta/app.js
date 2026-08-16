@@ -82,6 +82,8 @@ const state = {
   gaiaPmYears: 0,        // Zeitraffer-Spanne in Jahren (0 = aus)
   objFar: false,         // Objekt einheitlich in die Ferne (hinter alle Sterne)
   occlude: 0,
+  moonMode: false,       // Mond-Modus: Kugel-Tiefe statt Luminanz-Tiefe
+  moonDisk: null,        // erkannte Mondscheibe { cx, cy, r } (normiert auf Bildbreite)
   starDetails: true,     // Sternphysik (Größe/Alter) in Labels anzeigen
   flipH: false,          // Bild horizontal gespiegelt (Starless + Maske)
   flipV: false,          // Bild vertikal gespiegelt
@@ -449,6 +451,7 @@ uniform float uPmYears;   // Zeitraffer: verstrichene Jahre zum Zeitpunkt t
 uniform float uPmYears2;  // ... und kurz danach (für die Streifen)
 // Nebel-Okklusion: Nebelschwaden, die VOR einem Stern liegen, verdecken ihn
 uniform float uOcclude;    // Stärke 0..1 (0 = aus)
+uniform float uMoonMode;   // Mond-Modus: Sterne hinter die Mondscheibe zwingen
 uniform float uAnchor;     // Sterne im Nebel verankern: Stärke 0..1
 uniform vec2 uTiltB2;      // Nebel-Kippwert der zweiten Kamera (für Anker-Streifen)
 uniform float uObjFarS;    // 1 = Objekt liegt einheitlich weit hinten
@@ -509,6 +512,10 @@ void main() {
     return;
   }
 
+  // Mond-Modus: alle Sterne liegen HINTER der Mondkugel (Scheibe verdeckt sie).
+  // Die Kugel reicht bis Tiefe ~0.5 am Rand - 0.30 laesst sicher Luft dazwischen
+  if (uMoonMode > 0.5) depth = min(depth, 0.30);
+
   // Sterne im Nebel verankern: Sterne auf dichten Nebelregionen übernehmen
   // Tiefe und Bewegung des Nebels an ihrer Bildposition - sie bleiben beim
   // 3D-Flug IM Nebel (z. B. die Wolf-Rayet-Sterne im Löwennebel), statt
@@ -553,7 +560,8 @@ void main() {
   // liegt der Nebel dort NÄHER an der Kamera als der Stern, schluckt seine
   // Dichte (Helligkeit des Starless-Bilds) das Sternlicht
   float occ = 0.0;
-  if (uOcclude > 0.0) {
+  float occStr = max(uOcclude, uMoonMode);
+  if (occStr > 0.0) {
     vec2 qn = uCenter + pr / (uCover * uZoom);
     vec2 uvN = vec2(qn.x / uImgAspectS, qn.y) + 0.5;
     float dN = 0.02;
@@ -570,7 +578,7 @@ void main() {
       float lum = dot(cN, vec3(0.299, 0.587, 0.114));
       float front = smoothstep(0.02, 0.14, dN - depth);
       float dens = smoothstep(0.04, 0.45, lum);
-      occ = uOcclude * front * dens;
+      occ = occStr * front * dens;
     }
   }
 
@@ -1060,9 +1068,120 @@ function computeLuminanceMap(radius, invert) {
   return { canvas: c, data: dst, w, h };
 }
 
+
+/**
+ * Mondscheibe im Starless-Bild finden: helle Region vor dunklem Himmel ->
+ * Randpunkte -> konvexe Huelle -> Kreis-Fit (Kasa). Die Huelle sorgt dafuer,
+ * dass bei Mondphasen der beleuchtete Rand (echter Kreisbogen) den Fit
+ * dominiert und der Terminator weitgehend rausfaellt.
+ * Rueckgabe { cx, cy, r } normiert (x und r auf Bildbreite, y auf Hoehe).
+ */
+function detectMoonDisk() {
+  if (!state.starless) return null;
+  const src = downscale(state.starless, 512);
+  const w = src.width, h = src.height;
+  const data = src.getContext("2d").getImageData(0, 0, w, h).data;
+  const lum = new Float32Array(w * h);
+  let hi = 0;
+  for (let i = 0, j = 0; i < lum.length; i++, j += 4) {
+    lum[i] = 0.299 * data[j] + 0.587 * data[j + 1] + 0.114 * data[j + 2];
+    if (lum[i] > hi) hi = lum[i];
+  }
+  const th = Math.max(18, hi * 0.25);
+  const pts = [];
+  let area = 0;
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      if (lum[i] < th) continue;
+      area++;
+      if (lum[i - 1] < th || lum[i + 1] < th || lum[i - w] < th || lum[i + w] < th) {
+        pts.push([x, y]);
+      }
+    }
+  }
+  if (area < w * h * 0.004 || pts.length < 24) return null;
+
+  // Konvexe Huelle (Monotone Chain)
+  pts.sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [];
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper = [];
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const p = pts[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  const hull = lower.slice(0, -1).concat(upper.slice(0, -1));
+  if (hull.length < 8) return null;
+
+  // Kreis-Fit nach Kasa: x^2+y^2 = a*x + b*y + c, kleinste Quadrate
+  let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, sxz = 0, syz = 0, sz = 0;
+  for (const [x, y] of hull) {
+    const z = x * x + y * y;
+    sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y;
+    sxz += x * z; syz += y * z; sz += z;
+  }
+  const n = hull.length;
+  const det = sxx * (syy * n - sy * sy) - sxy * (sxy * n - sy * sx) + sx * (sxy * sy - syy * sx);
+  if (Math.abs(det) < 1e-6) return null;
+  const a = (sxz * (syy * n - sy * sy) - sxy * (syz * n - sy * sz) + sx * (syz * sy - syy * sz)) / det;
+  const b = (sxx * (syz * n - sy * sz) - sxz * (sxy * n - sx * sy) + sx * (sxy * sz - syz * sx)) / det;
+  const c = (sxx * (syy * sz - syz * sy) - sxy * (sxy * sz - syz * sx) + sxz * (sxy * sy - syy * sx)) / det;
+  const cx = a / 2, cy = b / 2;
+  const r = Math.sqrt(Math.max(0, c + cx * cx + cy * cy));
+
+  // Plausibilitaet: Radius sinnvoll, Zentrum nahe am Bild, helle Flaeche
+  // passt zur Kreisflaeche (bei Phasen ist sie kleiner, nie viel groesser)
+  const circleArea = Math.PI * r * r;
+  if (r < Math.min(w, h) * 0.04 || r > Math.max(w, h) * 0.9) return null;
+  if (cx < -0.3 * w || cx > 1.3 * w || cy < -0.3 * h || cy > 1.3 * h) return null;
+  if (area > circleArea * 1.25 || area < circleArea * 0.12) return null;
+
+  return { cx: cx / w, cy: cy / h, r: r / w };
+}
+
+/**
+ * Kugel-Tiefenkarte fuer den Mond-Modus: innerhalb der erkannten Scheibe
+ * echte Kugelgeometrie (Mitte nah, Rand kruemmt sich weg), aussen ferner
+ * Himmel. Leichte Glaettung vermeidet eine harte Tiefenkante am Mondrand.
+ */
+function computeMoonSphereMap() {
+  const src = downscale(state.starless, 768);
+  const w = src.width, h = src.height;
+  const d = state.moonDisk;
+  const cx = d.cx * w, cy = d.cy * h, R = Math.max(2, d.r * w);
+  let a = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const rr = Math.hypot(x - cx, y - cy) / R;
+      a[y * w + x] = rr >= 1 ? 0.18 : 0.5 + 0.38 * Math.sqrt(1 - rr * rr);
+    }
+  }
+  const b = new Float32Array(w * h);
+  boxBlurH(a, b, w, h, 2);
+  boxBlurV(b, a, w, h, 2);
+  const dst = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0, j = 0; i < a.length; i++, j += 4) {
+    const v = Math.round(Math.min(1, Math.max(0, a[i])) * 255);
+    dst[j] = dst[j + 1] = dst[j + 2] = v;
+    dst[j + 3] = 255;
+  }
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  c.getContext("2d").putImageData(new ImageData(dst, w, h), 0, 0);
+  return { canvas: c, data: dst, w, h };
+}
+
 function buildDepthMap() {
   if (!state.starless) return;
-  const m = computeLuminanceMap(state.smooth, state.invertDepth);
+  const m = state.moonMode && state.moonDisk
+    ? computeMoonSphereMap()
+    : computeLuminanceMap(state.smooth, state.invertDepth);
   state.depthCanvas = m.canvas;
   state.depthData = { data: m.data, w: m.w, h: m.h }; // CPU-Kopie für die Klick-Zuordnung
 
@@ -2629,6 +2748,7 @@ function render(forcedT) {
     u1f(starProg, "uPmYears2", state.gaiaPmYears * (cam2.te / pmSpan));
     // Nebel-Okklusion: Tiefe + Dichte des Nebels an der Sternposition
     u1f(starProg, "uOcclude", state.occlude / 100);
+    u1f(starProg, "uMoonMode", state.moonMode ? 1 : 0);
     u1f(starProg, "uAnchor", state.anchorStars / 100);
     u2f(starProg, "uTiltB2", tilt2X + cam2.driftTX * drK, tilt2Y + cam2.driftTY * drK);
     u1f(starProg, "uObjFarS", state.objFar ? 1 : 0);
@@ -3568,6 +3688,16 @@ async function loadFile(which, file) {
       texColor = makeTexture(colSrc);
       state.texColorW = colSrc.width;
       state.texColorH = colSrc.height;
+      if (state.moonMode) {
+        state.moonDisk = detectMoonDisk();
+        if (!state.moonDisk) {
+          state.moonMode = false;
+          $("ctlMoonMode").checked = false;
+          $("moonStatus").textContent = t("moonNotFound");
+        } else {
+          $("moonStatus").textContent = t("moonFound", Math.round(state.moonDisk.r * 200));
+        }
+      }
       buildDepthMap();
       buildSpinMask();
       // generierte Sterne nutzen das Seitenverhältnis des Starless-Bildes
@@ -3778,6 +3908,33 @@ function applyImageFlip(fh, fv) {
   uploadStars();
   updateGaiaStatus();
 }
+// Mond-Modus: Scheibe erkennen und Kugel-Tiefe aktivieren (Prototyp)
+$("ctlMoonMode").addEventListener("change", () => {
+  const on = $("ctlMoonMode").checked;
+  const status = $("moonStatus");
+  if (on) {
+    if (!state.starless) {
+      $("ctlMoonMode").checked = false;
+      status.textContent = t("moonNoImage");
+      return;
+    }
+    state.moonDisk = detectMoonDisk();
+    if (!state.moonDisk) {
+      $("ctlMoonMode").checked = false;
+      state.moonMode = false;
+      status.textContent = t("moonNotFound");
+      buildDepthMap();
+      return;
+    }
+    state.moonMode = true;
+    status.textContent = t("moonFound", Math.round(state.moonDisk.r * 200));
+  } else {
+    state.moonMode = false;
+    status.textContent = "";
+  }
+  buildDepthMap();
+});
+
 $("ctlFlipH").addEventListener("change", () => {
   state.flipH = $("ctlFlipH").checked;
   applyImageFlip(true, false);
