@@ -83,6 +83,8 @@ const state = {
   objFar: false,         // Objekt einheitlich in die Ferne (hinter alle Sterne)
   occlude: 0,
   scenarioOn: false,     // Szenario-Flug: Kamera fliegt die Wegpunkte ab
+  scenEdit: false,       // Flugplan-Einrichtung: Kamera folgt dem Steuerkreuz
+  scenView: { x: 0, y: 0, zoom: 1, angle: 0 }, // aktuell eingerichteter Blick
   waypoints: [],         // [{ x, y, zoom, dur, hold, ease }] in Ebenen-Einheiten
   moonMode: false,       // Mond-Modus: Kugel-Tiefe statt Luminanz-Tiefe
   moonDisk: null,        // erkannte Mondscheibe { cx, cy, r } (normiert auf Bildbreite)
@@ -2487,6 +2489,7 @@ function scenarioAt(p) {
   const total = scenarioTotal();
   let s = Math.min(1, Math.max(0, p)) * total;
   let ax = wps[0].x, ay = wps[0].y, zoom = Math.max(1, wps[0].zoom || 1);
+  let ang = wps[0].angle || 0;
   outer:
   for (let i = 0; i < wps.length; i++) {
     if (i > 0) {
@@ -2499,11 +2502,13 @@ function scenarioAt(p) {
         ax = a.x + (b.x - a.x) * k;
         ay = a.y + (b.y - a.y) * k;
         zoom = za * Math.pow(zb / za, k);
+        ang = (a.angle || 0) + ((b.angle || 0) - (a.angle || 0)) * k;
         break outer;
       }
       s -= dur;
     }
     ax = wps[i].x; ay = wps[i].y; zoom = Math.max(1, wps[i].zoom || 1);
+    ang = wps[i].angle || 0;
     const hold = Math.max(0, wps[i].hold || 0);
     if (s <= hold) break;
     s -= hold;
@@ -2515,7 +2520,7 @@ function scenarioAt(p) {
   const sc = cover * zoom;
   const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.98;
   const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.98;
-  return { zoom, cx: Math.min(freeX, Math.max(-freeX, ax)), cy: Math.min(freeY, Math.max(-freeY, ay)) };
+  return { zoom, angle: ang, cx: Math.min(freeX, Math.max(-freeX, ax)), cy: Math.min(freeY, Math.max(-freeY, ay)) };
 }
 
 function scenarioActive() {
@@ -2523,6 +2528,13 @@ function scenarioActive() {
 }
 
 function camAt(loopT) {
+  // Flugplan-Einrichtung: feste Kamera aus dem Steuerkreuz statt Animation
+  if (state.scenEdit) {
+    const v = state.scenView;
+    return { zoom: v.zoom, angle: (state.orientation + v.angle) * Math.PI / 180,
+      rate: 0, te: 0, tiltAddX: 0, tiltAddY: 0,
+      cx: v.x, cy: v.y, driftTX: 0, driftTY: 0 };
+  }
   const D = state.duration;
   const u = Math.min(1, Math.max(0, loopT / D));
   const p = state.loopMode ? 1 - Math.abs(1 - 2 * u) : u;
@@ -2538,13 +2550,14 @@ function camAt(loopT) {
   const te = pe * D * (state.loopMode ? 0.5 : 1);
 
   const rate = (state.speed / 100) * 0.09;
-  const angle = (state.orientation + state.rotationSpeed * te) * Math.PI / 180;
+  let angle = (state.orientation + state.rotationSpeed * te) * Math.PI / 180;
 
   // Flugmodus: entweder in den Nebel zoomen oder seitlich übers Bild gleiten
   let zoom, cx, cy, driftTX = 0, driftTY = 0;
   if (scenarioActive()) {
     const sp = scenarioAt(p);
     zoom = sp.zoom; cx = sp.cx; cy = sp.cy;
+    angle = (state.orientation + state.rotationSpeed * te + sp.angle) * Math.PI / 180;
   } else if (state.flightMode === "lateral") {
     // Konstanter Zoom; die Kamera fährt entlang der eingestellten Richtung
     // durch das Ziel (Klickpunkt). Die Strecke ist so begrenzt, dass der
@@ -3325,6 +3338,7 @@ for (const b of document.querySelectorAll("#proTabs button")) {
     state.activeTab = b.dataset.tab;
     $("panelbody").scrollTop = 0;
     applyUiMode();
+    setScenEdit(state.uiMode === "pro" && state.activeTab === "szenario");
   });
 }
 applyUiMode();
@@ -3733,6 +3747,7 @@ canvas.addEventListener("dblclick", () => {
 
 // Transport
 $("btnPlay").addEventListener("click", () => {
+  if (state.scenEdit) setScenEdit(false);
   if (state.playing) {
     state.pausedAt = currentTime();
     state.playing = false;
@@ -3794,6 +3809,7 @@ async function loadFile(which, file) {
       }
       buildDepthMap();
       buildSpinMask();
+      setScenEdit(state.scenEdit);
       // generierte Sterne nutzen das Seitenverhältnis des Starless-Bildes
       if (state.genStars > 0) uploadStars();
       // Export-Dateiname vom Bildnamen ableiten (bleibt überschreibbar)
@@ -4039,9 +4055,11 @@ function rebuildWaypointList() {
     row.innerHTML =
       `<b>${i + 1}</b><span class="wppos">${pos}</span>` +
       `<label>${t("wpZoom")} <input type="number" data-k="zoom" min="1" max="8" step="0.05" value="${wp.zoom}"></label>` +
+      `<label>${t("wpAngle")} <input type="number" data-k="angle" min="-180" max="180" step="0.5" value="${wp.angle || 0}"></label>` +
       (i > 0 ? `<label>${t("wpDur")} <input type="number" data-k="dur" min="0.2" max="60" step="0.1" value="${wp.dur}"></label>` : "") +
       `<label>${t("wpHold")} <input type="number" data-k="hold" min="0" max="30" step="0.1" value="${wp.hold}"></label>` +
       (i > 0 ? `<select data-k="ease"><option value="smooth">${t("wpEaseSmooth")}</option><option value="linear">${t("wpEaseLinear")}</option></select>` : "") +
+      `<button class="wpbtn" data-a="goto" title="${t("wpGoto")}">\u2316</button>` +
       `<button class="wpbtn" data-a="up" title="\u2191">\u2191</button>` +
       `<button class="wpbtn" data-a="down" title="\u2193">\u2193</button>` +
       `<button class="wpbtn" data-a="del" title="\u2715">\u2715</button>`;
@@ -4057,6 +4075,11 @@ function rebuildWaypointList() {
     row.querySelectorAll("button[data-a]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const a = btn.dataset.a;
+        if (a === "goto") {
+          state.scenView = { x: wp.x, y: wp.y, zoom: wp.zoom, angle: wp.angle || 0 };
+          setScenEdit(true);
+          return;
+        }
         if (a === "del") state.waypoints.splice(i, 1);
         if (a === "up" && i > 0) [state.waypoints[i - 1], state.waypoints[i]] = [state.waypoints[i], state.waypoints[i - 1]];
         if (a === "down" && i < state.waypoints.length - 1) [state.waypoints[i + 1], state.waypoints[i]] = [state.waypoints[i], state.waypoints[i + 1]];
@@ -4069,14 +4092,84 @@ function rebuildWaypointList() {
 }
 
 $("btnWpAdd").addEventListener("click", () => {
-  const last = state.waypoints[state.waypoints.length - 1];
+  if (!state.scenEdit) setScenEdit(true);
+  const v = state.scenView;
   state.waypoints.push({
-    x: state.target.x, y: state.target.y,
-    zoom: last ? last.zoom : state.zoomBase,
+    x: v.x, y: v.y, zoom: +v.zoom.toFixed(3), angle: +v.angle.toFixed(1),
     dur: 5, hold: 0.5, ease: "smooth",
   });
   rebuildWaypointList();
   updateScenarioUi();
+});
+
+// Flugplan-Einrichtung: Steuerkreuz im Bild (Pan/Zoom/Rotation), gedrueckt
+// halten wiederholt. Der eingerichtete Blick wird per Wegpunkt gespeichert.
+function scenClampView() {
+  const v = state.scenView;
+  v.zoom = Math.min(8, Math.max(1, v.zoom));
+  const imgAspect = state.starless
+    ? state.starless.width / state.starless.height : 16 / 9;
+  const cover = coverBase(state.aspect, imgAspect);
+  const sc = cover * v.zoom;
+  const freeX = Math.max(0, imgAspect / 2 - (state.aspect / 2) / sc) * 0.98;
+  const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.98;
+  v.x = Math.min(freeX, Math.max(-freeX, v.x));
+  v.y = Math.min(freeY, Math.max(-freeY, v.y));
+}
+
+function scenPadStep(action) {
+  const v = state.scenView;
+  const pan = 0.02 / v.zoom;
+  const a = (state.orientation + v.angle) * Math.PI / 180;
+  const c = Math.cos(a), s = Math.sin(a);
+  // Bildschirm-Richtung in die (gedrehte) Bildebene uebersetzen
+  const move = (dx, dy) => { v.x += pan * (dx * c + dy * s); v.y += pan * (-dx * s + dy * c); };
+  switch (action) {
+    case "up": move(0, 1); break;
+    case "down": move(0, -1); break;
+    case "left": move(-1, 0); break;
+    case "right": move(1, 0); break;
+    case "zin": v.zoom *= 1.03; break;
+    case "zout": v.zoom /= 1.03; break;
+    case "rotl": v.angle -= 1; break;
+    case "rotr": v.angle += 1; break;
+  }
+  scenClampView();
+}
+
+function setScenEdit(on) {
+  if (on && !state.scenEdit) {
+    const last = state.waypoints[state.waypoints.length - 1];
+    state.scenView = last
+      ? { x: last.x, y: last.y, zoom: last.zoom, angle: last.angle || 0 }
+      : { x: 0, y: 0, zoom: state.zoomBase, angle: 0 };
+    scenClampView();
+  }
+  state.scenEdit = on;
+  $("scenPad").hidden = !on || !state.starless;
+}
+
+for (const btn of document.querySelectorAll("#scenPad button")) {
+  const action = btn.dataset.p;
+  if (action === "set") {
+    btn.addEventListener("click", () => $("btnWpAdd").click());
+    continue;
+  }
+  let rep = null;
+  const start = (e) => {
+    e.preventDefault();
+    scenPadStep(action);
+    clearInterval(rep);
+    rep = setInterval(() => scenPadStep(action), 60);
+  };
+  const stop = () => { clearInterval(rep); rep = null; };
+  btn.addEventListener("pointerdown", start);
+  for (const ev of ["pointerup", "pointerleave", "pointercancel"]) btn.addEventListener(ev, stop);
+}
+
+$("btnScenReset").addEventListener("click", () => {
+  if (!state.scenEdit) setScenEdit(true);
+  state.scenView = { x: 0, y: 0, zoom: 1, angle: 0 };
 });
 
 $("selMoonObj").addEventListener("change", () => {
@@ -4085,11 +4178,6 @@ $("selMoonObj").addEventListener("change", () => {
 
 $("ctlScenOn").addEventListener("change", () => {
   state.scenarioOn = $("ctlScenOn").checked;
-  // Leerer Plan beim Einschalten: aktueller Ausschnitt wird der Startpunkt
-  if (state.scenarioOn && state.waypoints.length === 0) {
-    state.waypoints.push({ x: 0, y: 0, zoom: state.zoomBase, dur: 5, hold: 0.5, ease: "smooth" });
-    rebuildWaypointList();
-  }
   updateScenarioUi();
 });
 
