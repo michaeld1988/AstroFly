@@ -60,6 +60,7 @@ const state = {
   duration: 20,          // s
   loopMode: false,       // hin & zurück, nahtlos
   smooth: 18,
+  depthRes: 768,        // Kantenlaenge der Tiefenkarte (768/1536/2048)
   invertDepth: false,
   target: { x: 0, y: 0 }, // Zoomziel in Bildebenen-Einheiten (0,0 = Mitte)
 
@@ -1052,7 +1053,10 @@ function downscale(img, maxEdge) {
 
 /** Geglättete, kontrastgestreckte Luminanzkarte des Starless-Bildes. */
 function computeLuminanceMap(radius, invert) {
-  const src = downscale(state.starless, 768);
+  const src = downscale(state.starless, state.depthRes);
+  // Radius ist in Karten-Pixeln: bei hoeherer Aufloesung mitskalieren,
+  // damit die Glaettung optisch identisch bleibt
+  radius = Math.max(1, Math.round(radius * state.depthRes / 768));
   const w = src.width, h = src.height;
   const data = src.getContext("2d").getImageData(0, 0, w, h).data;
 
@@ -1176,7 +1180,7 @@ function detectMoonDisk() {
  * Himmel. Leichte Glaettung vermeidet eine harte Tiefenkante am Mondrand.
  */
 function computeMoonSphereMap() {
-  const src = downscale(state.starless, 768);
+  const src = downscale(state.starless, state.depthRes);
   const w = src.width, h = src.height;
   const d = state.moonDisk;
   const cx = d.cx * w, cy = d.cy * h, R = Math.max(2, d.r * w);
@@ -1188,8 +1192,9 @@ function computeMoonSphereMap() {
     }
   }
   const b = new Float32Array(w * h);
-  boxBlurH(a, b, w, h, 2);
-  boxBlurV(b, a, w, h, 2);
+  const rM = Math.max(1, Math.round(2 * state.depthRes / 768));
+  boxBlurH(a, b, w, h, rM);
+  boxBlurV(b, a, w, h, rM);
   const dst = new Uint8ClampedArray(w * h * 4);
   for (let i = 0, j = 0; i < a.length; i++, j += 4) {
     const v = Math.round(Math.min(1, Math.max(0, a[i])) * 255);
@@ -3390,6 +3395,11 @@ $("ctlSmooth").addEventListener("input", () => {
 $("ctlInvert").addEventListener("change", () => {
   state.invertDepth = $("ctlInvert").checked;
   buildDepthMap();
+});
+$("ctlDepthRes").addEventListener("change", () => {
+  state.depthRes = parseInt($("ctlDepthRes").value, 10);
+  buildDepthMap();
+  buildSpinMask();
 });
 
 $("btnShuffle").addEventListener("click", () => {
