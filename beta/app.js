@@ -4271,6 +4271,7 @@ function wpToScreen(qx, qy, cam, W, H) {
 }
 
 function drawWaypointOverlay(ctx, W, H, cam) {
+  ctx.save(); // eigener Zustand: nichts darf in die Infokarten-Zeichnung lecken
   const wps = state.waypoints;
   const px = W / 1000; // grob aufloesungsunabhaengige Strichstaerken
   // Pfad (mit Boegen) als Linie
@@ -4317,6 +4318,7 @@ function drawWaypointOverlay(ctx, W, H, cam) {
     ctx.textBaseline = "middle";
     ctx.fillText(String(i + 1), S.x, S.y + 0.5 * px);
   }
+  ctx.restore();
 }
 
 /** Wegpunkt auswaehlen: Highlight im Bild UND in der Liste (beide Wege). */
@@ -4416,6 +4418,11 @@ function rebuildWaypointList() {
           return;
         }
         if (a === "goto") {
+          if (!state.scenarioOn) {
+            state.scenarioOn = true;
+            $("ctlScenOn").checked = true;
+            updateScenarioUi();
+          }
           state.scenView = { x: wp.x, y: wp.y, zoom: wp.zoom, angle: wp.angle || 0 };
           setScenEdit(true);
           return;
@@ -4548,6 +4555,10 @@ $("wpDurNext").addEventListener("change", () => {
 });
 
 $("btnWpAdd").addEventListener("click", () => {
+  if (!state.scenarioOn) {
+    state.scenarioOn = true;
+    $("ctlScenOn").checked = true;
+  }
   if (!state.scenEdit) setScenEdit(true);
   const v = state.scenView;
   const durNext = Math.min(60, Math.max(0.2, parseFloat($("wpDurNext").value) || 5));
@@ -4595,6 +4606,7 @@ function scenPadStep(action) {
 }
 
 function setScenEdit(on) {
+  on = on && state.scenarioOn; // Einrichtung nur, wenn der Plan aktiviert ist
   if (on && !state.scenEdit) {
     const last = state.waypoints[state.waypoints.length - 1];
     state.scenView = last
@@ -4676,6 +4688,7 @@ canvas.addEventListener("contextmenu", (e) => {
 });
 
 $("btnScenReset").addEventListener("click", () => {
+  if (!state.scenarioOn) return;
   if (!state.scenEdit) setScenEdit(true);
   state.scenView = { x: 0, y: 0, zoom: 1, angle: 0 };
 });
@@ -4686,6 +4699,7 @@ $("selMoonObj").addEventListener("change", () => {
 
 $("ctlScenOn").addEventListener("change", () => {
   state.scenarioOn = $("ctlScenOn").checked;
+  setScenEdit(state.scenarioOn && state.uiMode === "pro" && state.activeTab === "szenario");
   updateScenarioUi();
 });
 
