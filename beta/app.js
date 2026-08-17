@@ -3444,6 +3444,32 @@ function applyUiMode() {
   localStorage.setItem("astrofly-mode", state.uiMode);
   localStorage.setItem("astrofly-tab", state.activeTab);
 }
+// Panel-Breite per Anfasser verstellbar (wird gespeichert)
+{
+  const savedW = parseInt(localStorage.getItem("astrofly-panelw") || "0", 10);
+  if (savedW >= 300 && savedW <= 640) {
+    $("panel").style.width = savedW + "px";
+    $("panel").style.minWidth = savedW + "px";
+  }
+  let panelDrag = false;
+  $("panelResize").addEventListener("pointerdown", (e) => {
+    panelDrag = true;
+    e.preventDefault();
+    $("panelResize").setPointerCapture(e.pointerId);
+  });
+  $("panelResize").addEventListener("pointermove", (e) => {
+    if (!panelDrag) return;
+    const left = $("panel").getBoundingClientRect().left;
+    const w = Math.min(640, Math.max(300, Math.round(e.clientX - left)));
+    $("panel").style.width = w + "px";
+    $("panel").style.minWidth = w + "px";
+    localStorage.setItem("astrofly-panelw", String(w));
+  });
+  for (const evName of ["pointerup", "pointercancel"]) {
+    $("panelResize").addEventListener(evName, () => { panelDrag = false; });
+  }
+}
+
 $("modeSimple").addEventListener("click", () => { state.uiMode = "simple"; applyUiMode(); });
 $("modePro").addEventListener("click", () => { state.uiMode = "pro"; applyUiMode(); });
 for (const b of document.querySelectorAll("#proTabs button")) {

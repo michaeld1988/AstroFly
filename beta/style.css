@@ -478,3 +478,14 @@ button.primary:not(:disabled):hover { border-color: var(--accent); }
 .wprow { cursor: pointer; }
 .wprow.sel { border-color: #8fb0ff; background: #151c2c; }
 .wpchk { display: flex; align-items: center; gap: 4px; color: #9aa1b2; font-size: 12px; }
+
+/* Panel-Breite verstellbar */
+#panel { position: relative; }
+#panelResize {
+  position: absolute; right: 0; top: 0; bottom: 0; width: 7px;
+  cursor: ew-resize; z-index: 20; touch-action: none;
+}
+#panelResize:hover, #panelResize:active { background: rgba(143, 176, 255, 0.25); }
+@media (max-width: 820px) {
+  #panelResize { display: none; } /* mobil ist das Panel volle Breite */
+}

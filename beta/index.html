@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-16-25">
+<link rel="stylesheet" href="style.css?v=2026-08-16-26">
 </head>
 <body>
 
@@ -60,6 +60,7 @@
 <div id="app">
 
   <aside id="panel">
+    <div id="panelResize"></div>
     <div class="panelhead">
       <div class="headrow">
         <div class="brand">
@@ -289,26 +290,26 @@
             <input type="checkbox" id="ctlInvert">
             <span data-i18n="invertDepth">Invert depth (dark = near)</span>
           </label>
-          <div class="exportrow">
-            <button id="btnDepthExport" class="secondary" data-i18n="depthExport">Export depth map (PNG)</button>
-            <button id="btnDepthImport" class="secondary" data-i18n="depthImport">Load custom depth map</button>
-          </div>
-          <input type="file" id="fileDepth" accept=".png,.jpg,.jpeg,.tif,.tiff,image/png,image/jpeg,image/tiff" hidden>
-          <p class="tip" data-i18n="depthCustomTip">The custom map must match the starless
-          image exactly (same framing; white = near, black = far). Export the automatic map,
-          refine it in any editor, load it back - smoothing and invert still apply, and
-          mirroring follows the image automatically.</p>
-          <p class="tip" id="depthCustomStatus" hidden></p>
-          <button id="btnDepthClear" class="secondary" hidden data-i18n="depthClear">Remove custom depth map</button>
-          <div class="selrow">
-            <label for="ctlDepthRes" data-i18n="depthRes">Depth map resolution</label>
-            <select id="ctlDepthRes">
-              <option value="768" data-i18n="depthResLow">Low (768 px, fast)</option>
-              <option value="1536" data-i18n="depthResMid">Medium (1536 px)</option>
-              <option value="2048" data-i18n="depthResHigh">High (2048 px)</option>
-            </select>
-          </div>
         </div>
+      </div>
+      <div class="exportrow">
+        <button id="btnDepthExport" class="secondary" data-i18n="depthExport">Export depth map (PNG)</button>
+        <button id="btnDepthImport" class="secondary" data-i18n="depthImport">Load custom depth map</button>
+      </div>
+      <input type="file" id="fileDepth" accept=".png,.jpg,.jpeg,.tif,.tiff,image/png,image/jpeg,image/tiff" hidden>
+      <p class="tip" data-i18n="depthCustomTip">The custom map must match the starless
+      image exactly (same framing; white = near, black = far). Export the automatic map,
+      refine it in any editor, load it back - smoothing and invert still apply, and
+      mirroring follows the image automatically.</p>
+      <p class="tip" id="depthCustomStatus" hidden></p>
+      <button id="btnDepthClear" class="secondary" hidden data-i18n="depthClear">Remove custom depth map</button>
+      <div class="selrow">
+        <label for="ctlDepthRes" data-i18n="depthRes">Depth map resolution</label>
+        <select id="ctlDepthRes">
+          <option value="768" data-i18n="depthResLow">Low (768 px, fast)</option>
+          <option value="1536" data-i18n="depthResMid">Medium (1536 px)</option>
+          <option value="2048" data-i18n="depthResHigh">High (2048 px)</option>
+        </select>
       </div>
     </section>
 
@@ -879,8 +880,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-25"></script>
-<script src="objectinfo.js?v=2026-08-16-25"></script>
-<script src="app.js?v=2026-08-16-25"></script>
+<script src="i18n.js?v=2026-08-16-26"></script>
+<script src="objectinfo.js?v=2026-08-16-26"></script>
+<script src="app.js?v=2026-08-16-26"></script>
 </body>
 </html>
