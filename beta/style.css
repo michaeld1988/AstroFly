@@ -473,3 +473,8 @@ button.primary:not(:disabled):hover { border-color: var(--accent); }
 #easePresets button { flex: 1 1 40%; padding: 6px 4px; font-size: 12px; }
 .wprow input[type="range"] { width: 86px; }
 .wpnext input[type="range"] { flex: 1; min-width: 70px; }
+
+/* Flugplan: Auswahl-Highlight + Schweben-Checkbox */
+.wprow { cursor: pointer; }
+.wprow.sel { border-color: #8fb0ff; background: #151c2c; }
+.wpchk { display: flex; align-items: center; gap: 4px; color: #9aa1b2; font-size: 12px; }
