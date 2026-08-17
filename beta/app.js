@@ -1365,7 +1365,7 @@ function clampi(v, n) { return v < 0 ? 0 : (v >= n ? n - 1 : v); }
  * speichern Zentrum (Textur-UV, y bereits geflippt wie makeTexture), halbe
  * Groesse in Atlas-UV und halbe Groesse in Ebenen-Einheiten.
  */
-function buildStarAtlas(list, srcCanvas) {
+function buildStarAtlas(list, srcCanvas, srcData) {
   const A = 2048;
   const c = document.createElement("canvas");
   c.width = A; c.height = A;
@@ -1420,15 +1420,29 @@ function buildStarAtlas(list, srcCanvas) {
             entries[j * 4] = -2;
             continue;
           }
-          // Fremden Kern weich ausradieren - Radius so begrenzen, dass der
-          // EIGENE Kern nie mit getroffen wird
+          // Schwache Nachbarn im Saum NICHT ausradieren: ihr doppelter
+          // Beitrag ist unsichtbar, ein Loch im Saum faellt dagegen auf
+          if (nb.flux < st.flux * 0.03) continue;
+          // Hellere Nachbarn weich ausradieren - Radius so begrenzen, dass
+          // der EIGENE Kern nie mit getroffen wird
           const eraseR = Math.min(coreR(nb) * 2.0, Math.max(0, dist - coreR(st) * 0.8));
           if (eraseR < 1.5) continue;
           const px = x + 1 + rPx + dx, py = y + 1 + rPx + dy;
+          // Loch mit der Saumfarbe fuellen statt schwarz: der Saum eines
+          // Sterns ist radialsymmetrisch - die Farbe an der gespiegelten
+          // Stelle (gleicher Abstand, gegenueber) ist ein sauberer Ersatz
+          // Direkt aus dem ImageData der Erkennung lesen (getImageData auf
+          // dem Atlas erzwang tausende langsame Canvas-Synchronisationen)
+          let fill = "rgba(0,0,0,1)";
+          const mx = Math.round(st.x - dx), my = Math.round(st.y - dy);
+          if (srcData && mx >= 0 && my >= 0 && mx < srcCanvas.width && my < srcCanvas.height) {
+            const mi = (my * srcCanvas.width + mx) * 4;
+            fill = `rgba(${srcData[mi]},${srcData[mi + 1]},${srcData[mi + 2]},1)`;
+          }
           const grad = g.createRadialGradient(px, py, 0, px, py, eraseR);
-          grad.addColorStop(0, "rgba(0,0,0,1)");
-          grad.addColorStop(0.6, "rgba(0,0,0,0.9)");
-          grad.addColorStop(1, "rgba(0,0,0,0)");
+          grad.addColorStop(0, fill);
+          grad.addColorStop(0.6, fill.replace(",1)", ",0.9)"));
+          grad.addColorStop(1, fill.replace(",1)", ",0)"));
           g.fillStyle = grad;
           g.beginPath();
           g.arc(px, py, eraseR, 0, Math.PI * 2);
@@ -1526,7 +1540,7 @@ function buildStarBuffer() {
   state.maskStarCount = list.length;
   state.maskStarFloats = buf;
   // Echte Sternabbilder: Atlas aus demselben Arbeits-Canvas wie die Erkennung
-  state.starAtlas = buildStarAtlas(list, src);
+  state.starAtlas = buildStarAtlas(list, src, data);
   if (texStarAtlas) gl.deleteTexture(texStarAtlas);
   texStarAtlas = makeTexture(state.starAtlas.canvas);
   // Neue Maske -> alte Gaia-Zuordnung passt nicht mehr. Wenn der Katalog
