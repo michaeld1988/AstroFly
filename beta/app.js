@@ -3610,6 +3610,9 @@ function applyUiMode() {
   }
   localStorage.setItem("astrofly-mode", state.uiMode);
   localStorage.setItem("astrofly-tab", state.activeTab);
+  // Flugplan-Einrichtung (inkl. Steuerkreuz) haengt an Pro-Modus + Tab -
+  // der Easy/Pro-Umschalter liess das Steuerkreuz sonst stehen
+  setScenEdit(state.uiMode === "pro" && state.activeTab === "szenario");
 }
 // Panel-Breite per Anfasser verstellbar (wird gespeichert)
 {
@@ -3644,7 +3647,6 @@ for (const b of document.querySelectorAll("#proTabs button")) {
     state.activeTab = b.dataset.tab;
     $("panelbody").scrollTop = 0;
     applyUiMode();
-    setScenEdit(state.uiMode === "pro" && state.activeTab === "szenario");
   });
 }
 applyUiMode();
