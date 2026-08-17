@@ -713,6 +713,7 @@ in vec3 vAtlasUv;
 in float vPatchHalf;
 uniform sampler2D uAtlas;   // echte Sternabbilder (Ausschnitte der Maske)
 uniform float uStarBrightF; // Helligkeits-Regler (wie uStarBright im VS)
+uniform float uAngleF;      // Kamerawinkel: Patch dreht mit dem Bild mit
 out vec4 outColor;
 void main() {
   // Echtes Sternabbild: Patch aus dem Atlas statt prozeduraler Glocke.
@@ -722,8 +723,13 @@ void main() {
     vec2 d = (gl_PointCoord - 0.5) * vSize;
     float rn = length(d) / vPatchHalf;
     if (rn > 1.0) discard;
-    vec2 uv = vec2(vAtlasUv.x + d.x / vPatchHalf * vAtlasUv.z,
-                   vAtlasUv.y - d.y / vPatchHalf * vAtlasUv.z);
+    // Bildschirm-Offset in die (mitrotierte) Bildebene drehen: Spikes und
+    // Halos bleiben dadurch am Bild verankert statt am Bildschirm
+    float caF = cos(uAngleF), saF = sin(uAngleF);
+    vec2 duUp = vec2(d.x, -d.y);
+    vec2 di = vec2(caF * duUp.x + saF * duUp.y, -saF * duUp.x + caF * duUp.y);
+    vec2 uv = vec2(vAtlasUv.x + di.x / vPatchHalf * vAtlasUv.z,
+                   vAtlasUv.y + di.y / vPatchHalf * vAtlasUv.z);
     vec3 c = texture(uAtlas, uv).rgb;
     float edge = 1.0 - smoothstep(0.78, 1.0, rn);
     // Helligkeit wirkt RADIAL wie eine kuerzere Belichtung: Der Kern bleibt
@@ -1401,8 +1407,11 @@ function buildStarAtlas(list, srcCanvas, srcData) {
   for (let i = 0; i < N; i++) {
     if (absorbed[i]) continue;
     const st = list[i];
-    // Ausschnitt grosszuegig: 2,4x der Kernradius nimmt Halo und Spikes mit
-    const rPx = Math.min(90, Math.max(4, Math.ceil(coreR(st) * 2.4)));
+    // Ausschnitt grosszuegig: 2,4x der Kernradius nimmt Halo und Spikes mit.
+    // Die hellsten Sterne bekommen deutlich groessere Ausschnitte - lange
+    // Newton-Spikes wurden sonst am Patchrand gekappt
+    const cap = i < 4 ? 200 : i < 24 ? 120 : 90;
+    const rPx = Math.min(cap, Math.max(4, Math.ceil(coreR(st) * 2.4)));
     const s = 2 * rPx + 2;
     if (x + s > A) { x = 0; y += rowH + 1; rowH = 0; }
     if (y + s > A) break;
@@ -3152,6 +3161,7 @@ function render(forcedT) {
     u1i(starProg, "uColorS", 7);
     u1f(starProg, "uRealStars", state.realStars && texStarAtlas ? 1 : 0);
     u1f(starProg, "uStarBrightF", state.starBright / 100);
+    u1f(starProg, "uAngleF", cam.angle);
     gl.drawArrays(gl.POINTS, 0, state.starCount);
     gl.disable(gl.BLEND);
   }
