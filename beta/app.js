@@ -726,7 +726,13 @@ void main() {
                    vAtlasUv.y - d.y / vPatchHalf * vAtlasUv.z);
     vec3 c = texture(uAtlas, uv).rgb;
     float edge = 1.0 - smoothstep(0.78, 1.0, rn);
-    outColor = vec4(c * edge * vAlpha * uStarBrightF, 1.0);
+    // Helligkeit wirkt RADIAL wie eine kuerzere Belichtung: Der Kern bleibt
+    // weiss, nur Saum/Spikes dunkeln ab (globales Dimmen machte die Kerne
+    // grau - unnatuerlich). Erst unter ~30 % verschwindet auch der Kern
+    float b = uStarBrightF;
+    float coreKeep = smoothstep(0.0, 0.3, b);
+    float w = b >= 1.0 ? b : mix(coreKeep, b, smoothstep(0.15, 0.8, rn));
+    outColor = vec4(c * edge * vAlpha * w, 1.0);
     return;
   }
   // Kapsel entlang der Flugrichtung: Abstand zur Streifen-Mittellinie,
