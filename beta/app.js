@@ -661,6 +661,9 @@ void main() {
   // Sprite zurueck (gestreckte Spikes/Halos wuerden haesslich verschmieren)
   vAtlasUv = vec3(-1.0);
   vPatchHalf = 0.0;
+  // Absorbierte Paar-Partner (Marke -2) sind im Patch des helleren Sterns
+  // enthalten - ihr eigenes Partikel wuerde sie doppelt zeichnen
+  if (uRealStars > 0.5 && aAtlas.x < -1.5) vAlpha = 0.0;
   if (uRealStars > 0.5 && aAtlas.x >= 0.0 && len < base * 0.5) {
     float patchHalf = aAtlas.w * scale * uPixelsY * uStarSize;
     if (patchHalf > 1.5) {
@@ -1369,16 +1372,70 @@ function buildStarAtlas(list, srcCanvas) {
   const g = c.getContext("2d");
   const entries = new Float32Array(list.length * 4).fill(-1);
   const h = srcCanvas.height;
+  // Nachbarsuche ueber ein grobes Raster: fremde Sternkerne muessen aus
+  // jedem Patch entfernt werden - sonst rendert ein enges Paar den Partner
+  // DOPPELT (eigenes Sprite + Abbild im Patch des Nachbarn) und leuchtet
+  // beim additiven Blending viel zu hell (Anthonys Doppelstern-Report)
+  const CELL = 64;
+  const gw = Math.ceil(srcCanvas.width / CELL), gh = Math.ceil(srcCanvas.height / CELL);
+  const grid = new Map();
+  list.forEach((st, i) => {
+    const key = ((st.x / CELL) | 0) + ((st.y / CELL) | 0) * gw;
+    if (!grid.has(key)) grid.set(key, []);
+    grid.get(key).push(i);
+  });
+  const coreR = (st) => Math.sqrt(st.area / Math.PI) * 0.9 + 2.5;
+  // Enge Paare: ueberlappen sich die Kerne, wird der schwaechere Stern vom
+  // helleren "absorbiert" - er bleibt im Patch des Partners sichtbar, sein
+  // eigenes Partikel wird im Echtbild-Modus ausgeblendet (Marke -2). Ein
+  // Ausradieren wuerde sonst den eigenen Kern mit treffen (Anthonys Paar)
+  const absorbed = new Uint8Array(list.length);
   let x = 0, y = 0, rowH = 0, packed = 0;
   const N = Math.min(list.length, 2500);
   for (let i = 0; i < N; i++) {
+    if (absorbed[i]) continue;
     const st = list[i];
     // Ausschnitt grosszuegig: 2,4x der Kernradius nimmt Halo und Spikes mit
-    const rPx = Math.min(90, Math.max(4, Math.ceil((Math.sqrt(st.area / Math.PI) * 0.9 + 2.5) * 2.4)));
+    const rPx = Math.min(90, Math.max(4, Math.ceil(coreR(st) * 2.4)));
     const s = 2 * rPx + 2;
     if (x + s > A) { x = 0; y += rowH + 1; rowH = 0; }
     if (y + s > A) break;
     g.drawImage(srcCanvas, st.x - rPx, st.y - rPx, 2 * rPx, 2 * rPx, x + 1, y + 1, 2 * rPx, 2 * rPx);
+    // Fremde Sternkerne im Patch weich ausradieren (schwarz = additiv nichts)
+    const c0x = ((st.x - rPx) / CELL | 0) - 1, c1x = ((st.x + rPx) / CELL | 0) + 1;
+    const c0y = ((st.y - rPx) / CELL | 0) - 1, c1y = ((st.y + rPx) / CELL | 0) + 1;
+    for (let cy = c0y; cy <= c1y; cy++) {
+      for (let cx = c0x; cx <= c1x; cx++) {
+        const cell = grid.get(cx + cy * gw);
+        if (!cell) continue;
+        for (const j of cell) {
+          if (j === i || absorbed[j]) continue;
+          const nb = list[j];
+          const dx = nb.x - st.x, dy = nb.y - st.y;
+          const dist = Math.hypot(dx, dy);
+          if (dist > rPx + coreR(nb) * 2) continue;
+          if (j > i && dist < (coreR(st) + coreR(nb)) * 0.95) {
+            // Kerne ueberlappen: Partner absorbieren statt radieren
+            absorbed[j] = 1;
+            entries[j * 4] = -2;
+            continue;
+          }
+          // Fremden Kern weich ausradieren - Radius so begrenzen, dass der
+          // EIGENE Kern nie mit getroffen wird
+          const eraseR = Math.min(coreR(nb) * 2.0, Math.max(0, dist - coreR(st) * 0.8));
+          if (eraseR < 1.5) continue;
+          const px = x + 1 + rPx + dx, py = y + 1 + rPx + dy;
+          const grad = g.createRadialGradient(px, py, 0, px, py, eraseR);
+          grad.addColorStop(0, "rgba(0,0,0,1)");
+          grad.addColorStop(0.6, "rgba(0,0,0,0.9)");
+          grad.addColorStop(1, "rgba(0,0,0,0)");
+          g.fillStyle = grad;
+          g.beginPath();
+          g.arc(px, py, eraseR, 0, Math.PI * 2);
+          g.fill();
+        }
+      }
+    }
     entries[i * 4]     = (x + 1 + rPx) / A;       // Zentrum u
     entries[i * 4 + 1] = 1 - (y + 1 + rPx) / A;   // Zentrum v (Flip wie makeTexture)
     entries[i * 4 + 2] = rPx / A;                 // halbe Groesse in Atlas-UV
