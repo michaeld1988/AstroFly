@@ -2670,7 +2670,7 @@ function camAt(loopT) {
   if (scenarioActive()) {
     const sp = scenarioAt(p);
     zoom = sp.zoom; cx = sp.cx; cy = sp.cy;
-    angle = (state.orientation + state.rotationSpeed * te + sp.angle) * Math.PI / 180;
+    angle = (state.orientation + sp.angle) * Math.PI / 180;
   } else if (state.flightMode === "lateral") {
     // Konstanter Zoom; die Kamera fährt entlang der eingestellten Richtung
     // durch das Ziel (Klickpunkt). Die Strecke ist so begrenzt, dass der
@@ -2706,7 +2706,7 @@ function camAt(loopT) {
   // Schwenk-Animation: langsame elliptische Kippbewegung (Funktion von te,
   // dadurch im Loop-Modus automatisch nahtlos)
   let tiltAddX = 0, tiltAddY = 0;
-  const swayA = (state.swayAmp / 100) * 0.06;
+  const swayA = scenarioActive() ? 0 : (state.swayAmp / 100) * 0.06;
   if (swayA > 0) {
     // Kreisende Kippbewegung statt Hin-und-her-Pendeln: Der Kipp-Vektor
     // läuft auf einer flachen Ellipse (Hauptachse = eingestellte Richtung).
@@ -2730,7 +2730,7 @@ function camAt(loopT) {
   // langsam in eine Richtung (folgt der Beschleunigungskurve; basiert auf pe,
   // das im Loop-Modus hin & zurück läuft -> nahtlos). Volle Stärke entspricht
   // einer Fahrt des Kipp-Reglers von -100 nach +100, mittig neutral.
-  const rampA = (state.tiltRampAmp / 100) * 0.08;
+  const rampA = scenarioActive() ? 0 : (state.tiltRampAmp / 100) * 0.08;
   if (rampA > 0) {
     const rdir = state.tiltRampDir * Math.PI / 180;
     const q = (pe - 0.5) * 2; // -1 .. +1 über die Flugdauer
@@ -4321,6 +4321,17 @@ function drawWaypointOverlay(ctx, W, H, cam) {
   ctx.restore();
 }
 
+/** Ankunftszeit an Wegpunkt i im Plan (Sekunden ab Flugbeginn). */
+function scenarioArrival(i) {
+  const wps = state.waypoints;
+  let tA = 0;
+  for (let j = 0; j <= i && j < wps.length; j++) {
+    if (j > 0) tA += Math.max(0.2, wps[j].dur || 0.2);
+    if (j < i) tA += Math.max(0, wps[j].hold || 0);
+  }
+  return tA;
+}
+
 /** Wegpunkt auswaehlen: Highlight im Bild UND in der Liste (beide Wege). */
 function selectWaypoint(i) {
   wpSel = i;
@@ -4335,7 +4346,8 @@ function selectWaypoint(i) {
 function updateScenarioUi() {
   const on = scenarioActive();
   for (const id of ["ctlFlightMode", "ctlDriftDir", "ctlZoom", "ctlSpeed",
-    "ctlEaseMode", "ctlEase", "ctlDuration"]) {
+    "ctlEaseMode", "ctlEase", "ctlDuration",
+    "ctlRotation", "ctlSwayAmp", "ctlTiltRamp"]) {
     const el = $(id);
     if (el) el.disabled = on;
   }
@@ -4375,8 +4387,9 @@ function rebuildWaypointList() {
       `<label>${t("wpHold")} <input type="range" data-r="hold" min="0" max="10" step="0.1" value="${Math.min(10, wp.hold)}"><input type="number" data-k="hold" min="0" max="30" step="0.1" value="${wp.hold}"></label>` +
       (i > 0 ? `<select data-k="ease"><option value="smooth">${t("wpEaseSmooth")}</option><option value="linear">${t("wpEaseLinear")}</option><option value="custom">${t("wpEaseCustom")}</option></select>` : "") +
       (i > 0 ? `<button class="wpbtn" data-a="curve" title="${t("wpCurve")}">&#8767;</button>` : "") +
-      `<label class="wpchk"><input type="checkbox" data-k="floatOn"${wp.floatOn ? " checked" : ""}> ${t("wpFloat")}</label>` +
+      `<label class="wpchk" title="${t("wpFloatTip")}"><input type="checkbox" data-k="floatOn"${wp.floatOn ? " checked" : ""}> ${t("wpFloat")}</label>` +
       (i > 0 ? `<button class="wpbtn" data-a="via" title="${wp.via ? t("wpViaClear") : t("wpViaSet")}">${wp.via ? "\u222a\u2715" : "\u222a"}</button>` : "") +
+      `<button class="wpbtn" data-a="play" title="${t("wpPlayFrom")}">\u25b6</button>` +
       `<button class="wpbtn" data-a="goto" title="${t("wpGoto")}">\u2316</button>` +
       `<button class="wpbtn" data-a="up" title="\u2191">\u2191</button>` +
       `<button class="wpbtn" data-a="down" title="\u2193">\u2193</button>` +
@@ -4415,6 +4428,19 @@ function rebuildWaypointList() {
           // Zwischenpunkt der Etappe; erneuter Klick entfernt den Bogen
           wp.via = wp.via ? null : { x: state.scenView.x, y: state.scenView.y };
           rebuildWaypointList();
+          return;
+        }
+        if (a === "play") {
+          if (!state.scenarioOn) {
+            state.scenarioOn = true;
+            $("ctlScenOn").checked = true;
+            updateScenarioUi();
+          }
+          setScenEdit(false);
+          const tStart = Math.min(state.duration - 0.01, scenarioArrival(i));
+          state.pausedAt = tStart;
+          state.t0 = performance.now() - tStart * 1000;
+          if (!state.playing) $("btnPlay").click();
           return;
         }
         if (a === "goto") {
@@ -4657,6 +4683,23 @@ canvas.addEventListener("pointerdown", (e) => {
   e.preventDefault();
   scenDrag = { b: e.button, x: e.clientX, y: e.clientY };
   scenDragDist = 0;
+  // Linksklick auf einen Wegpunkt-Marker: den Punkt verschieben statt pannen
+  if (e.button === 0 && state.waypoints.length) {
+    const rect = canvas.getBoundingClientRect();
+    const cam = camAt(0);
+    let best = -1, bd = 18;
+    state.waypoints.forEach((wp, i) => {
+      const S = wpToScreen(wp.x, wp.y, cam, canvas.width, canvas.height);
+      const sx = (S.x / canvas.width) * rect.width;
+      const sy = (S.y / canvas.height) * rect.height;
+      const d = Math.hypot(e.clientX - rect.left - sx, e.clientY - rect.top - sy);
+      if (d < bd) { bd = d; best = i; }
+    });
+    if (best >= 0) {
+      scenDrag.wp = best;
+      selectWaypoint(best);
+    }
+  }
   canvas.setPointerCapture(e.pointerId);
 });
 canvas.addEventListener("pointermove", (e) => {
@@ -4664,6 +4707,36 @@ canvas.addEventListener("pointermove", (e) => {
   const dx = e.clientX - scenDrag.x, dy = e.clientY - scenDrag.y;
   scenDrag.x = e.clientX; scenDrag.y = e.clientY;
   scenDragDist += Math.abs(dx) + Math.abs(dy);
+  // Wegpunkt-Marker ziehen: Zeigerposition -> Bildebene (gleiche
+  // tiefenbewusste Fixpunkt-Iteration wie das Klick-Ziel)
+  if (scenDrag.wp !== undefined) {
+    const wp = state.waypoints[scenDrag.wp];
+    const rect = canvas.getBoundingClientRect();
+    const fx = (e.clientX - rect.left) / rect.width;
+    const fy = (e.clientY - rect.top) / rect.height;
+    const cam = camAt(0);
+    const px = (fx - 0.5) * state.aspect;
+    const py = (0.5 - fy);
+    const c = Math.cos(cam.angle), s = Math.sin(cam.angle);
+    const rx = c * px + s * py;
+    const ry = -s * px + c * py;
+    const imgAspect = state.starless.width / state.starless.height;
+    const cover = coverBase(state.aspect, imgAspect);
+    const parallax = state.parallax / 100;
+    const depthRange = 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
+    let qx = cam.cx + rx / (cover * cam.zoom);
+    let qy = cam.cy + ry / (cover * cam.zoom);
+    for (let i = 0; i < 3; i++) {
+      const d = depthAtPlane(qx, qy, imgAspect);
+      const exD = 1 + parallax * (d - 0.45) * depthRange;
+      const sc = cover * Math.pow(cam.zoom, exD);
+      qx = cam.cx + rx / sc;
+      qy = cam.cy + ry / sc;
+    }
+    wp.x = Math.min(imgAspect * 0.475, Math.max(-imgAspect * 0.475, qx));
+    wp.y = Math.min(0.475, Math.max(-0.475, qy));
+    return;
+  }
   const v = state.scenView;
   if (scenDrag.b === 1 || scenDrag.b === 2) {
     v.angle += dx * 0.25;
@@ -4681,7 +4754,11 @@ canvas.addEventListener("pointermove", (e) => {
   scenClampView();
 });
 for (const evName of ["pointerup", "pointercancel"]) {
-  canvas.addEventListener(evName, () => { scenDrag = null; });
+  canvas.addEventListener(evName, () => {
+    // Nach dem Verschieben eines Markers die Zeilen-Anzeige auffrischen
+    if (scenDrag && scenDrag.wp !== undefined) rebuildWaypointList();
+    scenDrag = null;
+  });
 }
 canvas.addEventListener("contextmenu", (e) => {
   if (state.scenEdit) e.preventDefault();
