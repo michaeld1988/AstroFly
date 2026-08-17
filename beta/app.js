@@ -92,6 +92,7 @@ const state = {
   moonDisk: null,        // erkannte Mondscheibe { cx, cy, r } (normiert auf Bildbreite)
   moonObj: "moon",       // Auswahl im Bilder-Tab: moon | planet (gleiche Kugel-Logik)
   starDetails: true,     // Sternphysik (Größe/Alter) in Labels anzeigen
+  realStars: true,       // hellste Sterne mit ihrem echten Pixel-Abbild rendern
   flipH: false,          // Bild horizontal gespiegelt (Starless + Maske)
   flipV: false,          // Bild vertikal gespiegelt
   flipOnlyStarless: false, // Spiegeln wirkt nur aufs Starless (Maske/Koordinaten bleiben)
@@ -422,6 +423,7 @@ layout(location=2) in float aSize;  // Radius in Ebenen-Einheiten
 layout(location=3) in vec3 aColor;
 layout(location=4) in float aGaia;  // echte Tiefe 0..1 aus Gaia (-1 = keine)
 layout(location=5) in vec2 aPm;     // Eigenbewegung in Ebenen-Einheiten/Jahr
+layout(location=6) in vec4 aAtlas;  // echtes Sternabbild: Zentrum-UV, halbe Groesse (UV / Ebene); x<0 = keins
 uniform float uViewAspect;
 uniform float uZoom;
 uniform float uParallax;
@@ -470,6 +472,7 @@ uniform float uPmYears2;  // ... und kurz danach (für die Streifen)
 // Nebel-Okklusion: Nebelschwaden, die VOR einem Stern liegen, verdecken ihn
 uniform float uOcclude;    // Stärke 0..1 (0 = aus)
 uniform float uMoonMode;   // Mond-Modus: Sterne hinter die Mondscheibe zwingen
+uniform float uRealStars;  // 1 = hellste Sterne mit echtem Pixel-Abbild rendern
 uniform vec2 uMoonCS;      // Scheibenzentrum in Textur-UV
 uniform float uMoonRS;     // Scheibenradius als Anteil der Bildbreite
 uniform float uAnchor;     // Sterne im Nebel verankern: Stärke 0..1
@@ -484,6 +487,8 @@ out vec2 vDir;    // Streifen-Richtung in Pixeln (normiert)
 out float vLen;   // Streifen-Länge in px
 out float vBase;  // Stern-Durchmesser in px
 out float vSize;  // gl_PointSize (für gl_PointCoord -> px)
+out vec3 vAtlasUv;   // Atlas: Zentrum-UV + halbe Groesse in UV (x<0 = prozedural)
+out float vPatchHalf; // halbe Patch-Groesse auf dem Bildschirm in px
 
 // Sternposition mit der Galaxien-Rotation mitdrehen (identische Falloff-,
 // Differenzial- und Masken-Logik wie im Hintergrund-Shader)
@@ -529,6 +534,7 @@ void main() {
     gl_PointSize = 1.0;
     vColor = vec3(0.0); vAlpha = 0.0;
     vDir = vec2(1.0, 0.0); vLen = 0.0; vBase = 1.0; vSize = 1.0;
+    vAtlasUv = vec3(-1.0); vPatchHalf = 0.0;
     return;
   }
 
@@ -650,6 +656,20 @@ void main() {
   }
   gl_Position = vec4(clipMid, 0.0, 1.0);
   float size = base + min(len + 4.0, uMaxPoint - base);
+  // Echtes Sternabbild: Sprite auf die Patch-Groesse aufziehen. Sobald ein
+  // sichtbarer Streifen entsteht, faellt der Stern auf das prozedurale
+  // Sprite zurueck (gestreckte Spikes/Halos wuerden haesslich verschmieren)
+  vAtlasUv = vec3(-1.0);
+  vPatchHalf = 0.0;
+  if (uRealStars > 0.5 && aAtlas.x >= 0.0 && len < base * 0.5) {
+    float patchHalf = aAtlas.w * scale * uPixelsY * uStarSize;
+    if (patchHalf > 1.5) {
+      vPatchHalf = min(patchHalf, uMaxPoint * 0.5 - 1.0);
+      size = max(size, vPatchHalf * 2.0 + 2.0);
+      vAtlasUv = vec3(aAtlas.x, aAtlas.y, aAtlas.z);
+      len = 0.0;
+    }
+  }
   gl_PointSize = size;
   vDir = dirPx;
   vLen = len;
@@ -686,8 +706,26 @@ in vec2 vDir;
 in float vLen;
 in float vBase;
 in float vSize;
+in vec3 vAtlasUv;
+in float vPatchHalf;
+uniform sampler2D uAtlas;   // echte Sternabbilder (Ausschnitte der Maske)
+uniform float uStarBrightF; // Helligkeits-Regler (wie uStarBright im VS)
 out vec4 outColor;
 void main() {
+  // Echtes Sternabbild: Patch aus dem Atlas statt prozeduraler Glocke.
+  // Additives Blending -> schwarzer Patch-Hintergrund addiert nichts;
+  // ein weicher radialer Rand vermeidet sichtbare Kachelkanten
+  if (vAtlasUv.x >= 0.0 && vPatchHalf > 0.5) {
+    vec2 d = (gl_PointCoord - 0.5) * vSize;
+    float rn = length(d) / vPatchHalf;
+    if (rn > 1.0) discard;
+    vec2 uv = vec2(vAtlasUv.x + d.x / vPatchHalf * vAtlasUv.z,
+                   vAtlasUv.y - d.y / vPatchHalf * vAtlasUv.z);
+    vec3 c = texture(uAtlas, uv).rgb;
+    float edge = 1.0 - smoothstep(0.78, 1.0, rn);
+    outColor = vec4(c * edge * vAlpha * uStarBrightF, 1.0);
+    return;
+  }
   // Kapsel entlang der Flugrichtung: Abstand zur Streifen-Mittellinie,
   // normiert auf den Stern-Radius (vLen = 0 -> runder Stern wie bisher)
   vec2 d = (gl_PointCoord - 0.5) * vSize;
@@ -870,6 +908,7 @@ const starBuf = gl.createBuffer();
 let texColor = null;
 let texDepth = null;
 let texSpinMask = null;
+let texStarAtlas = null;
 
 function makeTexture(source) {
   const t = gl.createTexture();
@@ -1315,6 +1354,41 @@ function clampi(v, n) { return v < 0 ? 0 : (v >= n ? n - 1 : v); }
 
 // ---------------------------------------------------------------- Stern-Extraktion
 
+
+/**
+ * Textur-Atlas mit den echten Pixel-Abbildern der hellsten Sterne: je Stern
+ * wird ein Ausschnitt (inkl. Halo/Spikes-Rand) aus dem Sternmasken-Bild in
+ * einen 2048er-Atlas gepackt (Shelf-Packing, hellste zuerst). Die Eintraege
+ * speichern Zentrum (Textur-UV, y bereits geflippt wie makeTexture), halbe
+ * Groesse in Atlas-UV und halbe Groesse in Ebenen-Einheiten.
+ */
+function buildStarAtlas(list, srcCanvas) {
+  const A = 2048;
+  const c = document.createElement("canvas");
+  c.width = A; c.height = A;
+  const g = c.getContext("2d");
+  const entries = new Float32Array(list.length * 4).fill(-1);
+  const h = srcCanvas.height;
+  let x = 0, y = 0, rowH = 0, packed = 0;
+  const N = Math.min(list.length, 2500);
+  for (let i = 0; i < N; i++) {
+    const st = list[i];
+    // Ausschnitt grosszuegig: 2,4x der Kernradius nimmt Halo und Spikes mit
+    const rPx = Math.min(90, Math.max(4, Math.ceil((Math.sqrt(st.area / Math.PI) * 0.9 + 2.5) * 2.4)));
+    const s = 2 * rPx + 2;
+    if (x + s > A) { x = 0; y += rowH + 1; rowH = 0; }
+    if (y + s > A) break;
+    g.drawImage(srcCanvas, st.x - rPx, st.y - rPx, 2 * rPx, 2 * rPx, x + 1, y + 1, 2 * rPx, 2 * rPx);
+    entries[i * 4]     = (x + 1 + rPx) / A;       // Zentrum u
+    entries[i * 4 + 1] = 1 - (y + 1 + rPx) / A;   // Zentrum v (Flip wie makeTexture)
+    entries[i * 4 + 2] = rPx / A;                 // halbe Groesse in Atlas-UV
+    entries[i * 4 + 3] = rPx / h;                 // halbe Groesse in Ebenen-Einheiten
+    x += s; rowH = Math.max(rowH, s);
+    packed++;
+  }
+  return { canvas: c, entries, packed };
+}
+
 /**
  * Findet Sterne in der Maske über Zusammenhangskomponenten und baut den
  * GPU-Puffer: pro Stern [x, y, helligkeit, größe, r, g, b] in Ebenen-Einheiten.
@@ -1394,6 +1468,10 @@ function buildStarBuffer() {
 
   state.maskStarCount = list.length;
   state.maskStarFloats = buf;
+  // Echte Sternabbilder: Atlas aus demselben Arbeits-Canvas wie die Erkennung
+  state.starAtlas = buildStarAtlas(list, src);
+  if (texStarAtlas) gl.deleteTexture(texStarAtlas);
+  texStarAtlas = makeTexture(state.starAtlas.canvas);
   // Neue Maske -> alte Gaia-Zuordnung passt nicht mehr. Wenn der Katalog
   // gecacht ist, gleichen wir sofort neu ab - der Wissenschafts-Modus soll
   // einen Masken-Neuaufbau überleben, statt kommentarlos herauszufallen
@@ -1850,13 +1928,22 @@ function uploadStars() {
   state.starCount = n;
   if (!n) return;
 
-  const F = 10; // [x, y, hell, größe, r, g, b, gaia, pmx, pmy]
+  const F = 14; // [x, y, hell, größe, r, g, b, gaia, pmx, pmy, atlasU, atlasV, atlasHalfUv, atlasHalfPlane]
   const buf = new Float32Array(n * F);
   const gcol = state.gaiaColors && state.gaiaColorRGB ? state.gaiaColorRGB : null;
   const gpm = state.gaiaPM;
+  const atl = state.starAtlas ? state.starAtlas.entries : null;
   for (let i = 0; i < nMask; i++) {
     buf.set(mask.subarray(i * 7, i * 7 + 7), i * F);
     buf[i * F + 7] = state.gaiaDepth ? state.gaiaDepth[i] : -1;
+    if (atl && i * 4 + 3 < atl.length) {
+      buf[i * F + 10] = atl[i * 4];
+      buf[i * F + 11] = atl[i * 4 + 1];
+      buf[i * F + 12] = atl[i * 4 + 2];
+      buf[i * F + 13] = atl[i * 4 + 3];
+    } else {
+      buf[i * F + 10] = -1;
+    }
     // Echte Katalogfarbe (nur Farbton) statt Fotofarbe, wenn aktiviert
     if (gcol && gcol[i * 3] >= 0) {
       buf[i * F + 4] = 0.35 + 0.65 * gcol[i * 3];
@@ -1868,6 +1955,7 @@ function uploadStars() {
   for (let i = 0; i < nGen; i++) {
     buf.set(gen.subarray(i * 7, i * 7 + 7), (nMask + i) * F);
     buf[(nMask + i) * F + 7] = -1;
+    buf[(nMask + i) * F + 10] = -1;
   }
 
   gl.bindVertexArray(starVao);
@@ -1880,6 +1968,7 @@ function uploadStars() {
   gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 3, gl.FLOAT, false, stride, 16);
   gl.enableVertexAttribArray(4); gl.vertexAttribPointer(4, 1, gl.FLOAT, false, stride, 28);
   gl.enableVertexAttribArray(5); gl.vertexAttribPointer(5, 2, gl.FLOAT, false, stride, 32);
+  gl.enableVertexAttribArray(6); gl.vertexAttribPointer(6, 4, gl.FLOAT, false, stride, 40);
   gl.bindVertexArray(null);
 }
 
@@ -2976,9 +3065,16 @@ function render(forcedT) {
     gl.bindTexture(gl.TEXTURE_2D, texDepth);
     gl.activeTexture(gl.TEXTURE7);
     gl.bindTexture(gl.TEXTURE_2D, texColor);
+    if (texStarAtlas) {
+      gl.activeTexture(gl.TEXTURE8);
+      gl.bindTexture(gl.TEXTURE_2D, texStarAtlas);
+      u1i(starProg, "uAtlas", 8);
+    }
     gl.activeTexture(gl.TEXTURE0);
     u1i(starProg, "uDepthS", 6);
     u1i(starProg, "uColorS", 7);
+    u1f(starProg, "uRealStars", state.realStars && texStarAtlas ? 1 : 0);
+    u1f(starProg, "uStarBrightF", state.starBright / 100);
     gl.drawArrays(gl.POINTS, 0, state.starCount);
     gl.disable(gl.BLEND);
   }
@@ -4781,6 +4877,10 @@ $("ctlScenOn").addEventListener("change", () => {
 });
 
 // Mond-Modus: Scheibe erkennen und Kugel-Tiefe aktivieren (Prototyp)
+$("ctlRealStars").addEventListener("change", () => {
+  state.realStars = $("ctlRealStars").checked;
+});
+
 $("ctlMoonMode").addEventListener("change", () => {
   const on = $("ctlMoonMode").checked;
   const status = $("moonStatus");
