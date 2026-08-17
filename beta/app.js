@@ -4089,13 +4089,13 @@ canvas.addEventListener("click", (e) => {
     if (scenDragDist > 6) return; // Zieh-Ende ist kein Auswahl-Klick
     const rect = canvas.getBoundingClientRect();
     const cam = camAt(0);
-    let best = -1, bd = 20; // Trefferradius in CSS-Pixeln
+    let best = -1; // oberster Marker im Trefferradius gewinnt
     state.waypoints.forEach((wp, i) => {
       const S = wpToScreen(wp.x, wp.y, cam, canvas.width, canvas.height);
       const sx = (S.x / canvas.width) * rect.width;
       const sy = (S.y / canvas.height) * rect.height;
       const d = Math.hypot(e.clientX - rect.left - sx, e.clientY - rect.top - sy);
-      if (d < bd) { bd = d; best = i; }
+      if (d < 20) best = i;
     });
     if (best >= 0) selectWaypoint(best);
     return;
@@ -4574,6 +4574,7 @@ function rebuildWaypointList() {
       (i > 0 ? `<button class="wpbtn" data-a="curve" title="${t("wpCurve")}">&#8767;</button>` : "") +
       `<label class="wpchk" title="${t("wpFloatTip")}"><input type="checkbox" data-k="floatOn"${wp.floatOn ? " checked" : ""}> ${t("wpFloat")}</label>` +
       (i > 0 ? `<button class="wpbtn" data-a="via" title="${wp.via ? t("wpViaClear") : t("wpViaSet")}">${wp.via ? "\u222a\u2715" : "\u222a"}</button>` : "") +
+      `<button class="wpbtn" data-a="center" title="${t("wpCenter")}">\u2302</button>` +
       `<button class="wpbtn" data-a="play" title="${t("wpPlayFrom")}">\u25b6</button>` +
       `<button class="wpbtn" data-a="goto" title="${t("wpGoto")}">\u2316</button>` +
       `<button class="wpbtn" data-a="up" title="\u2191">\u2191</button>` +
@@ -4613,6 +4614,13 @@ function rebuildWaypointList() {
           // Zwischenpunkt der Etappe; erneuter Klick entfernt den Bogen
           wp.via = wp.via ? null : { x: state.scenView.x, y: state.scenView.y };
           rebuildWaypointList();
+          return;
+        }
+        if (a === "center") {
+          wp.x = 0; wp.y = 0; wp.zoom = 1; wp.angle = 0;
+          rebuildWaypointList();
+          selectWaypoint(i);
+          updateScenarioUi();
           return;
         }
         if (a === "play") {
@@ -4872,13 +4880,15 @@ canvas.addEventListener("pointerdown", (e) => {
   if (e.button === 0 && state.waypoints.length) {
     const rect = canvas.getBoundingClientRect();
     const cam = camAt(0);
-    let best = -1, bd = 18;
+    // Bei ueberlappenden Markern gewinnt der OBERSTE (hoechster Index wird
+    // zuletzt gezeichnet) - nicht der naechstgelegene darunter
+    let best = -1;
     state.waypoints.forEach((wp, i) => {
       const S = wpToScreen(wp.x, wp.y, cam, canvas.width, canvas.height);
       const sx = (S.x / canvas.width) * rect.width;
       const sy = (S.y / canvas.height) * rect.height;
       const d = Math.hypot(e.clientX - rect.left - sx, e.clientY - rect.top - sy);
-      if (d < bd) { bd = d; best = i; }
+      if (d < 18) best = i;
     });
     if (best >= 0) {
       scenDrag.wp = best;
