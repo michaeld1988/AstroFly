@@ -2443,6 +2443,9 @@ function drawPreviewOverlay(loopT, cam, fade) {
   overlayCanvas.style.height = canvas.clientHeight + "px";
   overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
   drawOverlayTo(overlayCtx, overlayCanvas.width, overlayCanvas.height, loopT, cam, fade);
+  if (state.scenEdit && state.starless && !state.exporting && state.waypoints.length) {
+    drawWaypointOverlay(overlayCtx, overlayCanvas.width, overlayCanvas.height, cam);
+  }
 }
 
 // ---------------------------------------------------------------- Kamera & Zeit
@@ -2547,6 +2550,18 @@ function bezierEase(x1, y1, x2, y2, k) {
   return sampleY(t);
 }
 
+/** Position entlang einer Etappe: Gerade oder Bogen durch wp.via. */
+function scenLegPos(a, b, k) {
+  if (b.via) {
+    const cx = 2 * b.via.x - (a.x + b.x) / 2;
+    const cy = 2 * b.via.y - (a.y + b.y) / 2;
+    const u = 1 - k;
+    return { x: u * u * a.x + 2 * u * k * cx + k * k * b.x,
+             y: u * u * a.y + 2 * u * k * cy + k * k * b.y };
+  }
+  return { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k };
+}
+
 /** Gesamtdauer des Wegpunkt-Plans in Sekunden (Etappen + Pausen). */
 function scenarioTotal() {
   const wps = state.waypoints;
@@ -2585,8 +2600,9 @@ function scenarioAt(p) {
         }
         const a = wps[i - 1], b = wps[i];
         const za = Math.max(1, a.zoom || 1), zb = Math.max(1, b.zoom || 1);
-        ax = a.x + (b.x - a.x) * k;
-        ay = a.y + (b.y - a.y) * k;
+        const P = scenLegPos(a, b, k);
+        ax = P.x;
+        ay = P.y;
         zoom = za * Math.pow(zb / za, k);
         ang = (a.angle || 0) + ((b.angle || 0) - (a.angle || 0)) * k;
         break outer;
@@ -2596,7 +2612,18 @@ function scenarioAt(p) {
     ax = wps[i].x; ay = wps[i].y; zoom = Math.max(1, wps[i].zoom || 1);
     ang = wps[i].angle || 0;
     const hold = Math.max(0, wps[i].hold || 0);
-    if (s <= hold) break;
+    if (s <= hold) {
+      // Schwebe-Effekt (optional je Wegpunkt): sanftes Treiben waehrend der
+      // Pause, wie eine schwebende Kamera - weich ein- und ausblendend,
+      // damit der Uebergang in die Etappen nahtlos bleibt
+      if (wps[i].floatOn && hold > 0.4) {
+        const ramp = smoothstep(Math.min(1, s / 1.2)) * smoothstep(Math.min(1, (hold - s) / 1.2));
+        const amp = 0.006 / zoom;
+        ax += amp * ramp * (Math.sin(s * 0.9 + i * 2.1) + 0.5 * Math.sin(s * 0.47 + 1.3));
+        ay += amp * ramp * 0.8 * (Math.sin(s * 0.73 + i * 1.4 + 0.9) + 0.5 * Math.sin(s * 0.31 + 0.4));
+      }
+      break;
+    }
     s -= hold;
   }
   const viewAspect = state.aspect;
@@ -3846,7 +3873,22 @@ $("btnGaia").addEventListener("click", async () => {
 
 // Zoomziel per Klick in die Vorschau
 canvas.addEventListener("click", (e) => {
-  if (!state.starless || state.exporting || state.scenEdit) return;
+  if (!state.starless || state.exporting) return;
+  if (state.scenEdit) {
+    if (scenDragDist > 6) return; // Zieh-Ende ist kein Auswahl-Klick
+    const rect = canvas.getBoundingClientRect();
+    const cam = camAt(0);
+    let best = -1, bd = 20; // Trefferradius in CSS-Pixeln
+    state.waypoints.forEach((wp, i) => {
+      const S = wpToScreen(wp.x, wp.y, cam, canvas.width, canvas.height);
+      const sx = (S.x / canvas.width) * rect.width;
+      const sy = (S.y / canvas.height) * rect.height;
+      const d = Math.hypot(e.clientX - rect.left - sx, e.clientY - rect.top - sy);
+      if (d < bd) { bd = d; best = i; }
+    });
+    if (best >= 0) selectWaypoint(best);
+    return;
+  }
   const rect = canvas.getBoundingClientRect();
   const fx = (e.clientX - rect.left) / rect.width;
   const fy = (e.clientY - rect.top) / rect.height;
@@ -4182,6 +4224,85 @@ function applyImageFlip(fh, fv) {
 }
 // ------------------------------------------------- Szenario-Tab (Wegpunkte)
 
+// Flugplan-Overlay: nummerierte Wegpunkte, Pfad und Bogen-Punkte in der
+// Vorschau (nur waehrend der Einrichtung, nie im Export)
+let wpSel = -1;
+
+function wpToScreen(qx, qy, cam, W, H) {
+  const viewAspect = state.aspect;
+  const imgAspect = state.starless.width / state.starless.height;
+  const cover = coverBase(viewAspect, imgAspect);
+  const parallax = state.parallax / 100;
+  const depthRange = 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
+  const d = depthAtPlane(qx, qy, imgAspect);
+  const ex = 1 + parallax * (d - 0.45) * depthRange;
+  const scaleD = cover * Math.pow(cam.zoom, ex);
+  const prx = (qx - cam.cx) * scaleD;
+  const pry = (qy - cam.cy) * scaleD;
+  const rc = Math.cos(cam.angle), rs = Math.sin(cam.angle);
+  const px = rc * prx - rs * pry, py = rs * prx + rc * pry;
+  return { x: (px / viewAspect + 0.5) * W, y: (1 - (py + 0.5)) * H };
+}
+
+function drawWaypointOverlay(ctx, W, H, cam) {
+  const wps = state.waypoints;
+  const px = W / 1000; // grob aufloesungsunabhaengige Strichstaerken
+  // Pfad (mit Boegen) als Linie
+  ctx.lineWidth = 2 * px;
+  ctx.strokeStyle = "rgba(143, 176, 255, 0.55)";
+  ctx.setLineDash([6 * px, 5 * px]);
+  for (let i = 1; i < wps.length; i++) {
+    ctx.beginPath();
+    for (let k = 0; k <= 16; k++) {
+      const P = scenLegPos(wps[i - 1], wps[i], k / 16);
+      const S = wpToScreen(P.x, P.y, cam, W, H);
+      if (k === 0) ctx.moveTo(S.x, S.y); else ctx.lineTo(S.x, S.y);
+    }
+    ctx.stroke();
+    // Bogen-Punkt als Raute
+    if (wps[i].via) {
+      const V = wpToScreen(wps[i].via.x, wps[i].via.y, cam, W, H);
+      ctx.save();
+      ctx.translate(V.x, V.y);
+      ctx.rotate(Math.PI / 4);
+      ctx.setLineDash([]);
+      ctx.fillStyle = "rgba(143, 176, 255, 0.9)";
+      ctx.fillRect(-5 * px, -5 * px, 10 * px, 10 * px);
+      ctx.restore();
+      ctx.setLineDash([6 * px, 5 * px]);
+    }
+  }
+  ctx.setLineDash([]);
+  // Nummerierte Marker
+  for (let i = 0; i < wps.length; i++) {
+    const S = wpToScreen(wps[i].x, wps[i].y, cam, W, H);
+    const r = 14 * px;
+    const sel = i === wpSel;
+    ctx.beginPath();
+    ctx.arc(S.x, S.y, r, 0, Math.PI * 2);
+    ctx.fillStyle = sel ? "#8fb0ff" : "rgba(10, 14, 22, 0.85)";
+    ctx.fill();
+    ctx.lineWidth = (sel ? 2.5 : 1.5) * px;
+    ctx.strokeStyle = "#8fb0ff";
+    ctx.stroke();
+    ctx.fillStyle = sel ? "#0a0e16" : "#dfe6f5";
+    ctx.font = `600 ${13 * px}px system-ui, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(String(i + 1), S.x, S.y + 0.5 * px);
+  }
+}
+
+/** Wegpunkt auswaehlen: Highlight im Bild UND in der Liste (beide Wege). */
+function selectWaypoint(i) {
+  wpSel = i;
+  document.querySelectorAll("#wpList .wprow").forEach((row, idx) => {
+    row.classList.toggle("sel", idx === i);
+  });
+  const row = document.querySelectorAll("#wpList .wprow")[i];
+  if (row && row.scrollIntoView) row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
 /** Kamera-Regler sperren/freigeben und Videolaenge an den Plan koppeln. */
 function updateScenarioUi() {
   const on = scenarioActive();
@@ -4212,7 +4333,11 @@ function rebuildWaypointList() {
     ? state.starless.width / state.starless.height : 16 / 9;
   state.waypoints.forEach((wp, i) => {
     const row = document.createElement("div");
-    row.className = "wprow";
+    row.className = "wprow" + (i === wpSel ? " sel" : "");
+    row.addEventListener("click", (e) => {
+      if (e.target.closest("input, select, button")) return;
+      selectWaypoint(i);
+    });
     const pos = `${Math.round(wp.x / imgAspect * 200)} | ${Math.round(wp.y * 200)}`;
     row.innerHTML =
       `<b>${i + 1}</b><span class="wppos">${pos}</span>` +
@@ -4222,6 +4347,8 @@ function rebuildWaypointList() {
       `<label>${t("wpHold")} <input type="range" data-r="hold" min="0" max="10" step="0.1" value="${Math.min(10, wp.hold)}"><input type="number" data-k="hold" min="0" max="30" step="0.1" value="${wp.hold}"></label>` +
       (i > 0 ? `<select data-k="ease"><option value="smooth">${t("wpEaseSmooth")}</option><option value="linear">${t("wpEaseLinear")}</option><option value="custom">${t("wpEaseCustom")}</option></select>` : "") +
       (i > 0 ? `<button class="wpbtn" data-a="curve" title="${t("wpCurve")}">&#8767;</button>` : "") +
+      `<label class="wpchk"><input type="checkbox" data-k="floatOn"${wp.floatOn ? " checked" : ""}> ${t("wpFloat")}</label>` +
+      (i > 0 ? `<button class="wpbtn" data-a="via" title="${wp.via ? t("wpViaClear") : t("wpViaSet")}">${wp.via ? "\u222a\u2715" : "\u222a"}</button>` : "") +
       `<button class="wpbtn" data-a="goto" title="${t("wpGoto")}">\u2316</button>` +
       `<button class="wpbtn" data-a="up" title="\u2191">\u2191</button>` +
       `<button class="wpbtn" data-a="down" title="\u2193">\u2193</button>` +
@@ -4231,7 +4358,8 @@ function rebuildWaypointList() {
     row.querySelectorAll("input[data-k], select[data-k]").forEach((el) => {
       el.addEventListener("change", () => {
         const k = el.dataset.k;
-        wp[k] = k === "ease" ? el.value : parseFloat(el.value);
+        wp[k] = k === "ease" ? el.value
+          : el.type === "checkbox" ? el.checked : parseFloat(el.value);
         if (k === "ease" && el.value === "custom") openEaseEditor(i);
         const rng = row.querySelector(`input[data-r="${k}"]`);
         if (rng) rng.value = String(Math.min(10, wp[k]));
@@ -4254,12 +4382,20 @@ function rebuildWaypointList() {
           openEaseEditor(i);
           return;
         }
+        if (a === "via") {
+          // Bogen setzen: aktueller Bildmittelpunkt der Einrichtung wird der
+          // Zwischenpunkt der Etappe; erneuter Klick entfernt den Bogen
+          wp.via = wp.via ? null : { x: state.scenView.x, y: state.scenView.y };
+          rebuildWaypointList();
+          return;
+        }
         if (a === "goto") {
           state.scenView = { x: wp.x, y: wp.y, zoom: wp.zoom, angle: wp.angle || 0 };
           setScenEdit(true);
           return;
         }
         if (a === "del") state.waypoints.splice(i, 1);
+        wpSel = -1;
         $("easeEditor").hidden = true; easeEditIdx = -1;
         if (a === "up" && i > 0) [state.waypoints[i - 1], state.waypoints[i]] = [state.waypoints[i], state.waypoints[i - 1]];
         if (a === "down" && i < state.waypoints.length - 1) [state.waypoints[i + 1], state.waypoints[i]] = [state.waypoints[i], state.waypoints[i + 1]];
@@ -4470,6 +4606,7 @@ for (const btn of document.querySelectorAll("#scenPad button")) {
 // Maussteuerung in der Einrichtung: Mausrad zoomt, Links-Ziehen greift das
 // Bild (Kamera folgt der Maus), Rechts-Ziehen dreht die Kamera
 let scenDrag = null;
+let scenDragDist = 0;
 canvas.addEventListener("wheel", (e) => {
   if (!state.scenEdit || !state.starless) return;
   e.preventDefault();
@@ -4481,12 +4618,14 @@ canvas.addEventListener("pointerdown", (e) => {
   if (e.button !== 0 && e.button !== 1 && e.button !== 2) return;
   e.preventDefault();
   scenDrag = { b: e.button, x: e.clientX, y: e.clientY };
+  scenDragDist = 0;
   canvas.setPointerCapture(e.pointerId);
 });
 canvas.addEventListener("pointermove", (e) => {
   if (!scenDrag || !state.scenEdit) return;
   const dx = e.clientX - scenDrag.x, dy = e.clientY - scenDrag.y;
   scenDrag.x = e.clientX; scenDrag.y = e.clientY;
+  scenDragDist += Math.abs(dx) + Math.abs(dy);
   const v = state.scenView;
   if (scenDrag.b === 1 || scenDrag.b === 2) {
     v.angle += dx * 0.25;
