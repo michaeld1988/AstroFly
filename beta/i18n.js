@@ -15,6 +15,7 @@ const I18N = {
     en: {
       docTitle: "AstroFly – 3D flight through astrophotos",
       subtitle: "3D camera flight from starless image + star mask",
+      creditsBeta: "Beta testing:",
       tabBilder: "Images", tabKamera: "Camera", tabSterne: "Stars",
       tabLook: "Look", tabSci: "Science", tabExport: "Export",
       tabPresets: "Presets",
@@ -325,6 +326,7 @@ const I18N = {
     de: {
       docTitle: "AstroFly – 3D-Flug durch Astrofotos",
       subtitle: "3D-Kamerafahrt aus Starless-Bild + Sternmaske",
+      creditsBeta: "Beta-Tests:",
       tabBilder: "Bilder", tabKamera: "Kamera", tabSterne: "Sterne",
       tabLook: "Look", tabSci: "Wissen", tabExport: "Export",
       tabPresets: "Presets",

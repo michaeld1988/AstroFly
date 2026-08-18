@@ -775,7 +775,9 @@ out vec4 outColor;
 uniform sampler2D uScene;
 uniform sampler2D uStarsTex; // separate Sternebene (schwarz, wenn nicht getrennt)
 void main() {
-  vec3 c = texture(uScene, vUv).rgb + texture(uStarsTex, vUv).rgb;
+  vec3 sN = texture(uScene, vUv).rgb;
+  vec3 sS = texture(uStarsTex, vUv).rgb;
+  vec3 c = 1.0 - (1.0 - clamp(sN, 0.0, 1.0)) * (1.0 - clamp(sS, 0.0, 1.0));
   float l = max(max(c.r, c.g), c.b);
   // Empfindlicher (niedrige Schwelle, weiches Knie): auch schwache Sterne
   // glimmen - die Gesamtstärke regelt der Composite entsprechend sanfter
@@ -885,7 +887,10 @@ void main() {
   }
 
   // Sterne erst NACH Klarheit/Struktur/Schärfe dazulegen
-  col += stars;
+  // Sterne per Screen-Modus auf den Nebel legen (Astro-Standard wie in
+  // Photoshop/PixInsight): 1-(1-a)*(1-b) statt Addition - weicher Uebergang,
+  // helle Sternkerne auf hellem Nebel brennen nicht mehr aus
+  col = 1.0 - (1.0 - clamp(col, 0.0, 1.0)) * (1.0 - clamp(stars, 0.0, 1.0));
 
   col += texture(uBloom, vUv).rgb * uBloomStrength;
 
@@ -4199,6 +4204,7 @@ async function loadFile(which, file) {
     const img = await decodeFile(file);
     if (which === "starless") {
       state.starless = img;
+      if (state.flipH || state.flipV) flipImage(state.starless, state.flipH, state.flipV);
       $("nameStarless").removeAttribute("data-i18n");
       $("nameStarless").textContent = `${file.name} (${img.width}×${img.height})`;
       $("dropStarless").classList.add("loaded");
@@ -4230,6 +4236,11 @@ async function loadFile(which, file) {
       $("ctlFilename").placeholder = deriveExportName();
     } else {
       state.starsOriginal = img;
+      // Aktive Spiegelung sofort auf die NEUE Maske anwenden - sonst passte
+      // eine nach dem Spiegeln getauschte Maske nicht mehr zum Starless-Bild
+      if ((state.flipH || state.flipV) && !state.flipOnlyStarless) {
+        flipImage(state.starsOriginal, state.flipH, state.flipV);
+      }
       $("nameStars").removeAttribute("data-i18n");
       $("nameStars").textContent = `${file.name} (${img.width}×${img.height})`;
       $("dropStars").classList.add("loaded");
