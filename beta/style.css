@@ -443,6 +443,9 @@ button.primary:not(:disabled):hover { border-color: var(--accent); }
   position: absolute; right: 26px; bottom: 26px; z-index: 5;
   display: grid; grid-template-columns: repeat(3, 44px); gap: 5px;
 }
+/* WICHTIG: display:grid ueberschreibt sonst das hidden-Attribut - das
+   Steuerkreuz blieb dadurch IMMER sichtbar, egal was die Logik setzte */
+#scenPad[hidden] { display: none; }
 #scenPad button {
   width: 44px; height: 44px; border-radius: 10px; cursor: pointer;
   background: rgba(14, 18, 28, 0.82); border: 1px solid #2e3547;
@@ -490,7 +493,8 @@ button.primary:not(:disabled):hover { border-color: var(--accent); }
   #panelResize { display: none; } /* mobil ist das Panel volle Breite */
 }
 
-/* Credits im Panel-Kopf */
-.credits { color: var(--faint); font-size: 10.5px; margin-top: 3px; }
-.credits a { color: var(--accent); text-decoration: none; }
-.credits a:hover { text-decoration: underline; }
+/* About-Block im Export-Tab */
+.about { color: var(--text); font-size: 12.5px; line-height: 1.55; }
+.about p { margin-bottom: 10px; }
+.about a { color: var(--accent); text-decoration: none; }
+.about a:hover { text-decoration: underline; }
