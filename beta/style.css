@@ -498,3 +498,16 @@ button.primary:not(:disabled):hover { border-color: var(--accent); }
 .about p { margin-bottom: 10px; }
 .about a { color: var(--accent); text-decoration: none; }
 .about a:hover { text-decoration: underline; }
+
+/* Projekt-Karten */
+#projGrid { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.projcard {
+  display: flex; gap: 10px; align-items: center;
+  border: 1px solid #262c3a; border-radius: 8px; background: #10141d; padding: 8px;
+}
+.projcard img { width: 96px; border-radius: 5px; border: 1px solid #1d2331; display: block; }
+.projinfo { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.projinfo b { font-size: 13px; color: #eef2ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.projinfo small { color: var(--faint); font-size: 11px; }
+.projbtns { display: flex; gap: 6px; margin-top: 3px; }
+.projbtns .secondary { padding: 4px 12px; font-size: 12px; }
