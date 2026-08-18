@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-16-39">
+<link rel="stylesheet" href="style.css?v=2026-08-16-40">
 </head>
 <body>
 
@@ -14,6 +14,9 @@
     <circle cx="12" cy="12" r="4.2"/>
     <ellipse cx="12" cy="12" rx="10" ry="4.4" transform="rotate(-18 12 12)"/>
     <circle cx="20.4" cy="8.2" r="0.9" fill="currentColor" stroke="none"/>
+  </symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24">
+    <path d="M3 6.5a1.5 1.5 0 0 1 1.5-1.5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v8.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z" fill="none"/>
   </symbol>
   <symbol id="i-img" viewBox="0 0 24 24">
     <rect x="3.5" y="5" width="17" height="14" rx="2"/>
@@ -82,6 +85,7 @@
     </div>
 
     <nav id="proTabs" hidden>
+      <button data-tab="projekte"><svg class="ic"><use href="#i-folder"/></svg><small data-i18n="tabProjekte">Projects</small></button>
       <button data-tab="bilder" class="active"><svg class="ic"><use href="#i-img"/></svg><small data-i18n="tabBilder">Images</small></button>
       <button data-tab="presets"><svg class="ic"><use href="#i-preset"/></svg><small data-i18n="tabPresets">Presets</small></button>
       <button data-tab="kamera"><svg class="ic"><use href="#i-cam"/></svg><small data-i18n="tabKamera">Camera</small></button>
@@ -99,6 +103,22 @@
               background: rgba(232,179,75,0.12); color: #f2d9a0;"></p>
 
     <!-- ==================== BILDER ==================== -->
+    <section data-tab="projekte">
+      <h2 data-i18n="projHead">Projects</h2>
+      <p class="tip" data-i18n="projTip">Projects store EVERYTHING locally in your browser
+      (IndexedDB): both image files, plate solve, Gaia match, labels, all settings and the
+      flight plan - restore any animation later and keep working. Nothing ever leaves your
+      device.</p>
+      <label class="namerow">
+        <span data-i18n="projNameLbl">Name</span>
+        <input type="text" id="projName" spellcheck="false" autocomplete="off">
+      </label>
+      <button id="btnProjSave" class="secondary" data-i18n="projSaveBtn">Save current project</button>
+      <p class="tip" id="projEmpty" data-i18n="projEmpty">No saved projects yet.</p>
+      <div id="projGrid"></div>
+      <p class="tip" id="projStatus"></p>
+    </section>
+
     <section data-tab="bilder" data-easy="1">
       <h2><span data-i18n="sec1">Load images</span> <span class="hint">(TIFF, FITS, PNG, JPG)</span></h2>
       <div class="filerow">
@@ -232,19 +252,6 @@
         <p class="tip" id="userPresetStatus"></p>
       </details>
 
-      <div class="pgroup" data-i18n="projHead">Projects</div>
-      <p class="tip" data-i18n="projTip">Projects store EVERYTHING locally in your browser
-      (IndexedDB): both image files, plate solve, Gaia match, labels, all settings and the
-      flight plan - restore any animation later and keep working. Nothing ever leaves your
-      device.</p>
-      <label class="namerow">
-        <span data-i18n="projNameLbl">Name</span>
-        <input type="text" id="projName" spellcheck="false" autocomplete="off">
-      </label>
-      <button id="btnProjSave" class="secondary" data-i18n="projSaveBtn">Save current project</button>
-      <p class="tip" id="projEmpty" data-i18n="projEmpty">No saved projects yet.</p>
-      <div id="projGrid"></div>
-      <p class="tip" id="projStatus"></p>
     </section>
 
     <!-- ==================== EINFACH: STIL ==================== -->
@@ -912,8 +919,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-39"></script>
-<script src="objectinfo.js?v=2026-08-16-39"></script>
-<script src="app.js?v=2026-08-16-39"></script>
+<script src="i18n.js?v=2026-08-16-40"></script>
+<script src="objectinfo.js?v=2026-08-16-40"></script>
+<script src="app.js?v=2026-08-16-40"></script>
 </body>
 </html>
