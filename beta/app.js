@@ -62,6 +62,7 @@ const state = {
   smooth: 18,
   depthRes: 768,        // Kantenlaenge der Tiefenkarte (768/1536/2048)
   customDepth: null,     // eigene, importierte Tiefenkarte { canvas, width, height }
+  srcFiles: { starless: null, stars: null, depth: null }, // Original-Dateien (Projekt-Speicherung)
   invertDepth: false,
   target: { x: 0, y: 0 }, // Zoomziel in Bildebenen-Einheiten (0,0 = Mitte)
 
@@ -3734,6 +3735,7 @@ $("fileDepth").addEventListener("change", async (e) => {
       return;
     }
     state.customDepth = img;
+    state.srcFiles.depth = file;
     updateDepthCustomUi();
     buildDepthMap();
   } catch (err) {
@@ -3744,6 +3746,7 @@ $("fileDepth").addEventListener("change", async (e) => {
 
 $("btnDepthClear").addEventListener("click", () => {
   state.customDepth = null;
+  state.srcFiles.depth = null;
   updateDepthCustomUi();
   buildDepthMap();
 });
@@ -4204,6 +4207,7 @@ async function loadFile(which, file) {
     const img = await decodeFile(file);
     if (which === "starless") {
       state.starless = img;
+      state.srcFiles.starless = file;
       if (state.flipH || state.flipV) flipImage(state.starless, state.flipH, state.flipV);
       $("nameStarless").removeAttribute("data-i18n");
       $("nameStarless").textContent = `${file.name} (${img.width}×${img.height})`;
@@ -4236,6 +4240,7 @@ async function loadFile(which, file) {
       $("ctlFilename").placeholder = deriveExportName();
     } else {
       state.starsOriginal = img;
+      state.srcFiles.stars = file;
       // Aktive Spiegelung sofort auf die NEUE Maske anwenden - sonst passte
       // eine nach dem Spiegeln getauschte Maske nicht mehr zum Starless-Bild
       if ((state.flipH || state.flipV) && !state.flipOnlyStarless) {
@@ -4444,6 +4449,275 @@ function applyImageFlip(fh, fv) {
   uploadStars();
   updateGaiaStatus();
 }
+// ------------------------------------------------- Projekte (IndexedDB)
+// Anders als Presets speichern Projekte ALLES lokal im Browser: die
+// Original-Bilddateien, Plate-Solve, Gaia-Abgleich, SIMBAD-Labels, alle
+// Regler und den Flugplan. Zwei Stores: "meta" (Liste ohne Blob-Last)
+// und "data" (kompletter Payload je Projekt-Id). Nichts verlaesst den PC.
+
+function projectDb() {
+  return new Promise((resolve, reject) => {
+    const rq = indexedDB.open("astrofly-projects", 1);
+    rq.onupgradeneeded = () => {
+      rq.result.createObjectStore("meta", { keyPath: "id", autoIncrement: true });
+      rq.result.createObjectStore("data");
+    };
+    rq.onsuccess = () => resolve(rq.result);
+    rq.onerror = () => reject(rq.error);
+  });
+}
+
+function idbReq(rq) {
+  return new Promise((resolve, reject) => {
+    rq.onsuccess = () => resolve(rq.result);
+    rq.onerror = () => reject(rq.error);
+  });
+}
+
+function projStatus(msg, isErr) {
+  const el = $("projStatus");
+  el.textContent = msg || "";
+  el.classList.toggle("error", !!isErr);
+}
+
+function captureProjectThumb() {
+  render(currentTime());
+  const w = 240, h = Math.max(1, Math.round(canvas.height / canvas.width * 240));
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  c.getContext("2d").drawImage(canvas, 0, 0, w, h);
+  return c.toDataURL("image/jpeg", 0.7);
+}
+
+function captureControls() {
+  const out = {};
+  for (const el of document.querySelectorAll("#panel input[id], #panel select[id]")) {
+    if (el.type === "file") continue;
+    if (el.id === "projName" || el.id === "userPresetName") continue;
+    if (el.closest("#wpList") || el.closest("#easeEditor")) continue;
+    out[el.id] = el.type === "checkbox" ? el.checked : el.value;
+  }
+  return out;
+}
+
+function applyControls(controls) {
+  for (const [id, val] of Object.entries(controls)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (el.type === "checkbox") {
+      if (el.checked !== !!val) {
+        el.checked = !!val;
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    } else if (String(el.value) !== String(val)) {
+      el.value = val;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  }
+}
+
+async function saveProject() {
+  if (!state.starless || !state.srcFiles.starless) {
+    projStatus(t("projNeedImg"), true);
+    return;
+  }
+  const name = $("projName").value.trim() ||
+    (state.srcFiles.starless.name || "AstroFly").replace(/\.[^.]+$/, "");
+  const S = state;
+  const cleanLabels = S.labels
+    ? S.labels.map((l) => Object.fromEntries(Object.entries(l).filter(([k]) => !k.startsWith("_"))))
+    : null;
+  const activeAspect = document.querySelector("#aspectBtns button.active");
+  const meta = {
+    name,
+    date: Date.now(),
+    thumb: captureProjectThumb(),
+    starlessName: S.srcFiles.starless.name,
+    starsName: S.srcFiles.stars ? S.srcFiles.stars.name : null,
+  };
+  const data = {
+    controls: captureControls(),
+    aspect: activeAspect ? activeAspect.dataset.aspect : null,
+    files: { starless: S.srcFiles.starless, stars: S.srcFiles.stars, depth: S.srcFiles.depth },
+    extra: {
+      waypoints: S.waypoints.map((w) => ({ ...w, via: w.via ? { ...w.via } : null, curve: w.curve ? [...w.curve] : null })),
+      scenarioOn: S.scenarioOn,
+      target: { ...S.target },
+      seed: S.seed,
+      spinCenter: S.spinCenter ? { ...S.spinCenter } : null,
+      wcs: S.wcs, wcsFit: S.wcsFit, wcsFlip: S.wcsFlip,
+      gaiaCatalog: S.gaiaCatalog, gaiaDepth: S.gaiaDepth, gaiaColorRGB: S.gaiaColorRGB,
+      gaiaPM: S.gaiaPM, gaiaInfo: S.gaiaInfo,
+      labels: cleanLabels, objInfo: S.objInfo, objChoices: S.objChoices, objRegion: S.objRegion,
+      moonObj: S.moonObj,
+    },
+  };
+  try {
+    const db = await projectDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(["meta", "data"], "readwrite");
+      const rq = tx.objectStore("meta").add(meta);
+      rq.onsuccess = () => tx.objectStore("data").put(data, rq.result);
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+    projStatus(t("projSaved", name));
+    $("projName").value = "";
+    rebuildProjectList();
+  } catch (err) {
+    console.error(err);
+    projStatus(t("projSaveErr", err && err.name === "QuotaExceededError" ? t("projQuota") : (err.message || "")), true);
+  }
+}
+
+async function loadProject(id) {
+  projStatus(t("projLoading"));
+  try {
+    const db = await projectDb();
+    const tx = db.transaction(["meta", "data"]);
+    const meta = await idbReq(tx.objectStore("meta").get(id));
+    const data = await idbReq(tx.objectStore("data").get(id));
+    if (!meta || !data) throw new Error("not found");
+
+    // Sauberer Ausgangszustand: Spiegelungen aus, BEVOR die Bilder aus den
+    // Original-Blobs laufen - die Regler-Wiederherstellung spiegelt danach
+    // exakt einmal (gleicher Weg wie ein manueller Neuaufbau)
+    state.flipH = false; state.flipV = false; state.flipOnlyStarless = false;
+    $("ctlFlipH").checked = false; $("ctlFlipV").checked = false; $("ctlFlipOnly").checked = false;
+    state.customDepth = null; state.srcFiles.depth = null;
+    updateDepthCustomUi();
+    state.moonMode = false; state.moonDisk = null; $("ctlMoonMode").checked = false;
+    $("moonObjRow").hidden = true;
+
+    // 1) Bilder durch den normalen Lade-Pfad (inkl. FITS-Header/WCS)
+    await loadFile("starless", data.files.starless);
+    if (data.files.stars) await loadFile("stars", data.files.stars);
+
+    // 2) Eigene Tiefenkarte
+    if (data.files.depth) {
+      state.customDepth = await decodeFile(data.files.depth);
+      state.srcFiles.depth = data.files.depth;
+      updateDepthCustomUi();
+    }
+
+    // 3) Wegpunkte vor den Reglern (der Plan-Haken braucht sie)
+    const X = data.extra;
+    state.waypoints = (X.waypoints || []).map((w) => ({ ...w }));
+
+    // 4) Alle Regler anwenden (loest Spiegeln, Mond-Modus, Laengen usw. aus)
+    applyControls(data.controls);
+    if (data.aspect) {
+      const btn = document.querySelector(`#aspectBtns button[data-aspect="${data.aspect}"]`);
+      if (btn && !btn.classList.contains("active")) btn.click();
+    }
+
+    // 5) Zustands-Extras - Gaia zuletzt (Reihenfolge: erst Flips, dann
+    //    Zuordnung, sonst passen die Stern-Indizes nicht)
+    state.scenarioOn = !!X.scenarioOn;
+    $("ctlScenOn").checked = state.scenarioOn;
+    state.target = X.target || { x: 0, y: 0 };
+    state.seed = X.seed || state.seed;
+    if (X.spinCenter) state.spinCenter = X.spinCenter;
+    state.wcs = X.wcs || null;
+    state.wcsFit = X.wcsFit || null;
+    state.wcsFlip = X.wcsFlip;
+    state.gaiaCatalog = X.gaiaCatalog || null;
+    state.gaiaDepth = X.gaiaDepth || null;
+    state.gaiaColorRGB = X.gaiaColorRGB || null;
+    state.gaiaPM = X.gaiaPM || null;
+    state.gaiaInfo = X.gaiaInfo || null;
+    state.labels = X.labels || null;
+    state.objInfo = X.objInfo || null;
+    state.objChoices = X.objChoices || null;
+    state.objRegion = X.objRegion || null;
+    state.moonObj = X.moonObj || "moon";
+    $("selMoonObj").value = state.moonObj;
+
+    uploadStars();
+    updateGaiaStatus();
+    updateTargetInfo();
+    rebuildObjList();
+    rebuildWaypointList();
+    updateScenarioUi();
+    buildDepthMap();
+    state.pausedAt = 0;
+    state.t0 = performance.now();
+    projStatus(t("projLoaded", meta.name));
+  } catch (err) {
+    console.error(err);
+    projStatus(t("projLoadErr", err.message || ""), true);
+  }
+}
+
+async function deleteProject(id) {
+  const db = await projectDb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(["meta", "data"], "readwrite");
+    tx.objectStore("meta").delete(id);
+    tx.objectStore("data").delete(id);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+  rebuildProjectList();
+}
+
+async function rebuildProjectList() {
+  const grid = $("projGrid");
+  if (!grid) return;
+  let metas = [];
+  try {
+    const db = await projectDb();
+    metas = await idbReq(db.transaction("meta").objectStore("meta").getAll());
+  } catch { /* IndexedDB nicht verfuegbar (z. B. Privatmodus) */ }
+  grid.innerHTML = "";
+  metas.sort((a, b) => b.date - a.date);
+  const lang = I18N.lang === "de" ? "de-DE" : "en-US";
+  for (const m of metas) {
+    const card = document.createElement("div");
+    card.className = "projcard";
+    const img = document.createElement("img");
+    img.src = m.thumb;
+    img.alt = "";
+    const info = document.createElement("div");
+    info.className = "projinfo";
+    const nm = document.createElement("b");
+    nm.textContent = m.name;
+    const dt = document.createElement("small");
+    dt.textContent = new Date(m.date).toLocaleString(lang, { dateStyle: "medium", timeStyle: "short" });
+    const row = document.createElement("div");
+    row.className = "projbtns";
+    const bLoad = document.createElement("button");
+    bLoad.className = "secondary";
+    bLoad.textContent = t("projLoadBtn");
+    bLoad.addEventListener("click", () => loadProject(m.id));
+    const bDel = document.createElement("button");
+    bDel.className = "wpbtn";
+    bDel.textContent = "\u2715";
+    bDel.title = t("projDeleteBtn");
+    bDel.addEventListener("click", () => {
+      if (bDel.dataset.arm) { deleteProject(m.id); return; }
+      bDel.dataset.arm = "1";
+      bDel.textContent = t("projDeleteSure");
+      setTimeout(() => { bDel.dataset.arm = ""; bDel.textContent = "\u2715"; }, 3000);
+    });
+    row.appendChild(bLoad);
+    row.appendChild(bDel);
+    info.appendChild(nm);
+    info.appendChild(dt);
+    info.appendChild(row);
+    card.appendChild(img);
+    card.appendChild(info);
+    grid.appendChild(card);
+  }
+  $("projEmpty").hidden = metas.length > 0;
+}
+
+$("btnProjSave").addEventListener("click", saveProject);
+rebuildProjectList();
+I18N.onChange.push(rebuildProjectList);
+
 // ------------------------------------------------- Szenario-Tab (Wegpunkte)
 
 // Flugplan-Overlay: nummerierte Wegpunkte, Pfad und Bogen-Punkte in der
