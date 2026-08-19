@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-16-43">
+<link rel="stylesheet" href="style.css?v=2026-08-16-44">
 </head>
 <body>
 
@@ -912,26 +912,31 @@
   <main id="stage">
     <div id="stageChips" hidden></div>
     <div id="canvasWrap">
+      <div id="stageInner">
       <canvas id="glcanvas"></canvas>
-      <div id="targetMarker" hidden>🎯</div>
+      <div id="transport">
+        <button id="btnPlay" title="Play/Pause" data-i18n-title="playTitle">⏸</button>
+        <button id="btnRestart" title="Restart" data-i18n-title="restartTitle">⏮</button>
+        <div id="timeline">
+          <div id="timelineTrack"><div id="timelineFill"></div></div>
+          <div id="timelineWps"></div>
+        </div>
+        <span id="timecode">0.0 s</span>
+        <span class="viewsize" title="Preview size" data-i18n-title="viewSize">🔍<input type="range" id="ctlViewSize" min="40" max="100" step="5" value="70"></span>
+      </div>
       <div id="scenPad" hidden>
         <button data-p="rotl" title="Rotation">&#10226;</button><button data-p="up">&#9650;</button><button data-p="rotr" title="Rotation">&#10227;</button>
         <button data-p="left">&#9664;</button><button data-p="set" title="Waypoint" data-i18n-title="scenPadSet">&#9678;</button><button data-p="right">&#9654;</button>
         <button data-p="zout">&#8722;</button><button data-p="down">&#9660;</button><button data-p="zin">+</button>
       </div>
       <div id="stageToast" hidden><span class="spinner"></span><span id="stageToastText"></span></div>
+      </div>
+      <div id="targetMarker" hidden>🎯</div>
       <div id="placeholder">
         <svg class="ic big"><use href="#i-logo"/></svg>
         <p data-i18n-html="placeholder1">Load a <b>starless image</b> and a <b>star mask</b><br>to start your flight through space.</p>
         <p class="small" data-i18n-html="placeholder2">You can also drag &amp; drop files here<br>(1st file = starless, 2nd file = star mask).</p>
       </div>
-    </div>
-    <div id="transport">
-      <button id="btnPlay" title="Play/Pause" data-i18n-title="playTitle">⏸</button>
-      <button id="btnRestart" title="Restart" data-i18n-title="restartTitle">⏮</button>
-      <div id="timeline"><div id="timelineFill"></div></div>
-      <span id="timecode">0.0 s</span>
-      <span class="viewsize" title="Preview size" data-i18n-title="viewSize">🔍<input type="range" id="ctlViewSize" min="40" max="100" step="5" value="70"></span>
     </div>
   </main>
 
@@ -941,8 +946,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-43"></script>
-<script src="objectinfo.js?v=2026-08-16-43"></script>
-<script src="app.js?v=2026-08-16-43"></script>
+<script src="i18n.js?v=2026-08-16-44"></script>
+<script src="objectinfo.js?v=2026-08-16-44"></script>
+<script src="app.js?v=2026-08-16-44"></script>
 </body>
 </html>
