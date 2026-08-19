@@ -3877,12 +3877,112 @@ function setupCtlHierarchy() {
     const range = lab.querySelector('input[type="range"]');
     if (out && range && changeScope(range)) makeOutputEditable(out, range);
   }
-  $("panelbody").addEventListener("input", () => refreshChangeMarks());
-  $("panelbody").addEventListener("change", () => refreshChangeMarks());
+  $("panelbody").addEventListener("input", () => { refreshChangeMarks(); refreshStatusChips(); });
+  $("panelbody").addEventListener("change", () => { refreshChangeMarks(); refreshStatusChips(); });
   I18N.onChange.push(refreshChangeMarks);
+  I18N.onChange.push(refreshStatusChips);
   refreshChangeMarks();
 }
 setupCtlHierarchy();
+
+// ---------------------------------------------------------------------------
+// Statusband ueber der Vorschau: zeigt, welche Zustaende gerade auf das Bild
+// wirken. Ein Klick springt zu der Einstellung, das x schaltet sie ab.
+// ---------------------------------------------------------------------------
+function setCheck(id, on) {
+  const el = $(id);
+  if (!el || el.checked === on) return;
+  el.checked = on;
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+const STATUS_CHIPS = [
+  {
+    tab: "szenario", main: true,
+    on: () => state.scenarioOn && state.waypoints.length > 0,
+    label: () => t("chipScen", state.waypoints.length),
+    off: () => setCheck("ctlScenOn", false),
+  },
+  {
+    tab: "bilder",
+    on: () => state.moonMode,
+    label: () => t("chipMoon"),
+    off: () => setCheck("ctlMoonMode", false),
+  },
+  {
+    tab: "tiefe",
+    on: () => !!state.customDepth,
+    label: () => t("chipDepth"),
+    off: () => $("btnDepthClear").click(),
+  },
+  {
+    tab: "spiegel",
+    on: () => state.flipH || state.flipV,
+    label: () => t("chipFlip", (state.flipH ? "H" : "") + (state.flipV ? "V" : "")),
+    off: () => { setCheck("ctlFlipH", false); setCheck("ctlFlipV", false); },
+  },
+  {
+    tab: "gaia",
+    on: () => !!(state.gaiaDepth && state.gaiaInfo && state.gaiaAmt > 0),
+    label: () => t("chipGaia", state.gaiaInfo ? state.gaiaInfo.matched : 0),
+    off: () => setCtl("ctlGaiaAmt", 0),
+  },
+  {
+    // Standard ist an - gemeldet wird deshalb nur der Ausnahmefall
+    tab: "sterne",
+    on: () => !state.realStars && state.maskStarCount > 0,
+    label: () => t("chipRealStarsOff"),
+  },
+  {
+    tab: "objekte",
+    on: () => overlayActive(),
+    label: () => t("chipLabels"),
+    off: () => { setCheck("ctlShowLabels", false); setCheck("ctlShowInfo", false); },
+  },
+];
+
+function gotoTab(tab) {
+  const grp = groupOfTab(tab);
+  state.uiMode = "pro";
+  state.activeGroup = grp.id;
+  state.activeTab = tab;
+  $("panelbody").scrollTop = 0;
+  applyUiMode();
+}
+
+function refreshStatusChips() {
+  const box = $("stageChips");
+  if (!box) return;
+  const active = STATUS_CHIPS.filter((c) => {
+    try { return c.on(); } catch (e) { return false; }
+  });
+  box.hidden = active.length === 0;
+  box.innerHTML = "";
+  for (const c of active) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "schip" + (c.main ? " main" : "");
+    chip.textContent = c.label();
+    chip.title = t("chipGoto");
+    if (!c.off) chip.style.paddingRight = "12px";
+    chip.addEventListener("click", () => gotoTab(c.tab));
+    if (!c.off) { box.appendChild(chip); continue; }
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "schipoff";
+    x.textContent = "\u00d7";
+    x.title = t("chipOff");
+    x.addEventListener("click", (e) => {
+      e.stopPropagation();
+      c.off();
+      refreshStatusChips();
+    });
+    chip.appendChild(x);
+    box.appendChild(chip);
+  }
+}
+refreshStatusChips();
 
 let smoothTimer = null;
 $("ctlSmooth").addEventListener("input", () => {
@@ -3897,6 +3997,7 @@ $("ctlInvert").addEventListener("change", () => {
 });
 // Tiefenkarte exportieren / eigene Tiefenkarte importieren
 function updateDepthCustomUi(msg) {
+  refreshStatusChips();
   const status = $("depthCustomStatus");
   const active = !!state.customDepth;
   status.hidden = !msg && !active;
@@ -4021,6 +4122,7 @@ function stageToast(text) {
 // Statuszeile: transienter Text (Laden/Fehler) oder Zustand aus state
 let gaiaTransient = null; // { key, args } | null
 function updateGaiaStatus() {
+  refreshStatusChips();
   const el = $("gaiaStatus");
   if (!el) return;
   $("btnGaia").disabled = !(state.wcs && state.maskStarCount > 0);
@@ -5051,6 +5153,7 @@ function rebuildWaypointList() {
   const list = $("wpList");
   list.innerHTML = "";
   buildSubTabs();   // Zaehler an der Untergruppe "Flugplan" mitfuehren
+  refreshStatusChips();
   const imgAspect = state.starless
     ? state.starless.width / state.starless.height : 16 / 9;
   state.waypoints.forEach((wp, i) => {
