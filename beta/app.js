@@ -3614,17 +3614,73 @@ $("ctlSimpleDuration").addEventListener("input", () => {
 // (ihren Profi-Tab) und optional data-easy (im Einfach-Modus sichtbar).
 // Im Einfach-Modus werden die data-easy-Sektionen gestapelt angezeigt,
 // im Profi-Modus nur die Sektionen des aktiven Tabs.
+// Gruppen der Profi-Bedienung: sechs Gruppen in der linken Leiste, darin
+// benannte Untergruppen. Jede Sektion traegt data-tab (= Untergruppe) und
+// optional data-easy (im Einfach-Modus sichtbar).
+const TAB_GROUPS = [
+  { id: "projekte", subs: [["projekte", "subProjekte"]] },
+  { id: "bild", subs: [["bilder", "subLaden"], ["tiefe", "subTiefe"], ["spiegel", "subSpiegel"]] },
+  { id: "kamera", subs: [["kamera", "subFlug"], ["szenario", "subFlugplan"], ["galaxie", "subGalaxie"]] },
+  { id: "look", subs: [["sterne", "subSterne"], ["look", "subEffekte"], ["nebel", "subNebel"], ["presets", "subStile"]] },
+  { id: "daten", subs: [["gaia", "subGaia"], ["objekte", "subObjekte"]] },
+  { id: "export", subs: [["export", "subExport"]] },
+];
+// Alte gespeicherte Tab-Namen (vor dem Gruppen-Umbau) auf die neuen abbilden
+const TAB_ALIAS = { sci: "gaia" };
+
+function groupOfTab(tab) {
+  for (const g of TAB_GROUPS) {
+    if (g.subs.some((s) => s[0] === tab)) return g;
+  }
+  return TAB_GROUPS[1];
+}
+
 state.uiMode = localStorage.getItem("astrofly-mode") || "simple";
-state.activeTab = localStorage.getItem("astrofly-tab") || "bilder";
+{
+  const saved = localStorage.getItem("astrofly-tab") || "bilder";
+  state.activeTab = TAB_ALIAS[saved] || saved;
+  if (!groupOfTab(state.activeTab).subs.some((s) => s[0] === state.activeTab)) state.activeTab = "bilder";
+  state.activeGroup = groupOfTab(state.activeTab).id;
+}
+
+// Untergruppen-Leiste unter dem Panelkopf; entfaellt bei Gruppen mit nur einer
+function buildSubTabs() {
+  const box = $("subTabs");
+  const grp = TAB_GROUPS.find((g) => g.id === state.activeGroup) || TAB_GROUPS[1];
+  box.innerHTML = "";
+  box.hidden = state.uiMode !== "pro" || grp.subs.length < 2;
+  if (box.hidden) return;
+  for (const [tab, key] of grp.subs) {
+    const b = document.createElement("button");
+    b.textContent = t(key);
+    b.className = tab === state.activeTab ? "active" : "";
+    b.addEventListener("click", () => {
+      state.activeTab = tab;
+      $("panelbody").scrollTop = 0;
+      applyUiMode();
+    });
+    if (tab === "szenario") {
+      const n = document.createElement("span");
+      n.className = "subcount";
+      n.textContent = String(state.waypoints ? state.waypoints.length : 0);
+      n.hidden = !state.waypoints || !state.waypoints.length;
+      b.appendChild(n);
+    }
+    box.appendChild(b);
+  }
+}
 
 function applyUiMode() {
   const simple = state.uiMode === "simple";
   $("modeSimple").classList.toggle("active", simple);
   $("modePro").classList.toggle("active", !simple);
-  $("proTabs").hidden = simple;
-  for (const b of document.querySelectorAll("#proTabs button")) {
-    b.classList.toggle("active", b.dataset.tab === state.activeTab);
+  $("proRail").hidden = simple;
+  const grp = TAB_GROUPS.find((g) => g.id === state.activeGroup) || TAB_GROUPS[1];
+  if (!grp.subs.some((s) => s[0] === state.activeTab)) state.activeTab = grp.subs[0][0];
+  for (const b of document.querySelectorAll("#proRail button")) {
+    b.classList.toggle("active", b.dataset.group === state.activeGroup);
   }
+  buildSubTabs();
   for (const sec of document.querySelectorAll("#panel section")) {
     if (sec.id === "simpleSection") { sec.hidden = !simple; continue; }
     sec.hidden = simple ? !sec.hasAttribute("data-easy")
@@ -3664,9 +3720,13 @@ function applyUiMode() {
 
 $("modeSimple").addEventListener("click", () => { state.uiMode = "simple"; applyUiMode(); });
 $("modePro").addEventListener("click", () => { state.uiMode = "pro"; applyUiMode(); });
-for (const b of document.querySelectorAll("#proTabs button")) {
+for (const b of document.querySelectorAll("#proRail button")) {
   b.addEventListener("click", () => {
-    state.activeTab = b.dataset.tab;
+    const grp = TAB_GROUPS.find((g) => g.id === b.dataset.group);
+    if (!grp) return;
+    state.activeGroup = grp.id;
+    // beim Gruppenwechsel immer die erste Untergruppe zeigen
+    if (!grp.subs.some((s) => s[0] === state.activeTab)) state.activeTab = grp.subs[0][0];
     $("panelbody").scrollTop = 0;
     applyUiMode();
   });
@@ -4839,6 +4899,7 @@ function updateScenarioUi() {
 function rebuildWaypointList() {
   const list = $("wpList");
   list.innerHTML = "";
+  buildSubTabs();   // Zaehler an der Untergruppe "Flugplan" mitfuehren
   const imgAspect = state.starless
     ? state.starless.width / state.starless.height : 16 / 9;
   state.waypoints.forEach((wp, i) => {
@@ -5049,6 +5110,7 @@ $("btnEaseClose").addEventListener("click", () => {
 I18N.onChange.push(() => {
   rebuildWaypointList();
   updateScenarioUi();
+  buildSubTabs();
 });
 
 $("wpDurNextR").addEventListener("input", () => {

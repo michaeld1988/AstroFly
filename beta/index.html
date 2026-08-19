@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-16-40">
+<link rel="stylesheet" href="style.css?v=2026-08-16-41">
 </head>
 <body>
 
@@ -62,6 +62,15 @@
 
 <div id="app">
 
+  <nav id="proRail" hidden>
+    <button data-group="projekte"><svg class="ic"><use href="#i-folder"/></svg><small data-i18n="grpProjekte">Projects</small></button>
+    <button data-group="bild" class="active"><svg class="ic"><use href="#i-img"/></svg><small data-i18n="grpBild">Image</small></button>
+    <button data-group="kamera"><svg class="ic"><use href="#i-cam"/></svg><small data-i18n="grpKamera">Camera</small></button>
+    <button data-group="look"><svg class="ic"><use href="#i-star"/></svg><small data-i18n="grpLook">Look</small></button>
+    <button data-group="daten"><svg class="ic"><use href="#i-sci"/></svg><small data-i18n="grpDaten">Data</small></button>
+    <button data-group="export"><svg class="ic"><use href="#i-export"/></svg><small data-i18n="grpExport">Export</small></button>
+  </nav>
+
   <aside id="panel">
     <div id="panelResize"></div>
     <div class="panelhead">
@@ -84,17 +93,7 @@
       </div>
     </div>
 
-    <nav id="proTabs" hidden>
-      <button data-tab="projekte"><svg class="ic"><use href="#i-folder"/></svg><small data-i18n="tabProjekte">Projects</small></button>
-      <button data-tab="bilder" class="active"><svg class="ic"><use href="#i-img"/></svg><small data-i18n="tabBilder">Images</small></button>
-      <button data-tab="presets"><svg class="ic"><use href="#i-preset"/></svg><small data-i18n="tabPresets">Presets</small></button>
-      <button data-tab="kamera"><svg class="ic"><use href="#i-cam"/></svg><small data-i18n="tabKamera">Camera</small></button>
-      <button data-tab="szenario"><svg class="ic"><use href="#i-route"/></svg><small data-i18n="tabSzenario">Flight plan</small></button>
-      <button data-tab="sterne"><svg class="ic"><use href="#i-star"/></svg><small data-i18n="tabSterne">Stars</small></button>
-      <button data-tab="look"><svg class="ic"><use href="#i-look"/></svg><small data-i18n="tabLook">Look</small></button>
-      <button data-tab="sci"><svg class="ic"><use href="#i-sci"/></svg><small data-i18n="tabSci">Science</small></button>
-      <button data-tab="export"><svg class="ic"><use href="#i-export"/></svg><small data-i18n="tabExport">Export</small></button>
-    </nav>
+    <div id="subTabs" hidden></div>
 
     <div id="panelbody">
 
@@ -296,7 +295,7 @@
     </section>
 
     <!-- ==================== BILDER: TIEFENKARTE ==================== -->
-    <section data-tab="bilder">
+    <section data-tab="tiefe">
       <h2><span data-i18n="sec2">Depth map</span> <button class="qm" data-help="hintDepth">?</button></h2>
       <p class="tip hint2" id="hintDepth" hidden data-i18n="depthHint">Computed automatically from
       the brightness of the starless image: bright nebula regions appear "closer" to the camera.</p>
@@ -332,6 +331,28 @@
           <option value="2048" data-i18n="depthResHigh">High (2048 px)</option>
         </select>
       </div>
+    </section>
+
+    <!-- ==================== SPIEGELN ==================== -->
+    <section data-tab="spiegel">
+      <h2 data-i18n="flipHead">Mirroring</h2>
+      <label class="check">
+        <input type="checkbox" id="ctlFlipH">
+        <span data-i18n="flipH">Mirror image horizontally (starless + mask)</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="ctlFlipV">
+        <span data-i18n="flipV">Mirror image vertically</span>
+        <button class="qm" data-help="hintFlip">?</button>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="ctlFlipOnly">
+        <span data-i18n="flipOnly">Mirror the starless image only (mask stays)</span>
+      </label>
+      <p class="tip hint2" id="hintFlip" hidden data-i18n="flipHint">If your processed image is
+      mirrored compared to the real sky (check against Stellarium or Aladin), flip it here -
+      starless and star mask flip together, labels and the Gaia match follow automatically.
+      Re-run the Gaia match afterwards.</p>
     </section>
 
     <!-- ==================== KAMERA ==================== -->
@@ -452,54 +473,56 @@
         </label>
       </details>
 
-      <details class="adv">
-        <summary><span data-i18n="spinHead">Galaxy spin</span></summary>
-        <p class="tip" data-i18n="spinHint">Galaxy spin: rotates only the region around the spin
-        center – with a soft falloff at the edge, so the rest of the image stays untouched.
-        Foreground stars do not rotate.</p>
-        <button id="btnSpinCenter" class="secondary" data-i18n="spinCenterBtn">Set spin center (then click the preview)</button>
-        <label class="check">
-          <input type="checkbox" id="ctlSpinShow">
-          <span data-i18n="spinShow">Show spin region (red mask overlay)</span>
-        </label>
-        <label class="slider">
-          <span><span data-i18n="spinSpeed">Galaxy spin (°/s at core)</span> <output id="outSpinSpeed">0.0 °/s</output></span>
-          <input type="range" id="ctlSpinSpeed" min="-10" max="10" step="0.1" value="0">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="spinRadius">Spin radius</span> <output id="outSpinRadius">40</output></span>
-          <input type="range" id="ctlSpinRadius" min="5" max="100" step="1" value="40">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="spinDiff">Differential rotation (inner faster)</span> <output id="outSpinDiff">40</output></span>
-          <input type="range" id="ctlSpinDiff" min="0" max="100" step="1" value="40">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="spinFlat">Spin ellipse (inclined galaxy)</span> <output id="outSpinFlat">0</output></span>
-          <input type="range" id="ctlSpinFlat" min="0" max="100" step="1" value="0">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="spinTilt">Ellipse angle</span> <output id="outSpinTilt">0°</output></span>
-          <input type="range" id="ctlSpinTilt" min="0" max="180" step="1" value="0">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="spinMaskAmt">Brightness mask influence</span> <output id="outSpinMaskAmt">0</output></span>
-          <input type="range" id="ctlSpinMaskAmt" min="0" max="100" step="1" value="0">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="spinMaskSmooth">Brightness mask smoothing</span> <output id="outSpinMaskSmooth">6</output></span>
-          <input type="range" id="ctlSpinMaskSmooth" min="2" max="60" step="1" value="6">
-        </label>
-        <label class="check">
-          <input type="checkbox" id="ctlSpinStars">
-          <span data-i18n="spinStars">Rotate stars inside the spin region</span>
-          <button class="qm" data-help="hintSpinStars">?</button>
-        </label>
-        <p class="tip hint2" id="hintSpinStars" hidden data-i18n="spinStarsHint">Stars inside the
-        spin area follow the galaxy's rotation and stay locked to its structure. Note: foreground
-        stars that just happen to sit in front of the galaxy will rotate too – toggle as it suits
-        your image.</p>
-      </details>
+    </section>
+
+    <!-- ==================== GALAXIEN-ROTATION ==================== -->
+    <section data-tab="galaxie">
+      <h2><span data-i18n="spinHead">Galaxy spin</span></h2>
+      <p class="tip" data-i18n="spinHint">Galaxy spin: rotates only the region around the spin
+      center – with a soft falloff at the edge, so the rest of the image stays untouched.
+      Foreground stars do not rotate.</p>
+      <button id="btnSpinCenter" class="secondary" data-i18n="spinCenterBtn">Set spin center (then click the preview)</button>
+      <label class="check">
+        <input type="checkbox" id="ctlSpinShow">
+        <span data-i18n="spinShow">Show spin region (red mask overlay)</span>
+      </label>
+      <label class="slider">
+        <span><span data-i18n="spinSpeed">Galaxy spin (°/s at core)</span> <output id="outSpinSpeed">0.0 °/s</output></span>
+        <input type="range" id="ctlSpinSpeed" min="-10" max="10" step="0.1" value="0">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="spinRadius">Spin radius</span> <output id="outSpinRadius">40</output></span>
+        <input type="range" id="ctlSpinRadius" min="5" max="100" step="1" value="40">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="spinDiff">Differential rotation (inner faster)</span> <output id="outSpinDiff">40</output></span>
+        <input type="range" id="ctlSpinDiff" min="0" max="100" step="1" value="40">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="spinFlat">Spin ellipse (inclined galaxy)</span> <output id="outSpinFlat">0</output></span>
+        <input type="range" id="ctlSpinFlat" min="0" max="100" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="spinTilt">Ellipse angle</span> <output id="outSpinTilt">0°</output></span>
+        <input type="range" id="ctlSpinTilt" min="0" max="180" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="spinMaskAmt">Brightness mask influence</span> <output id="outSpinMaskAmt">0</output></span>
+        <input type="range" id="ctlSpinMaskAmt" min="0" max="100" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="spinMaskSmooth">Brightness mask smoothing</span> <output id="outSpinMaskSmooth">6</output></span>
+        <input type="range" id="ctlSpinMaskSmooth" min="2" max="60" step="1" value="6">
+      </label>
+      <label class="check">
+        <input type="checkbox" id="ctlSpinStars">
+        <span data-i18n="spinStars">Rotate stars inside the spin region</span>
+        <button class="qm" data-help="hintSpinStars">?</button>
+      </label>
+      <p class="tip hint2" id="hintSpinStars" hidden data-i18n="spinStarsHint">Stars inside the
+      spin area follow the galaxy's rotation and stay locked to its structure. Note: foreground
+      stars that just happen to sit in front of the galaxy will rotate too – toggle as it suits
+      your image.</p>
     </section>
 
     <!-- ==================== STERNE ==================== -->
@@ -642,78 +665,80 @@
         </label>
       </details>
 
-      <details class="adv">
-        <summary><span data-i18n="nebBands">Nebula colors (Hα · OIII · SII)</span> <button class="qm" data-help="hintNebBands">?</button></summary>
-        <p class="tip hint2" id="hintNebBands" hidden data-i18n="nebBandsHint">Adjusts the typical
-        emission-line colors selectively: red (Hα), teal (OIII) and golden (SII) areas of the
-        nebula. Works on the hue, so it fits RGB and narrowband palettes alike – gray areas and
-        the stars stay untouched.</p>
-        <label class="slider">
-          <span><span data-i18n="h2Det">Hα · detection hue</span> <output id="outH2Det">0°</output></span>
-          <input type="range" id="ctlH2Det" class="huetrack" min="0" max="360" step="2" value="0">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="h2Width">Hα · range</span> <output id="outH2Width">±35°</output></span>
-          <input type="range" id="ctlH2Width" min="5" max="90" step="1" value="35">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="h2Sat">Hα / red · saturation</span> <output id="outH2Sat">100 %</output></span>
-          <input type="range" id="ctlH2Sat" min="0" max="200" step="5" value="100">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="h2Hue">Hα / red · hue</span> <output id="outH2Hue">0°</output></span>
-          <input type="range" id="ctlH2Hue" min="-45" max="45" step="1" value="0">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="o3Det">OIII · detection hue</span> <output id="outO3Det">184°</output></span>
-          <input type="range" id="ctlO3Det" class="huetrack" min="0" max="360" step="2" value="184">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="o3Width">OIII · range</span> <output id="outO3Width">±45°</output></span>
-          <input type="range" id="ctlO3Width" min="5" max="90" step="1" value="45">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="o3Sat">OIII / teal · saturation</span> <output id="outO3Sat">100 %</output></span>
-          <input type="range" id="ctlO3Sat" min="0" max="200" step="5" value="100">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="o3Hue">OIII / teal · hue</span> <output id="outO3Hue">0°</output></span>
-          <input type="range" id="ctlO3Hue" min="-45" max="45" step="1" value="0">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="s2Det">SII · detection hue</span> <output id="outS2Det">34°</output></span>
-          <input type="range" id="ctlS2Det" class="huetrack" min="0" max="360" step="2" value="34">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="s2Width">SII · range</span> <output id="outS2Width">±25°</output></span>
-          <input type="range" id="ctlS2Width" min="5" max="90" step="1" value="25">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="s2Sat">SII / gold · saturation</span> <output id="outS2Sat">100 %</output></span>
-          <input type="range" id="ctlS2Sat" min="0" max="200" step="5" value="100">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="s2Hue">SII / gold · hue</span> <output id="outS2Hue">0°</output></span>
-          <input type="range" id="ctlS2Hue" min="-45" max="45" step="1" value="0">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="bandFeather">Feather (soft detection edge)</span> <output id="outBandFeather">50 %</output></span>
-          <input type="range" id="ctlBandFeather" min="0" max="100" step="1" value="50">
-        </label>
-        <label class="selfull">
-          <span data-i18n="bandShow">Show detection mask (preview only)</span>
-          <select id="ctlBandShow">
-            <option value="off" selected data-i18n="bandShowOff">off</option>
-            <option value="h2">Hα</option>
-            <option value="o3">OIII</option>
-            <option value="s2">SII</option>
-          </select>
-        </label>
-      </details>
+    </section>
+
+    <!-- ==================== NEBELFARBEN ==================== -->
+    <section data-tab="nebel">
+      <h2><span data-i18n="nebBands">Nebula colors (Hα · OIII · SII)</span> <button class="qm" data-help="hintNebBands">?</button></h2>
+      <p class="tip hint2" id="hintNebBands" hidden data-i18n="nebBandsHint">Adjusts the typical
+      emission-line colors selectively: red (Hα), teal (OIII) and golden (SII) areas of the
+      nebula. Works on the hue, so it fits RGB and narrowband palettes alike – gray areas and
+      the stars stay untouched.</p>
+      <label class="slider">
+        <span><span data-i18n="h2Det">Hα · detection hue</span> <output id="outH2Det">0°</output></span>
+        <input type="range" id="ctlH2Det" class="huetrack" min="0" max="360" step="2" value="0">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="h2Width">Hα · range</span> <output id="outH2Width">±35°</output></span>
+        <input type="range" id="ctlH2Width" min="5" max="90" step="1" value="35">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="h2Sat">Hα / red · saturation</span> <output id="outH2Sat">100 %</output></span>
+        <input type="range" id="ctlH2Sat" min="0" max="200" step="5" value="100">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="h2Hue">Hα / red · hue</span> <output id="outH2Hue">0°</output></span>
+        <input type="range" id="ctlH2Hue" min="-45" max="45" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="o3Det">OIII · detection hue</span> <output id="outO3Det">184°</output></span>
+        <input type="range" id="ctlO3Det" class="huetrack" min="0" max="360" step="2" value="184">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="o3Width">OIII · range</span> <output id="outO3Width">±45°</output></span>
+        <input type="range" id="ctlO3Width" min="5" max="90" step="1" value="45">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="o3Sat">OIII / teal · saturation</span> <output id="outO3Sat">100 %</output></span>
+        <input type="range" id="ctlO3Sat" min="0" max="200" step="5" value="100">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="o3Hue">OIII / teal · hue</span> <output id="outO3Hue">0°</output></span>
+        <input type="range" id="ctlO3Hue" min="-45" max="45" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="s2Det">SII · detection hue</span> <output id="outS2Det">34°</output></span>
+        <input type="range" id="ctlS2Det" class="huetrack" min="0" max="360" step="2" value="34">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="s2Width">SII · range</span> <output id="outS2Width">±25°</output></span>
+        <input type="range" id="ctlS2Width" min="5" max="90" step="1" value="25">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="s2Sat">SII / gold · saturation</span> <output id="outS2Sat">100 %</output></span>
+        <input type="range" id="ctlS2Sat" min="0" max="200" step="5" value="100">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="s2Hue">SII / gold · hue</span> <output id="outS2Hue">0°</output></span>
+        <input type="range" id="ctlS2Hue" min="-45" max="45" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="bandFeather">Feather (soft detection edge)</span> <output id="outBandFeather">50 %</output></span>
+        <input type="range" id="ctlBandFeather" min="0" max="100" step="1" value="50">
+      </label>
+      <label class="selfull">
+        <span data-i18n="bandShow">Show detection mask (preview only)</span>
+        <select id="ctlBandShow">
+          <option value="off" selected data-i18n="bandShowOff">off</option>
+          <option value="h2">Hα</option>
+          <option value="o3">OIII</option>
+          <option value="s2">SII</option>
+        </select>
+      </label>
     </section>
 
     <!-- ==================== WISSENSCHAFT ==================== -->
-    <section data-tab="sci">
+    <section data-tab="gaia">
       <h2><span data-i18n="sciHead">Real data (Gaia &amp; SIMBAD)</span> <button class="qm" data-help="hintSci">?</button></h2>
       <p class="tip hint2" id="hintSci" hidden data-i18n="gaiaHint">Real star distances (Gaia):
       load a plate-solved version of your image (FITS from ASTAP, PixInsight or Siril, or a
@@ -725,23 +750,6 @@
       <div id="gaiaHelp" hidden>
         <p class="tip" data-i18n-html="gaiaHelpText">…</p>
       </div>
-      <label class="check">
-        <input type="checkbox" id="ctlFlipH">
-        <span data-i18n="flipH">Mirror image horizontally (starless + mask)</span>
-      </label>
-      <label class="check">
-        <input type="checkbox" id="ctlFlipV">
-        <span data-i18n="flipV">Mirror image vertically</span>
-        <button class="qm" data-help="hintFlip">?</button>
-      </label>
-      <label class="check">
-        <input type="checkbox" id="ctlFlipOnly">
-        <span data-i18n="flipOnly">Mirror the starless image only (mask stays)</span>
-      </label>
-      <p class="tip hint2" id="hintFlip" hidden data-i18n="flipHint">If your processed image is
-      mirrored compared to the real sky (check against Stellarium or Aladin), flip it here -
-      starless and star mask flip together, labels and the Gaia match follow automatically.
-      Re-run the Gaia match afterwards.</p>
       <button id="btnWcs" class="secondary" data-i18n="gaiaWcsBtn">Load plate-solved FITS / WCS file</button>
       <input type="file" id="fileWcs" accept=".fits,.fit,.fts,.wcs" hidden>
       <button id="btnGaia" class="secondary" disabled data-i18n="gaiaMatchBtn">Match stars with Gaia (internet)</button>
@@ -795,7 +803,11 @@
       the Lion Nebula). After a Gaia match, stars clearly in front of or behind the nebula
       stay free.</p>
 
-      <h2 class="subhead"><span data-i18n="objHead">Objects in the field</span> <button class="qm" data-help="hintObj">?</button></h2>
+    </section>
+
+    <!-- ==================== OBJEKTE IM FELD ==================== -->
+    <section data-tab="objekte">
+      <h2><span data-i18n="objHead">Objects in the field</span> <button class="qm" data-help="hintObj">?</button></h2>
       <p class="tip hint2" id="hintObj" hidden data-i18n="objHint">Object info &amp; field labels:
       with a plate-solve solution loaded, AstroFly can identify the objects in your image via
       the SIMBAD database (CDS) and render an info card (distance, size, stars, age for popular
@@ -919,8 +931,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-40"></script>
-<script src="objectinfo.js?v=2026-08-16-40"></script>
-<script src="app.js?v=2026-08-16-40"></script>
+<script src="i18n.js?v=2026-08-16-41"></script>
+<script src="objectinfo.js?v=2026-08-16-41"></script>
+<script src="app.js?v=2026-08-16-41"></script>
 </body>
 </html>
