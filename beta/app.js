@@ -97,7 +97,7 @@ const state = {
   flipH: false,          // Bild horizontal gespiegelt (Starless + Maske)
   flipV: false,          // Bild vertikal gespiegelt
   flipOnlyStarless: false, // Spiegeln wirkt nur aufs Starless (Maske/Koordinaten bleiben)
-  anchorStars: 0,       // % Sterne im Nebel verankern (Tiefe/Bewegung des Nebels)            // Nebel verdeckt dahinterliegende Sterne (0 = aus)
+  anchorStars: 100,      // Sterne im Nebel verankern: immer an (physikalisch korrekt)
   objInfo: null,         // erkanntes Hauptobjekt { id, facts, otype }
   labels: null,          // Feld-Beschriftungen [{ id, x, y, sizePlane, otype, on }]
   showInfo: true,        // Infokarte ins Video einblenden
@@ -4193,7 +4193,6 @@ I18N.onChange.push(updateTargetInfo);
 bindSlider("ctlGaiaAmt", "outGaiaAmt", "gaiaAmt", (v) => v + " %");
 bindSlider("ctlGaiaPm", "outGaiaPm", "gaiaPmYears", (v) => v.toLocaleString());
 bindSlider("ctlOcclude", "outOcclude", "occlude", (v) => v + " %");
-bindSlider("ctlAnchor", "outAnchor", "anchorStars", (v) => v + " %");
 
 // Laufende Katalog-Abfragen prominent über der Vorschau anzeigen -
 // die kleine Statuszeile im Panel übersieht man leicht
@@ -4769,7 +4768,7 @@ const USER_PRESET_GROUPS = {
     "ctlSpinMaskAmt", "ctlSpinStars"],
   stars: ["ctlSpread", "ctlStarDist", "ctlLayers", "ctlStarPar", "ctlTwinkle",
     "ctlTwinkleSpeed", "ctlStarSize", "ctlStarBright", "ctlStarSat",
-    "ctlGenStars", "ctlOcclude", "ctlAnchor"],
+    "ctlGenStars", "ctlOcclude"],
   look: ["ctlBloom", "ctlMblur", "ctlMblurStars", "ctlWarp", "ctlVignette",
     "ctlExposure", "ctlContrast", "ctlSaturation", "ctlClarity",
     "ctlStructure", "ctlSharpen", "ctlH2Det", "ctlH2Width", "ctlH2Sat",

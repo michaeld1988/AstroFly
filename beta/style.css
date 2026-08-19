@@ -138,6 +138,8 @@ h2 {
 }
 h2 .hint { color: var(--faint); text-transform: none; letter-spacing: 0; font-weight: normal; }
 h2.subhead { margin-top: 18px; }
+/* Zwischenueberschriften duerfen nicht am Element darueber kleben */
+section > h2:not(:first-child) { margin-top: 22px; }
 
 .grow { flex: 1; }
 
@@ -233,7 +235,7 @@ input.outedit {
 .depthctrl { flex: 1; }
 
 /* sliders */
-.slider { display: block; margin-bottom: 10px; }
+.slider { display: block; margin-bottom: 14px; }
 .slider span { display: flex; justify-content: space-between; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text); margin-bottom: 3px; }
 .slider span > span:first-child { flex: 1; }
 .slider output {
@@ -264,8 +266,42 @@ input[type=range]::-moz-range-thumb {
   cursor: pointer; border: none;
 }
 
-.check { display: flex; gap: 8px; align-items: center; font-size: 12.5px; cursor: pointer; margin-top: 8px; }
+/* Ein Haken ist ein eigener Schalter und kein Untertitel des Reglers
+   darunter - deshalb sitzt er auf einer eigenen Flaeche, und was danach
+   kommt, bekommt Luft. Gilt in allen Tabs gleich. */
+.check {
+  display: flex; gap: 9px; align-items: center; font-size: 12.5px; cursor: pointer;
+  margin-top: 10px; padding: 9px 11px;
+  background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+}
+.check:hover { border-color: var(--border2); }
 .check span { flex: 1; }
+.check + .check { margin-top: 5px; }
+.check + .tip { margin-top: 7px; }
+.check + .slider, .check + .selfull, .check + .depthrow, .check + .btnrow, .check + .filerow {
+  margin-top: 20px;
+}
+.slider + .check, .selfull + .check, .depthrow + .check, .btnrow + .check { margin-top: 16px; }
+/* Erklaertexte gehoeren zu dem, was ueber ihnen steht - was danach kommt,
+   braucht Abstand, sonst liest es sich wie eine Bildunterschrift */
+.tip + .slider, .tip + .selfull, .tip + .depthrow, .tip + .btnrow,
+.tip + .filerow, .tip + .namerow, .tip + .exportrow, .tip + .selrow {
+  margin-top: 16px;
+}
+.tip + .check { margin-top: 14px; }
+
+/* Eigenschaften, die immer wirken und keinen Regler mehr haben */
+.autonote {
+  border-left: 2px solid var(--accent-dim);
+  background: rgba(143, 176, 255, 0.04);
+  border-radius: 0 6px 6px 0;
+  padding: 9px 11px; margin-top: 16px;
+}
+.autonote b {
+  display: block; color: var(--accent);
+  font-size: 9.5px; letter-spacing: 1.6px; text-transform: uppercase;
+  margin-bottom: 3px;
+}
 .check input[type=checkbox] { accent-color: var(--accent-dim); width: 14px; height: 14px; flex: none; }
 .check input.objsize { width: 72px; flex: none; accent-color: var(--accent-dim); }
 .selrow { display: flex; gap: 8px; align-items: center; margin-top: 10px; font-size: 12.5px; }
