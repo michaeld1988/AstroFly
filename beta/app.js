@@ -4061,6 +4061,134 @@ function refreshRenderFoot() {
 
 refreshRenderFoot();
 
+// ---------------------------------------------------------------------------
+// Rueckgaengig / Wiederholen fuer alle Einstellungen: Regler, Haken, Format,
+// Zoomziel, Rotationszentrum und den kompletten Flugplan. Aufgezeichnet wird
+// gebuendelt (kurze Pause nach der letzten Aenderung), damit ein Reglerzug
+// ein Schritt bleibt und nicht hundert.
+// ---------------------------------------------------------------------------
+const UNDO_MAX = 60;
+const undoStack = [];   // letzter Eintrag ist immer der aktuelle Zustand
+const redoStack = [];
+let undoBusy = false;
+let undoTimer = null;
+
+function histSnapshot() {
+  const aspBtn = document.querySelector("#aspectBtns button.active");
+  return JSON.stringify({
+    c: captureControls(),
+    w: state.waypoints,
+    asp: aspBtn ? aspBtn.dataset.aspect : "16:9",
+    tgt: state.target,
+    spin: state.spinCenter,
+    scen: state.scenarioOn,
+  });
+}
+
+function histApply(str) {
+  const snap = JSON.parse(str);
+  undoBusy = true;
+  try {
+    const aspBtn = document.querySelector(`#aspectBtns button[data-aspect="${snap.asp}"]`);
+    if (aspBtn && !aspBtn.classList.contains("active")) aspBtn.click();
+    state.target = snap.tgt || { x: 0, y: 0 };
+    state.spinCenter = snap.spin || { x: 0, y: 0 };
+    state.waypoints = (snap.w || []).map((w) => ({ ...w }));
+    applyControls(snap.c || {});
+    state.scenarioOn = !!snap.scen;
+    $("ctlScenOn").checked = state.scenarioOn;
+    wpSel = -1;
+    stopWpEdit();
+    rebuildWaypointList();
+    updateScenarioUi();
+    updateTargetInfo();
+    refreshChangeMarks();
+    refreshStatusChips();
+    refreshRenderFoot();
+  } finally {
+    undoBusy = false;
+  }
+}
+
+function updateHistUi() {
+  $("btnUndo").disabled = undoStack.length < 2;
+  $("btnRedo").disabled = redoStack.length === 0;
+}
+
+function histPush() {
+  if (undoBusy) return;
+  const snap = histSnapshot();
+  if (undoStack.length && undoStack[undoStack.length - 1] === snap) return;
+  undoStack.push(snap);
+  if (undoStack.length > UNDO_MAX) undoStack.shift();
+  redoStack.length = 0;
+  updateHistUi();
+}
+
+function histSchedule() {
+  if (undoBusy) return;
+  clearTimeout(undoTimer);
+  undoTimer = setTimeout(histPush, 350);
+}
+
+/**
+ * Offene Aenderungen sofort festhalten. Laeuft vor jedem Klick, damit eine
+ * Aktion (Wegpunkt anlegen, loeschen, uebernehmen) ein eigener Schritt wird
+ * und nicht mit der Reglerbewegung davor verschmilzt.
+ */
+function histFlush() {
+  if (!undoTimer || undoBusy) return;
+  clearTimeout(undoTimer);
+  undoTimer = null;
+  histPush();
+}
+document.addEventListener("pointerdown", histFlush, true);
+
+/** Verlauf neu beginnen (neues Bild, geladenes Projekt). */
+function histReset() {
+  clearTimeout(undoTimer);
+  undoStack.length = 0;
+  redoStack.length = 0;
+  undoStack.push(histSnapshot());
+  updateHistUi();
+}
+
+function histUndo() {
+  clearTimeout(undoTimer);
+  if (undoStack.length < 2) return;
+  redoStack.push(undoStack.pop());
+  histApply(undoStack[undoStack.length - 1]);
+  updateHistUi();
+}
+
+function histRedo() {
+  clearTimeout(undoTimer);
+  if (!redoStack.length) return;
+  const snap = redoStack.pop();
+  undoStack.push(snap);
+  histApply(snap);
+  updateHistUi();
+}
+
+$("btnUndo").addEventListener("click", histUndo);
+$("btnRedo").addEventListener("click", histRedo);
+
+// Tastenkuerzel - in Textfeldern bleibt das Rueckgaengig des Browsers aktiv
+document.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  const el = e.target;
+  if (el && (el.tagName === "TEXTAREA" ||
+    (el.tagName === "INPUT" && ["text", "number", "search"].includes(el.type)))) return;
+  const k = e.key.toLowerCase();
+  if (k === "z" && !e.shiftKey) { e.preventDefault(); histUndo(); }
+  else if ((k === "z" && e.shiftKey) || k === "y") { e.preventDefault(); histRedo(); }
+});
+
+$("panelbody").addEventListener("input", histSchedule);
+$("panelbody").addEventListener("change", histSchedule);
+$("aspectBtns").addEventListener("click", histSchedule);
+histReset();
+
 $("btnRenderFoot").addEventListener("click", () => {
   if ($("btnExport").disabled) return;
   // in die Export-Sektion springen, damit Fortschritt und Meldungen sichtbar
@@ -4174,6 +4302,7 @@ $("aspectBtns").addEventListener("click", (e) => {
 
 // Zoomziel-Anzeige (sprachabhängig, wird bei Sprachwechsel aktualisiert)
 function updateTargetInfo() {
+  if (typeof histSchedule === "function") histSchedule();
   const el = $("targetInfo");
   if (!state.starless || (state.target.x === 0 && state.target.y === 0)) {
     el.setAttribute("data-i18n", "targetCenter");
@@ -4739,6 +4868,7 @@ async function loadFile(which, file) {
       $("placeholder").style.display = "none";
       $("btnExport").disabled = false;
       refreshRenderFoot();
+      if (which === "starless" && typeof histReset === "function") histReset();
       state.t0 = performance.now();
       if (which === "starless") status.textContent = t("starlessLoaded");
     }
@@ -5116,6 +5246,7 @@ async function loadProject(id) {
     buildDepthMap();
     state.pausedAt = 0;
     state.t0 = performance.now();
+    histReset();   // ein geladenes Projekt ist der neue Ausgangspunkt
     projStatus(t("projLoaded", meta.name));
   } catch (err) {
     console.error(err);
@@ -5288,6 +5419,7 @@ function selectWaypoint(i) {
 
 /** Kamera-Regler sperren/freigeben und Videolaenge an den Plan koppeln. */
 function updateScenarioUi() {
+  if (typeof histSchedule === "function") histSchedule();
   const on = scenarioActive();
   if (typeof rebuildTimelineWps === "function") rebuildTimelineWps();
   if (typeof refreshRenderFoot === "function") refreshRenderFoot();

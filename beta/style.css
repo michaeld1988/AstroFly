@@ -63,6 +63,18 @@ svg.ic.big { width: 52px; height: 52px; stroke-width: 1; opacity: 0.6; }
 
 #panel .sub { color: var(--faint); font-size: 11px; flex: 1; line-height: 1.35; }
 
+/* Rueckgaengig / Wiederholen: sitzt im Kopf, gilt fuer alle Tabs */
+.histrow { display: flex; gap: 4px; flex: none; }
+.histrow button {
+  width: 30px; height: 28px; display: flex; align-items: center; justify-content: center;
+  background: var(--panel2); color: var(--muted);
+  border: 1px solid var(--border); border-radius: 7px; cursor: pointer; padding: 0;
+}
+.histrow button svg { width: 16px; height: 16px; }
+.histrow button:hover:not(:disabled) { color: var(--text); border-color: var(--accent-dim); }
+.histrow button:disabled { opacity: 0.32; cursor: default; }
+@media (pointer: coarse) { .histrow button { width: 40px; height: 38px; } }
+
 .mode { display: flex; background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 2px; flex: none; }
 .mode button {
   border: 0; background: transparent; color: var(--muted); font-size: 10.5px;
@@ -648,7 +660,8 @@ button.primary:not(:disabled):hover { border-color: var(--accent); }
 /* Flugplan: Wegpunkt im Bild bearbeiten - der Knopf erscheint erst, wenn
    sich der angesteuerte Blick geaendert hat */
 #wpApply {
-  position: absolute; left: 50%; bottom: 62px; transform: translateX(-50%);
+  /* oben mittig im Bild: dort kollidiert nichts mit Steuerkreuz oder Player */
+  position: absolute; left: 50%; top: 14px; transform: translateX(-50%);
   z-index: 6; cursor: pointer;
   background: linear-gradient(180deg, var(--panel3), var(--panel2));
   color: var(--text); font-family: inherit; font-size: 12.5px; font-weight: 600;
@@ -658,7 +671,7 @@ button.primary:not(:disabled):hover { border-color: var(--accent); }
 }
 #wpApply[hidden] { display: none; }
 #wpApply:hover { border-color: var(--accent); }
-@media (max-width: 820px) { #wpApply { bottom: 56px; font-size: 12px; padding: 8px 13px; } }
+@media (max-width: 820px) { #wpApply { top: 10px; font-size: 12px; padding: 8px 13px; max-width: calc(100% - 20px); white-space: normal; } }
 
 /* Flugplan: Fahrtzeit-Eingabe */
 .wpnext {
