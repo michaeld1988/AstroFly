@@ -3658,6 +3658,144 @@ for (const card of document.querySelectorAll(".pcard")) {
   card.addEventListener("click", () => applyFlightPreset(card.dataset.preset));
 }
 
+// ---------------------------------------------------------------------------
+// Stil-Code: die eingebauten Stile stehen im Quelltext als kompakte Zeile.
+// Der Knopf erzeugt genau diese Zeile aus den aktuellen Reglern - und zwar nur
+// aus denen, die vom Stil-Standard abweichen. So laesst sich ein neu
+// eingestellter Stil weitergeben und wieder einspielen, ohne jeden Wert
+// einzeln abzutippen.
+// ---------------------------------------------------------------------------
+const STYLE_CHECKS = ["ctlMblurStars", "ctlLoop", "ctlRealStars", "ctlSpinStars"];
+
+/**
+ * Bezugswert eines Reglers fuer den Stil-Code: Kamera- und Sternregler messen
+ * gegen die Neutralwerte, die Look-Regler gegen den gewaehlten Look - genau
+ * so, wie ein Stil beim Anwenden aufgebaut wird.
+ */
+function styleBase(id, look) {
+  if (SIMPLE_DEFAULTS[id] !== undefined) return SIMPLE_DEFAULTS[id];
+  for (const [key, sid] of Object.entries(PRESET_SLIDERS)) {
+    if (sid === id) {
+      const p = PRESETS[look] || PRESETS.neutral;
+      return p[key];
+    }
+  }
+  return undefined;
+}
+
+function styleIds() {
+  return [...Object.keys(SIMPLE_DEFAULTS), ...Object.values(PRESET_SLIDERS)];
+}
+
+function styleCodeStatus(msg, bad) {
+  const el = $("styleCodeStatus");
+  el.textContent = msg || "";
+  el.style.color = bad ? "#ff8080" : "";
+}
+
+function buildStyleCode() {
+  const look = $("ctlPreset").value;
+  const set = {};
+  for (const id of styleIds()) {
+    const el = $(id);
+    const def = styleBase(id, look);
+    if (!el || def === undefined) continue;
+    const v = parseFloat(el.value);
+    if (!isNaN(v) && Math.abs(v - def) > 1e-9) set[id] = Math.round(v * 1000) / 1000;
+  }
+  const checks = {};
+  const lookChk = !!(PRESETS[look] || {}).mblurStars;
+  for (const id of STYLE_CHECKS) {
+    const el = $(id);
+    if (!el) continue;
+    const base = id === "ctlMblurStars" ? lookChk : el.defaultChecked;
+    if (el.checked !== base) checks[id] = el.checked;
+  }
+  const name = state.activePreset || "meinStil";
+  const parts = [`look: "${look}"`];
+  if ($("ctlFlightMode").value !== "zoom") parts.push(`flightMode: "${$("ctlFlightMode").value}"`);
+  parts.push("set: { " + Object.entries(set).map(([k, v]) => `${k}: ${v}`).join(", ") + " }");
+  if (Object.keys(checks).length) {
+    parts.push("checks: { " + Object.entries(checks).map(([k, v]) => `${k}: ${v}`).join(", ") + " }");
+  }
+  return `${name}: { ${parts.join(", ")} },`;
+}
+
+/** Stil-Code lesen: bewusst per Muster statt eval - der Text kommt von aussen. */
+function parseStyleCode(txt) {
+  const out = { name: null, look: "neutral", flightMode: "zoom", set: {}, checks: {} };
+  const nm = txt.match(/([A-Za-z][A-Za-z0-9_]*)\s*:\s*\{/);
+  if (nm && !/^(set|checks|look|flightMode)$/.test(nm[1])) out.name = nm[1];
+  const lk = txt.match(/look\s*:\s*"([a-z0-9_]+)"/i);
+  if (lk) out.look = lk[1];
+  const fm = txt.match(/flightMode\s*:\s*"([a-z]+)"/i);
+  if (fm) out.flightMode = fm[1];
+  const chk = txt.match(/checks\s*:\s*\{([^}]*)\}/i);
+  if (chk) {
+    for (const m of chk[1].matchAll(/(ctl[A-Za-z0-9]+)\s*:\s*(true|false)/g)) {
+      out.checks[m[1]] = m[2] === "true";
+    }
+  }
+  const setB = txt.match(/set\s*:\s*\{([^}]*)\}/i);
+  const src = setB ? setB[1] : txt.replace(/checks\s*:\s*\{[^}]*\}/i, "");
+  const known = new Set(styleIds());
+  for (const m of src.matchAll(/(ctl[A-Za-z0-9]+)\s*:\s*(-?[0-9]+(?:\.[0-9]+)?)/g)) {
+    if (known.has(m[1])) out.set[m[1]] = parseFloat(m[2]);
+  }
+  return out;
+}
+
+/** Wie applyFlightPreset, aber 1:1 ohne die Effektstaerke des Einfach-Modus. */
+function applyStyleCode(p) {
+  $("ctlFlightMode").value = p.flightMode || "zoom";
+  $("ctlFlightMode").dispatchEvent(new Event("change", { bubbles: true }));
+  $("ctlEaseMode").value = "linear";
+  $("ctlEaseMode").dispatchEvent(new Event("change", { bubbles: true }));
+  $("ctlLoop").checked = false;
+  $("ctlLoop").dispatchEvent(new Event("change", { bubbles: true }));
+  for (const [id, v] of Object.entries(SIMPLE_DEFAULTS)) setCtl(id, v);
+  if ($("ctlPreset").querySelector(`option[value="${p.look}"]`)) {
+    $("ctlPreset").value = p.look;
+    $("ctlPreset").dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  for (const [id, v] of Object.entries(p.set)) setCtl(id, v);
+  for (const [id, v] of Object.entries(p.checks)) {
+    const el = $(id);
+    if (!el) continue;
+    el.checked = v;
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  state.activePreset = p.name && FLIGHT_PRESETS[p.name] ? p.name : null;
+  for (const card of document.querySelectorAll(".pcard")) {
+    card.classList.toggle("active", card.dataset.preset === state.activePreset);
+  }
+}
+
+$("btnStyleCopy").addEventListener("click", async () => {
+  const code = buildStyleCode();
+  $("styleCode").value = code;
+  $("styleCode").select();
+  try {
+    await navigator.clipboard.writeText(code);
+    styleCodeStatus(t("styleCodeCopied"));
+  } catch {
+    // ohne Zwischenablage-Recht bleibt der markierte Text im Feld
+    styleCodeStatus(t("styleCodeCopyManual"));
+  }
+});
+
+$("btnStyleApply").addEventListener("click", () => {
+  const txt = $("styleCode").value.trim();
+  if (!txt) { $("styleCode").focus(); return; }
+  const p = parseStyleCode(txt);
+  if (!Object.keys(p.set).length && !Object.keys(p.checks).length) {
+    styleCodeStatus(t("styleCodeBad"), true);
+    return;
+  }
+  applyStyleCode(p);
+  styleCodeStatus(t("styleCodeApplied", Object.keys(p.set).length));
+});
+
 // Dauer-Regler im Einfach-Modus spiegelt den echten Dauer-Regler
 $("ctlSimpleDuration").addEventListener("input", () => {
   const v = $("ctlSimpleDuration").value;
