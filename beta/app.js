@@ -4434,6 +4434,7 @@ $("aspectBtns").addEventListener("click", (e) => {
   const [aw, ah] = btn.dataset.aspect.split(":").map(Number);
   state.aspect = aw / ah;
   if (typeof refreshRenderFoot === "function") refreshRenderFoot();
+  if (typeof rebuildWaypointList === "function" && state.waypoints.length) rebuildWaypointList();
   state.aspectName = btn.dataset.aspect;
   fitCanvas();
 });
@@ -4945,6 +4946,7 @@ async function loadFile(which, file) {
     const img = await decodeFile(file);
     if (which === "starless") {
       state.starless = img;
+      clearWpThumbCache();
       state.srcFiles.starless = file;
       if (state.flipH || state.flipV) flipImage(state.starless, state.flipH, state.flipV);
       $("nameStarless").removeAttribute("data-i18n");
@@ -5171,6 +5173,7 @@ function flipMask(fh, fv) {
 }
 
 function applyImageFlip(fh, fv) {
+  clearWpThumbCache();
   if (state.starless) {
     flipImage(state.starless, fh, fv);
     if (state.customDepth) flipImage(state.customDepth, fh, fv);
@@ -5582,6 +5585,65 @@ function updateScenarioUi() {
 }
 
 /** Wegpunkt-Liste als editierbare Zeilen neu aufbauen. */
+// ---------------------------------------------------------------------------
+// Miniaturen an den Wegpunkten: zeigen den Bildausschnitt, den die Kamera an
+// diesem Wegpunkt sieht. Gerechnet wird dieselbe Abbildung wie im Renderer,
+// nur ohne Parallaxe und Kippen - fuer ein Vorschaubild ist die Ebene bei
+// mittlerer Tiefe genau richtig.
+// ---------------------------------------------------------------------------
+function wpThumbSource() {
+  if (!state.starless) return null;
+  if (state.thumbSrc && state.thumbSrcFor === state.starless &&
+      state.thumbSrcW === state.starless.width) return state.thumbSrc;
+  const maxW = 512;
+  const sc = Math.min(1, maxW / state.starless.width);
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(state.starless.width * sc));
+  c.height = Math.max(1, Math.round(state.starless.height * sc));
+  c.getContext("2d").drawImage(state.starless.canvas, 0, 0, c.width, c.height);
+  state.thumbSrc = c;
+  state.thumbSrcFor = state.starless;
+  state.thumbSrcW = state.starless.width;
+  return c;
+}
+
+/** Cache verwerfen (neues Bild, Spiegelung, geladenes Projekt). */
+function clearWpThumbCache() {
+  state.thumbSrc = null;
+  state.thumbSrcFor = null;
+}
+
+function drawWpThumb(cv, wp) {
+  const src = wpThumbSource();
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if (!src) return;
+  const W = cv.width, H = cv.height;
+  const viewAspect = state.aspect;
+  const imgAspect = state.starless.width / state.starless.height;
+  const scaleD = coverBase(viewAspect, imgAspect) * Math.max(1, wp.zoom || 1);
+  const ang = ((wp.angle || 0) * Math.PI) / 180;
+  const c = Math.cos(ang), sn = Math.sin(ang);
+  // Bildpixel -> Ebene
+  const a1 = imgAspect / src.width, b1 = -imgAspect / 2 - (wp.x || 0);
+  const a2 = -1 / src.height, b2 = 0.5 - (wp.y || 0);
+  // Ebene -> Miniatur (Drehung, Zoom, Seitenverhaeltnis)
+  const kx = (W * scaleD) / viewAspect, ky = H * scaleD;
+  ctx.setTransform(
+    kx * c * a1, -ky * sn * a1,
+    kx * -sn * a2, -ky * c * a2,
+    kx * (c * b1 - sn * b2) + W / 2, -ky * (sn * b1 + c * b2) + H / 2,
+  );
+  ctx.drawImage(src, 0, 0);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+
+function wpThumbSize() {
+  const h = Math.min(40, Math.round(64 / state.aspect));
+  return { w: Math.max(24, Math.round(h * state.aspect)), h };
+}
+
 function rebuildWaypointList() {
   const list = $("wpList");
   list.innerHTML = "";
@@ -5598,8 +5660,10 @@ function rebuildWaypointList() {
       selectWaypoint(i);
     });
     const pos = `${Math.round(wp.x / imgAspect * 200)} | ${Math.round(wp.y * 200)}`;
+    const th = wpThumbSize();
     row.innerHTML =
-      `<b>${i + 1}</b><span class="wppos">${pos}</span>` +
+      `<b>${i + 1}</b><canvas class="wpthumb" width="${th.w}" height="${th.h}"></canvas>` +
+      `<span class="wppos">${pos}</span>` +
       `<label>${t("wpZoom")} <input type="number" data-k="zoom" min="1" max="8" step="0.05" value="${wp.zoom}"></label>` +
       `<label>${t("wpAngle")} <input type="number" data-k="angle" min="-180" max="180" step="0.5" value="${wp.angle || 0}"></label>` +
       (i > 0 ? `<label>${t("wpDur")} <input type="range" data-r="dur" min="0.2" max="10" step="0.1" value="${Math.min(10, wp.dur)}"><input type="number" data-k="dur" min="0.2" max="60" step="0.1" value="${wp.dur}"></label>` : "") +
@@ -5691,6 +5755,8 @@ function rebuildWaypointList() {
         updateScenarioUi();
       });
     });
+    const cv = row.querySelector(".wpthumb");
+    if (cv) drawWpThumb(cv, wp);
     list.appendChild(row);
   });
 }

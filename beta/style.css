@@ -640,6 +640,11 @@ button.primary:not(:disabled):hover { border-color: var(--accent); }
   font-size: 12.5px;
 }
 .wprow b { color: #8fb0ff; min-width: 14px; }
+/* Miniatur: zeigt, wohin die Kamera an diesem Wegpunkt schaut */
+.wpthumb {
+  border-radius: 4px; border: 1px solid #1d2331; background: #000;
+  flex: none; display: block;
+}
 .wprow .wppos { color: #6b7385; font-variant-numeric: tabular-nums; min-width: 64px; }
 .wprow label { display: flex; align-items: center; gap: 4px; color: #9aa1b2; }
 .wprow input[type="number"] { width: 58px; }
