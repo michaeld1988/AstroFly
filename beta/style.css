@@ -162,6 +162,34 @@ details.adv[open] > summary::before { transform: rotate(225deg) translateY(-1px)
 details.adv > summary:hover { color: var(--text); }
 details.adv > *:not(summary) { margin-left: 2px; }
 
+/* Abweichung vom Standard: Punkt bzw. Zaehler + Zuruecksetzen */
+.chgmark {
+  margin-left: auto; display: flex; align-items: center; gap: 8px; flex: none;
+  text-transform: none; letter-spacing: 0; font-weight: normal;
+}
+.chgdot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex: none; }
+.chgdot.countonly {
+  width: auto; height: auto; border-radius: 0; background: none;
+  color: var(--faint); font-size: 10px;
+}
+.chgreset {
+  background: transparent; border: 0; color: var(--accent-dim);
+  font-size: 10px; cursor: pointer; font-family: inherit; padding: 0;
+  text-transform: none; letter-spacing: 0;
+}
+.chgreset:hover { color: var(--accent); text-decoration: underline; }
+
+/* Zahlenwert am Regler direkt eintippen */
+output.editable { cursor: text; border: 1px solid transparent; border-radius: 4px; padding: 1px 5px; }
+output.editable:hover { border-color: var(--border2); }
+input.outedit {
+  width: 74px; flex: none;
+  background: var(--panel2); color: var(--text);
+  border: 1px solid var(--accent-dim); border-radius: 4px;
+  padding: 1px 5px; font-size: 11px;
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+}
+
 /* file buttons */
 .filerow { display: flex; gap: 8px; }
 .filebtn {

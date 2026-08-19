@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-16-41">
+<link rel="stylesheet" href="style.css?v=2026-08-16-42">
 </head>
 <body>
 
@@ -154,7 +154,7 @@
       <p class="tip" id="moonStatus"></p>
       <button id="btnDemo" class="secondary" data-i18n="demoBtn">Try it with a demo image (Orion Nebula)</button>
       <details class="adv">
-        <summary data-i18n="advStretch">Advanced · mask stretch</summary>
+        <summary data-i18n="advStretch">Mask stretch</summary>
         <label class="check">
           <input type="checkbox" id="ctlMaskStretched">
           <span data-i18n="maskStretched">Star mask is already stretched (skip auto-stretch)</span>
@@ -401,7 +401,7 @@
       <span id="targetInfo" data-i18n="targetCenter">Target: image center</span></p>
 
       <details class="adv">
-        <summary data-i18n="advCamera">Advanced · acceleration, framing &amp; tilt</summary>
+        <summary data-i18n="advEase">Acceleration</summary>
         <label class="selfull">
           <span data-i18n="easeMode">Acceleration</span>
           <select id="ctlEaseMode">
@@ -419,6 +419,9 @@
           <span><span data-i18n="depthRange">Depth range</span> <output id="outDepthBoost">33</output></span>
           <input type="range" id="ctlDepthBoost" min="0" max="100" step="1" value="33">
         </label>
+      </details>
+      <details class="adv">
+        <summary data-i18n="advFrame">Framing</summary>
         <label class="slider">
           <span><span data-i18n="rotation">Rotation</span> <output id="outRotation">0.0 °/s</output></span>
           <input type="range" id="ctlRotation" min="-15" max="15" step="0.5" value="0">
@@ -435,6 +438,9 @@
           <span><span data-i18n="frameY">Shift framing vertical</span> <output id="outFrameY">0</output></span>
           <input type="range" id="ctlFrameY" min="-100" max="100" step="1" value="0">
         </label>
+      </details>
+      <details class="adv">
+        <summary data-i18n="advSway">Sway &amp; tilt</summary>
         <label class="slider">
           <span><span data-i18n="tiltX">Tilt horizontal</span> <output id="outTiltX">0</output></span>
           <input type="range" id="ctlTiltX" min="-100" max="100" step="1" value="0">
@@ -467,6 +473,9 @@
           <span><span data-i18n="tiltRampDir">Tilt direction</span> <output id="outTiltRampDir">0°</output></span>
           <input type="range" id="ctlTiltRampDir" min="0" max="360" step="5" value="0">
         </label>
+      </details>
+      <details class="adv">
+        <summary data-i18n="advFade">Fade in &amp; out</summary>
         <label class="slider">
           <span><span data-i18n="fade">Fade in/out (0 = off)</span> <output id="outFade">0.0 s</output></span>
           <input type="range" id="ctlFade" min="0" max="30" step="1" value="0">
@@ -566,7 +575,7 @@
       </label>
 
       <details class="adv">
-        <summary data-i18n="advStars">Advanced · layers, colors &amp; extra stars</summary>
+        <summary data-i18n="advStars">Layers, colors &amp; extra stars</summary>
         <label class="slider">
           <span><span data-i18n="starLayers">Depth layers (count)</span> <output id="outLayers">∞</output></span>
           <input type="range" id="ctlLayers" min="0" max="12" step="1" value="0">
@@ -638,7 +647,7 @@
       </label>
 
       <details class="adv">
-        <summary data-i18n="advLook">Advanced · color &amp; detail</summary>
+        <summary data-i18n="advLook">Color &amp; detail</summary>
         <label class="slider">
           <span><span data-i18n="exposure">Exposure</span> <output id="outExposure">0</output></span>
           <input type="range" id="ctlExposure" min="-100" max="100" step="1" value="0">
@@ -931,8 +940,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-41"></script>
-<script src="objectinfo.js?v=2026-08-16-41"></script>
-<script src="app.js?v=2026-08-16-41"></script>
+<script src="i18n.js?v=2026-08-16-42"></script>
+<script src="objectinfo.js?v=2026-08-16-42"></script>
+<script src="app.js?v=2026-08-16-42"></script>
 </body>
 </html>
