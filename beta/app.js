@@ -3550,7 +3550,7 @@ function setCtl(id, value) {
   const el = $(id);
   if (!el) return;
   el.value = value;
-  el.dispatchEvent(new Event("input"));
+  el.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 function applyFlightPreset(name) {
@@ -3732,6 +3732,157 @@ for (const b of document.querySelectorAll("#proRail button")) {
   });
 }
 applyUiMode();
+
+// ---------------------------------------------------------------------------
+// Reglerhierarchie: Abweichung vom Standard anzeigen, gruppenweise
+// zuruecksetzen, Zahlenwerte direkt eintippen.
+// Der Standard ist der im HTML notierte Ausgangswert (value-Attribut bzw.
+// selected-Option) - damit bleibt alles automatisch in Sicht, ohne dass
+// irgendwo eine zweite Liste gepflegt werden muss.
+// ---------------------------------------------------------------------------
+const CTL_DEFAULTS = new Map();
+// Regler, die nichts ueber das Bild aussagen (Ansicht, Namen, Auswahllisten)
+const CHANGE_IGNORE = new Set([
+  "ctlViewSize", "ctlSimpleFx", "ctlSimpleDir", "ctlSimpleDuration",
+  "ctlBandShow", "ctlSpinShow", "selMoonObj", "ctlDepthRes",
+]);
+
+function changeScope(el) {
+  // nur echte Bild-/Flugregler in Sektionen mit data-tab
+  const sec = el.closest("section[data-tab]");
+  if (!sec || sec.id === "simpleSection") return null;
+  if (!el.id || CHANGE_IGNORE.has(el.id)) return null;
+  if (el.type === "range" || el.type === "checkbox" || el.tagName === "SELECT") return sec;
+  return null;
+}
+
+function captureCtlDefaults() {
+  for (const el of document.querySelectorAll("#panelbody input, #panelbody select")) {
+    if (!changeScope(el)) continue;
+    if (el.type === "checkbox") CTL_DEFAULTS.set(el.id, el.defaultChecked ? "1" : "");
+    else if (el.tagName === "SELECT") {
+      const sel = el.querySelector("option[selected]");
+      CTL_DEFAULTS.set(el.id, sel ? sel.value : (el.options[0] ? el.options[0].value : ""));
+    } else CTL_DEFAULTS.set(el.id, el.defaultValue);
+  }
+}
+
+function ctlValue(el) {
+  return el.type === "checkbox" ? (el.checked ? "1" : "") : el.value;
+}
+
+function ctlIsChanged(el) {
+  if (!CTL_DEFAULTS.has(el.id)) return false;
+  const def = CTL_DEFAULTS.get(el.id);
+  const cur = ctlValue(el);
+  if (el.type === "range") return Math.abs(parseFloat(cur) - parseFloat(def)) > 1e-9;
+  return cur !== def;
+}
+
+function changedIn(root) {
+  const out = [];
+  for (const el of root.querySelectorAll("input, select")) {
+    if (changeScope(el) && ctlIsChanged(el)) out.push(el);
+  }
+  return out;
+}
+
+function resetCtls(list) {
+  for (const el of list) {
+    const def = CTL_DEFAULTS.get(el.id);
+    if (el.type === "checkbox") el.checked = def === "1";
+    else el.value = def;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  refreshChangeMarks();
+}
+
+// Marke (Punkt + Zuruecksetzen) an eine Ueberschrift oder ein Summary haengen
+function changeMark(host, list, withCount) {
+  let mark = host.querySelector(":scope > .chgmark");
+  if (!list.length) { if (mark) mark.remove(); return; }
+  if (!mark) {
+    mark = document.createElement("span");
+    mark.className = "chgmark";
+    mark.innerHTML = '<span class="chgdot"></span><button type="button" class="chgreset"></button>';
+    mark.querySelector(".chgreset").addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      resetCtls(changedIn(host.parentElement));
+    });
+    host.appendChild(mark);
+  }
+  const dot = mark.querySelector(".chgdot");
+  dot.textContent = withCount ? t("grpChanged", list.length) : "";
+  dot.classList.toggle("countonly", !!withCount);
+  mark.querySelector(".chgreset").textContent = t("grpReset");
+}
+
+function refreshChangeMarks() {
+  for (const det of document.querySelectorAll("#panelbody details.adv")) {
+    const sum = det.querySelector(":scope > summary");
+    if (sum) changeMark(sum, changedIn(det), false);
+  }
+  for (const sec of document.querySelectorAll("#panelbody section[data-tab]")) {
+    const h2 = sec.querySelector(":scope > h2");
+    if (!h2) continue;
+    // im Sektionskopf zaehlt alles der Sektion, auch die Klappgruppen
+    changeMark(h2, changedIn(sec), true);
+  }
+}
+
+// Zahlenwert direkt eintippen: Klick auf die Ausgabe macht daraus ein Feld
+function makeOutputEditable(out, range) {
+  out.classList.add("editable");
+  out.title = t("ctlValueEdit");
+  out.addEventListener("click", () => {
+    if (out.dataset.editing) return;
+    out.dataset.editing = "1";
+    const inp = document.createElement("input");
+    inp.type = "number";
+    inp.className = "outedit";
+    inp.value = range.value;
+    inp.min = range.min; inp.max = range.max; inp.step = range.step || "any";
+    const finish = (apply) => {
+      if (!out.dataset.editing) return;
+      delete out.dataset.editing;
+      if (apply) {
+        const v = parseFloat(inp.value);
+        if (!isNaN(v)) {
+          range.value = String(Math.min(parseFloat(range.max), Math.max(parseFloat(range.min), v)));
+          range.dispatchEvent(new Event("input", { bubbles: true }));
+          range.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      }
+      inp.remove();
+      out.hidden = false;
+    };
+    inp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") finish(true);
+      else if (e.key === "Escape") finish(false);
+    });
+    inp.addEventListener("blur", () => finish(true));
+    out.hidden = true;
+    out.parentElement.appendChild(inp);
+    inp.focus();
+    inp.select();
+  });
+}
+
+function setupCtlHierarchy() {
+  captureCtlDefaults();
+  for (const lab of document.querySelectorAll("#panelbody label.slider")) {
+    const out = lab.querySelector("output");
+    const range = lab.querySelector('input[type="range"]');
+    if (out && range && changeScope(range)) makeOutputEditable(out, range);
+  }
+  $("panelbody").addEventListener("input", () => refreshChangeMarks());
+  $("panelbody").addEventListener("change", () => refreshChangeMarks());
+  I18N.onChange.push(refreshChangeMarks);
+  refreshChangeMarks();
+}
+setupCtlHierarchy();
 
 let smoothTimer = null;
 $("ctlSmooth").addEventListener("input", () => {
