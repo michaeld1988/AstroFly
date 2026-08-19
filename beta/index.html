@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-16-51">
+<link rel="stylesheet" href="style.css?v=2026-08-16-52">
 </head>
 <body>
 
@@ -919,6 +919,7 @@
       <button id="btnFeedbackGithub" class="secondary" data-i18n="feedbackGithub">Report on GitHub</button>
       <button id="btnFeedbackMail" class="secondary" data-i18n="feedbackMail">Send by email</button>
       <button id="btnInstagram" class="secondary" data-i18n="instagramBtn">AstroFly on Instagram</button>
+      <button id="btnTourReplay" class="secondary" data-i18n="tourReplay">Show the intro again</button>
 
       <h2 data-i18n="aboutHead">About</h2>
       <div class="about">
@@ -975,12 +976,28 @@
 
 </div>
 
+<!-- Gefuehrter Einstieg beim ersten Start -->
+<div id="tour" hidden>
+  <div id="tourRing"></div>
+  <div id="tourCard">
+    <div class="tourstep" id="tourStep"></div>
+    <h3 id="tourTitle"></h3>
+    <p id="tourText"></p>
+    <div class="tourbtns">
+      <button id="btnTourSkip" class="secondary" data-i18n="tourSkip">Skip</button>
+      <span class="grow"></span>
+      <button id="btnTourBack" class="secondary" data-i18n="tourBack">Back</button>
+      <button id="btnTourNext" class="primary" data-i18n="tourNext">Next</button>
+    </div>
+  </div>
+</div>
+
 <script src="vendor/pako.min.js"></script>
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-51"></script>
-<script src="objectinfo.js?v=2026-08-16-51"></script>
-<script src="app.js?v=2026-08-16-51"></script>
+<script src="i18n.js?v=2026-08-16-52"></script>
+<script src="objectinfo.js?v=2026-08-16-52"></script>
+<script src="app.js?v=2026-08-16-52"></script>
 </body>
 </html>
