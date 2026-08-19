@@ -3312,8 +3312,9 @@ function fitCanvas() {
   // Mobil (schmale Bildschirme) nutzt die Vorschau immer die volle Fläche
   const mobile = window.innerWidth <= 820;
   const scaleView = (mobile ? 100 : state.viewScale) / 100;
+  const bar = $("transport").offsetHeight || 46;
   const availW = (wrap.clientWidth - 36) * scaleView;
-  const availH = (wrap.clientHeight - 36) * scaleView;
+  const availH = (wrap.clientHeight - 36 - bar) * scaleView;
   let w = availW, h = w / state.aspect;
   if (h > availH) { h = availH; w = h * state.aspect; }
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -4502,7 +4503,80 @@ document.addEventListener("keydown", (e) => {
   e.preventDefault();
   $("btnPlay").click();
 });
+/**
+ * Wegpunkte und Pausen auf der Abspiel-Zeitachse.
+ * Die Rauten sind die Ankunftszeiten, die helleren Balken die Pausen -
+ * eine Raute laesst sich ziehen, das aendert die Fahrtzeit dorthin.
+ */
+let tlDragging = false;
+
+function markTimelineSel() {
+  document.querySelectorAll("#timelineWps .tlwp").forEach((d, idx) => {
+    d.classList.toggle("sel", idx === wpSel);
+  });
+}
+
+function rebuildTimelineWps() {
+  const box = $("timelineWps");
+  if (!box) return;
+  const on = typeof scenarioActive === "function" && scenarioActive();
+  box.hidden = !on;
+  box.innerHTML = "";
+  if (!on) return;
+  const total = scenarioTotal();
+  state.waypoints.forEach((wp, i) => {
+    const tA = scenarioArrival(i);
+    const hold = Math.max(0, wp.hold || 0);
+    if (hold > 0) {
+      const bar = document.createElement("div");
+      bar.className = "tlhold";
+      bar.style.left = (tA / total) * 100 + "%";
+      bar.style.width = (hold / total) * 100 + "%";
+      box.appendChild(bar);
+    }
+    const d = document.createElement("div");
+    d.className = "tlwp" + (i === wpSel ? " sel" : "") + (i === 0 ? " fixed" : "");
+    d.style.left = (tA / total) * 100 + "%";
+    d.title = t("tlWpTitle", i + 1, tA.toFixed(1));
+    d.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      selectWaypoint(i);
+      if (i === 0) return;              // der Start liegt immer bei 0 s
+      // Das Ziehen haengt an der Zeitachse selbst: die Rauten werden beim
+      // Nachziehen neu gebaut, ein Pointer-Capture auf der Raute ginge dabei
+      // verloren
+      const tl = $("timeline");
+      tl.setPointerCapture(e.pointerId);
+      const rect = tl.getBoundingClientRect();
+      const prev = scenarioArrival(i - 1) + Math.max(0, state.waypoints[i - 1].hold || 0);
+      const move = (ev) => {
+        const f = Math.min(1, Math.max(0, (ev.clientX - rect.left) / rect.width));
+        const want = f * scenarioTotal();
+        const dur = Math.min(20, Math.max(0.2, Math.round((want - prev) * 10) / 10));
+        if (dur === state.waypoints[i].dur) return;
+        state.waypoints[i].dur = dur;
+        rebuildWaypointList();
+        updateScenarioUi();
+      };
+      const up = (ev) => {
+        tl.removeEventListener("pointermove", move);
+        tl.removeEventListener("pointerup", up);
+        tl.removeEventListener("pointercancel", up);
+        if (tl.hasPointerCapture(ev.pointerId)) tl.releasePointerCapture(ev.pointerId);
+        tlDragging = false;
+      };
+      tlDragging = true;
+      tl.addEventListener("pointermove", move);
+      tl.addEventListener("pointerup", up);
+      tl.addEventListener("pointercancel", up);
+    });
+    box.appendChild(d);
+  });
+}
+
 $("timeline").addEventListener("click", (e) => {
+  if (tlDragging || e.target.classList.contains("tlwp")) return;
   const rect = $("timeline").getBoundingClientRect();
   const f = (e.clientX - rect.left) / rect.width;
   const t = f * state.duration;
@@ -5118,6 +5192,7 @@ function scenarioArrival(i) {
 /** Wegpunkt auswaehlen: Highlight im Bild UND in der Liste (beide Wege). */
 function selectWaypoint(i) {
   wpSel = i;
+  if (typeof markTimelineSel === "function") markTimelineSel();
   document.querySelectorAll("#wpList .wprow").forEach((row, idx) => {
     row.classList.toggle("sel", idx === i);
   });
@@ -5128,6 +5203,7 @@ function selectWaypoint(i) {
 /** Kamera-Regler sperren/freigeben und Videolaenge an den Plan koppeln. */
 function updateScenarioUi() {
   const on = scenarioActive();
+  if (typeof rebuildTimelineWps === "function") rebuildTimelineWps();
   for (const id of ["ctlFlightMode", "ctlDriftDir", "ctlZoom", "ctlSpeed",
     "ctlEaseMode", "ctlEase", "ctlDuration",
     "ctlRotation", "ctlSwayAmp", "ctlTiltRamp"]) {
@@ -5154,6 +5230,7 @@ function rebuildWaypointList() {
   list.innerHTML = "";
   buildSubTabs();   // Zaehler an der Untergruppe "Flugplan" mitfuehren
   refreshStatusChips();
+  if (typeof rebuildTimelineWps === "function") rebuildTimelineWps();
   const imgAspect = state.starless
     ? state.starless.width / state.starless.height : 16 / 9;
   state.waypoints.forEach((wp, i) => {
