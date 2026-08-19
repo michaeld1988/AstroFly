@@ -5213,6 +5213,7 @@ function wpToScreen(qx, qy, cam, W, H) {
 }
 
 function drawWaypointOverlay(ctx, W, H, cam) {
+  updateWpApply();
   ctx.save(); // eigener Zustand: nichts darf in die Infokarten-Zeichnung lecken
   const wps = state.waypoints;
   const px = W / 1000; // grob aufloesungsunabhaengige Strichstaerken
@@ -5407,6 +5408,8 @@ function rebuildWaypointList() {
           }
           state.scenView = { x: wp.x, y: wp.y, zoom: wp.zoom, angle: wp.angle || 0 };
           setScenEdit(true);
+          selectWaypoint(i);
+          startWpEdit(i);
           return;
         }
         if (a === "del") state.waypoints.splice(i, 1);
@@ -5588,6 +5591,58 @@ function scenPadStep(action) {
   scenClampView();
 }
 
+// ---------------------------------------------------------------------------
+// Wegpunkt im Bild bearbeiten: nach "Ansteuern" merkt sich AstroFly, welcher
+// Wegpunkt geladen ist. Sobald der Blick davon abweicht (Maus, Steuerkreuz,
+// Marker), erscheint der Uebernehmen-Knopf im Bild - damit laesst sich ein
+// Wegpunkt neu setzen, ohne Zahlen in die Liste zu tippen.
+// ---------------------------------------------------------------------------
+// Der Zustand haengt am state-Objekt, damit fruehe Aufrufe (Tab-Wechsel beim
+// Start) nicht in die zeitliche Totzone einer let-Variablen laufen
+state.wpEditIdx = -1;
+state.wpEditBase = null;
+
+function wpViewDiffers(a, b) {
+  if (!a || !b) return false;
+  return Math.abs(a.x - b.x) > 0.002 || Math.abs(a.y - b.y) > 0.002 ||
+    Math.abs(a.zoom - b.zoom) > 0.005 || Math.abs((a.angle || 0) - (b.angle || 0)) > 0.2;
+}
+
+function startWpEdit(i) {
+  state.wpEditIdx = i;
+  const wp = state.waypoints[i];
+  state.wpEditBase = wp ? { x: wp.x, y: wp.y, zoom: wp.zoom, angle: wp.angle || 0 } : null;
+  updateWpApply();
+}
+
+function stopWpEdit() {
+  state.wpEditIdx = -1;
+  state.wpEditBase = null;
+  updateWpApply();
+}
+
+function updateWpApply() {
+  const btn = $("wpApply");
+  if (!btn) return;
+  const wp = state.wpEditIdx >= 0 ? state.waypoints[state.wpEditIdx] : null;
+  const show = !!wp && state.scenEdit && !state.playing &&
+    wpViewDiffers(state.scenView, state.wpEditBase);
+  btn.hidden = !show;
+  if (show) btn.textContent = t("wpApplyBtn", state.wpEditIdx + 1);
+}
+
+$("wpApply").addEventListener("click", () => {
+  const wp = state.waypoints[state.wpEditIdx];
+  if (!wp) return;
+  const v = state.scenView;
+  wp.x = v.x; wp.y = v.y; wp.zoom = v.zoom; wp.angle = v.angle || 0;
+  state.wpEditBase = { x: v.x, y: v.y, zoom: v.zoom, angle: v.angle || 0 };
+  selectWaypoint(state.wpEditIdx);
+  rebuildWaypointList();
+  updateScenarioUi();
+  updateWpApply();
+});
+
 function setScenEdit(on) {
   on = on && state.scenarioOn; // Einrichtung nur, wenn der Plan aktiviert ist
   if (on && !state.scenEdit) {
@@ -5604,6 +5659,7 @@ function setScenEdit(on) {
     $("btnPlay").textContent = "\u25b6";
   }
   $("scenPad").hidden = !on || !state.starless;
+  if (!on) stopWpEdit(); else updateWpApply();
 }
 
 for (const btn of document.querySelectorAll("#scenPad button")) {
