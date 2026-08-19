@@ -129,7 +129,8 @@ const I18N = {
       occlude: "Nebula hides stars behind it",
       occludeHint: "Stars whose depth places them BEHIND the nebula are dimmed by the nebula's density (bright, dense regions swallow more starlight than thin wisps) – during a flyby, stars visibly disappear behind clouds and re-emerge. Stars in front of the nebula are unaffected. 0 = off.",
       anchorStars: "Anchor stars in the nebula",
-      anchorStarsHint: "Stars sitting on dense nebula regions adopt the nebula's depth and motion \u2013 they stay inside the nebula during the 3D flight instead of drifting in front of it (like the Wolf-Rayet stars in the Lion Nebula). After a Gaia match, stars clearly in front of or behind the nebula stay free.",
+      anchorStarsHint: "Stars sitting on dense nebula regions automatically adopt the nebula's depth and motion \u2013 they stay inside the nebula during the 3D flight instead of drifting in front of it (like the Wolf-Rayet stars in the Lion Nebula). After a Gaia match, stars clearly in front of or behind the nebula stay free.",
+      autoOn: "Always on",
       gaiaHint: "Real star distances (Gaia): load a plate-solved version of your image (FITS from ASTAP, PixInsight or Siril, or a .wcs file from astrometry.net) – AstroFly then matches your detected stars against the ESA Gaia catalog and assigns each one its real measured distance. The 3D layers follow the actual depth of the sky. Requires an internet connection for the catalog query; only sky coordinates are transferred, never your image.",
       gaiaHelpBtn: "Where do I get a plate-solved file?",
       gaiaHelpText: "A plate-solved file is your image with its sky position stored in the header – most astrophotographers already have one:<br><br>" +
@@ -476,7 +477,8 @@ const I18N = {
       occlude: "Nebel verdeckt dahinterliegende Sterne",
       occludeHint: "Sterne, die laut ihrer Tiefe HINTER dem Nebel liegen, werden von dessen Dichte abgedunkelt (helle, dichte Bereiche schlucken mehr Sternlicht als dünne Schleier) – beim Vorbeiflug verschwinden Sterne sichtbar hinter Wolken und tauchen wieder auf. Sterne vor dem Nebel bleiben unberührt. 0 = aus.",
       anchorStars: "Sterne im Nebel verankern",
-      anchorStarsHint: "Sterne auf dichten Nebelregionen \u00fcbernehmen Tiefe und Bewegung des Nebels \u2013 sie bleiben beim 3D-Flug im Nebel, statt davor herzufliegen (wie die Wolf-Rayet-Sterne im L\u00f6wennebel). Nach einem Gaia-Abgleich bleiben Sterne, die klar vor oder hinter dem Nebel stehen, automatisch frei.",
+      anchorStarsHint: "Sterne auf dichten Nebelregionen \u00fcbernehmen automatisch Tiefe und Bewegung des Nebels \u2013 sie bleiben beim 3D-Flug im Nebel, statt davor herzufliegen (wie die Wolf-Rayet-Sterne im L\u00f6wennebel). Nach einem Gaia-Abgleich bleiben Sterne, die klar vor oder hinter dem Nebel stehen, automatisch frei.",
+      autoOn: "Immer aktiv",
       gaiaHint: "Echte Sternentfernungen (Gaia): Lade eine geplatesolvte Version deines Bildes (FITS aus ASTAP, PixInsight oder Siril, oder eine .wcs-Datei von astrometry.net) – AstroFly gleicht die erkannten Sterne dann mit dem ESA-Gaia-Katalog ab und weist jedem seine echte gemessene Entfernung zu. Die 3D-Ebenen folgen der tatsächlichen Tiefe des Himmels. Für die Katalog-Abfrage ist eine Internetverbindung nötig; übertragen werden nur Himmelskoordinaten, nie dein Bild.",
       gaiaHelpBtn: "Woher bekomme ich eine geplatesolvte Datei?",
       gaiaHelpText: "Eine geplatesolvte Datei ist dein Bild mit seiner Himmelsposition im Header – die meisten Astrofotografen haben sie schon:<br><br>" +
