@@ -3313,8 +3313,14 @@ function fitCanvas() {
   const mobile = window.innerWidth <= 820;
   const scaleView = (mobile ? 100 : state.viewScale) / 100;
   const bar = $("transport").offsetHeight || 46;
-  const availW = (wrap.clientWidth - 36) * scaleView;
-  const availH = (wrap.clientHeight - 36 - bar) * scaleView;
+  const availW = (wrap.clientWidth - (mobile ? 16 : 36)) * scaleView;
+  // Mobil richtet sich die Buehne nach dem Bild, damit ueber der Vorschau
+  // kein toter Raum steht - die Obergrenze bleibt der CSS-Anteil der Hoehe
+  const limitH = mobile
+    ? window.innerHeight * ($("app").classList.contains("sheetup") ? 0.30 : 0.52)
+    : wrap.clientHeight;
+  const chips = mobile ? $("stageChips").offsetHeight : 0;
+  const availH = (limitH - (mobile ? 16 : 36) - bar - chips) * scaleView;
   let w = availW, h = w / state.aspect;
   if (h > availH) { h = availH; w = h * state.aspect; }
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -3322,9 +3328,57 @@ function fitCanvas() {
   canvas.height = Math.round(h * dpr);
   canvas.style.width = Math.round(w) + "px";
   canvas.style.height = Math.round(h) + "px";
+  if (mobile) $("stage").style.height = Math.round(h + bar + chips + 16) + "px";
+  else $("stage").style.height = "";
 }
 window.addEventListener("resize", fitCanvas);
 fitCanvas();
+
+// ---------------------------------------------------------------------------
+// Mobil: die Bedienung ist ein Blatt unter der Vorschau. Der Griff zieht es
+// hoch (mehr Regler) oder runter (groesseres Bild); die Gruppenleiste wandert
+// dabei in den Blattkopf, damit die Reihenfolge stimmt.
+// ---------------------------------------------------------------------------
+function isNarrow() { return window.innerWidth <= 820; }
+
+function placeRail() {
+  const rail = $("proRail");
+  if (isNarrow()) {
+    if (rail.parentElement !== $("panel")) $("panel").insertBefore(rail, $("subTabs"));
+  } else if (rail.parentElement !== $("app")) {
+    $("app").insertBefore(rail, $("panel"));
+  }
+}
+
+function setSheetUp(up) {
+  $("app").classList.toggle("sheetup", up);
+  setTimeout(fitCanvas, 200);
+}
+
+{
+  const grip = $("sheetGrip");
+  let startY = 0, moved = false;
+  grip.addEventListener("pointerdown", (e) => {
+    startY = e.clientY;
+    moved = false;
+    grip.setPointerCapture(e.pointerId);
+  });
+  grip.addEventListener("pointermove", (e) => {
+    if (!grip.hasPointerCapture(e.pointerId)) return;
+    const dy = e.clientY - startY;
+    if (Math.abs(dy) > 24) {
+      moved = true;
+      setSheetUp(dy < 0);
+      startY = e.clientY;
+    }
+  });
+  grip.addEventListener("pointerup", (e) => {
+    if (grip.hasPointerCapture(e.pointerId)) grip.releasePointerCapture(e.pointerId);
+    if (!moved) setSheetUp(!$("app").classList.contains("sheetup"));
+  });
+}
+window.addEventListener("resize", placeRail);
+placeRail();
 
 // ---------------------------------------------------------------- UI-Verdrahtung
 
