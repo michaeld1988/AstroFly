@@ -108,7 +108,22 @@ svg.ic.big { width: 52px; height: 52px; stroke-width: 1; opacity: 0.6; }
 }
 #subTabs .subcount[hidden] { display: none; }
 
-#panelbody { flex: 1; overflow-y: auto; padding: 4px 16px 44px; }
+#panelbody { flex: 1; overflow-y: auto; padding: 4px 16px 20px; }
+
+/* Feste Fussleiste: das Ziel der App ist immer einen Klick entfernt */
+#panelFoot {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px 12px; background: #0b0e14;
+  border-top: 1px solid var(--border);
+}
+#panelFoot .footinfo { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+#panelFoot .footinfo b { font-size: 12.5px; font-weight: 600; }
+#panelFoot .footinfo small {
+  font-size: 10.5px; color: var(--faint);
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#panelFoot button.primary { flex: none; padding: 9px 20px; }
 #panelbody::-webkit-scrollbar { width: 8px; }
 #panelbody::-webkit-scrollbar-thumb { background: var(--panel3); border-radius: 4px; }
 

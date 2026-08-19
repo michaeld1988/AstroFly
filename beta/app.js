@@ -3878,10 +3878,11 @@ function setupCtlHierarchy() {
     const range = lab.querySelector('input[type="range"]');
     if (out && range && changeScope(range)) makeOutputEditable(out, range);
   }
-  $("panelbody").addEventListener("input", () => { refreshChangeMarks(); refreshStatusChips(); });
-  $("panelbody").addEventListener("change", () => { refreshChangeMarks(); refreshStatusChips(); });
+  $("panelbody").addEventListener("input", () => { refreshChangeMarks(); refreshStatusChips(); refreshRenderFoot(); });
+  $("panelbody").addEventListener("change", () => { refreshChangeMarks(); refreshStatusChips(); refreshRenderFoot(); });
   I18N.onChange.push(refreshChangeMarks);
   I18N.onChange.push(refreshStatusChips);
+  I18N.onChange.push(refreshRenderFoot);
   refreshChangeMarks();
 }
 setupCtlHierarchy();
@@ -3985,6 +3986,35 @@ function refreshStatusChips() {
 }
 refreshStatusChips();
 
+// ---------------------------------------------------------------------------
+// Feste Fussleiste: zeigt, was beim Rendern herauskommt, und startet es.
+// Der eigentliche Export bleibt in der Export-Sektion, hier liegt nur der
+// Weg dorthin.
+// ---------------------------------------------------------------------------
+function refreshRenderFoot() {
+  const meta = $("footMeta");
+  const btn = $("btnRenderFoot");
+  if (!meta || !btn) return;
+  const aspBtn = document.querySelector("#aspectBtns button.active");
+  const [w, h] = exportDims();
+  const dur = state.duration || 0;
+  const mime = pickMime();
+  const fmt = mime.startsWith("video/mp4") ? "MP4" : (mime ? "WebM" : "-");
+  meta.textContent = (aspBtn ? aspBtn.dataset.aspect : "16:9") + " \u00b7 " +
+    w + "\u00d7" + h + " \u00b7 " + dur.toFixed(0) + " s \u00b7 " + fmt;
+  btn.disabled = $("btnExport").disabled;
+}
+
+refreshRenderFoot();
+
+$("btnRenderFoot").addEventListener("click", () => {
+  if ($("btnExport").disabled) return;
+  // in die Export-Sektion springen, damit Fortschritt und Meldungen sichtbar
+  // sind, und dort den echten Export ausloesen
+  gotoTab("export");
+  $("btnExport").click();
+});
+
 let smoothTimer = null;
 $("ctlSmooth").addEventListener("input", () => {
   state.smooth = parseInt($("ctlSmooth").value, 10);
@@ -4083,6 +4113,7 @@ $("aspectBtns").addEventListener("click", (e) => {
   btn.classList.add("active");
   const [aw, ah] = btn.dataset.aspect.split(":").map(Number);
   state.aspect = aw / ah;
+  if (typeof refreshRenderFoot === "function") refreshRenderFoot();
   state.aspectName = btn.dataset.aspect;
   fitCanvas();
 });
@@ -4654,6 +4685,7 @@ async function loadFile(which, file) {
     if (state.starless) {
       $("placeholder").style.display = "none";
       $("btnExport").disabled = false;
+      refreshRenderFoot();
       state.t0 = performance.now();
       if (which === "starless") status.textContent = t("starlessLoaded");
     }
@@ -5204,6 +5236,7 @@ function selectWaypoint(i) {
 function updateScenarioUi() {
   const on = scenarioActive();
   if (typeof rebuildTimelineWps === "function") rebuildTimelineWps();
+  if (typeof refreshRenderFoot === "function") refreshRenderFoot();
   for (const id of ["ctlFlightMode", "ctlDriftDir", "ctlZoom", "ctlSpeed",
     "ctlEaseMode", "ctlEase", "ctlDuration",
     "ctlRotation", "ctlSwayAmp", "ctlTiltRamp"]) {
@@ -5814,6 +5847,7 @@ function saveBlob(blob, filename) {
 
 function beginExport(w, h) {
   state.exporting = true;
+  $("btnRenderFoot").disabled = true;
   canvas.width = w;
   canvas.height = h;
   $("btnExport").disabled = true;
@@ -5823,6 +5857,7 @@ function beginExport(w, h) {
 
 function endExport(message) {
   state.exporting = false;
+  $("btnRenderFoot").disabled = false;
   state.offlineExport = false;
   $("btnExport").disabled = false;
   $("exportProgressWrap").hidden = true;
