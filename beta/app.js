@@ -3784,6 +3784,81 @@ $("btnStyleCopy").addEventListener("click", async () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Gefuehrter Einstieg: vier Schritte, die einmal zeigen, wo Bild laden, Ziel
+// setzen, Flug einstellen und Rendern sitzen. Laeuft beim ersten Start und
+// laesst sich im Export-Bereich erneut aufrufen.
+// ---------------------------------------------------------------------------
+const TOUR_KEY = "astrofly-tour-seen";
+const TOUR_STEPS = [
+  { key: "1", target: () => $("proRail").querySelector('[data-group="bild"]') || $("panelbody"), tab: "bilder" },
+  { key: "2", target: () => $("glcanvas") },
+  { key: "3", target: () => $("proRail").querySelector('[data-group="kamera"]') || $("panelbody"), tab: "kamera" },
+  { key: "4", target: () => $("panelFoot") },
+];
+let tourIdx = -1;
+
+function placeTour(el) {
+  const ring = $("tourRing");
+  const card = $("tourCard");
+  const r = el.getBoundingClientRect();
+  const pad = 6;
+  ring.style.left = (r.left - pad) + "px";
+  ring.style.top = (r.top - pad) + "px";
+  ring.style.width = (r.width + pad * 2) + "px";
+  ring.style.height = (r.height + pad * 2) + "px";
+  // Karte bevorzugt rechts neben das Ziel, sonst darunter, immer im Fenster
+  const cw = card.offsetWidth || 310, ch = card.offsetHeight || 190;
+  let x = r.right + 16, y = r.top;
+  if (x + cw > window.innerWidth - 12) {
+    x = Math.min(r.left, window.innerWidth - cw - 12);
+    y = r.bottom + 14;
+  }
+  if (y + ch > window.innerHeight - 12) y = Math.max(12, window.innerHeight - ch - 12);
+  card.style.left = Math.max(12, x) + "px";
+  card.style.top = Math.max(12, y) + "px";
+}
+
+function showTourStep(i) {
+  const step = TOUR_STEPS[i];
+  if (!step) { endTour(); return; }
+  tourIdx = i;
+  if (step.tab && state.uiMode === "pro") gotoTab(step.tab);
+  $("tour").hidden = false;
+  $("tourStep").textContent = t("tourStepOf", i + 1, TOUR_STEPS.length);
+  $("tourTitle").textContent = t("tourTitle" + step.key);
+  $("tourText").textContent = t("tourText" + step.key);
+  $("btnTourBack").hidden = i === 0;
+  $("btnTourNext").textContent = i === TOUR_STEPS.length - 1 ? t("tourDone") : t("tourNext");
+  // erst nach dem Layout messen, sonst steht die Karte am alten Platz
+  requestAnimationFrame(() => placeTour(step.target()));
+}
+
+function endTour() {
+  tourIdx = -1;
+  $("tour").hidden = true;
+  localStorage.setItem(TOUR_KEY, "1");
+}
+
+function startTour() { showTourStep(0); }
+
+$("btnTourNext").addEventListener("click", () => showTourStep(tourIdx + 1));
+$("btnTourBack").addEventListener("click", () => showTourStep(Math.max(0, tourIdx - 1)));
+$("btnTourSkip").addEventListener("click", endTour);
+$("btnTourReplay").addEventListener("click", startTour);
+document.addEventListener("keydown", (e) => {
+  if ($("tour").hidden) return;
+  if (e.key === "Escape") endTour();
+  else if (e.key === "ArrowRight" || e.key === "Enter") showTourStep(tourIdx + 1);
+  else if (e.key === "ArrowLeft") showTourStep(Math.max(0, tourIdx - 1));
+});
+window.addEventListener("resize", () => {
+  if (!$("tour").hidden && TOUR_STEPS[tourIdx]) placeTour(TOUR_STEPS[tourIdx].target());
+});
+I18N.onChange.push(() => { if (!$("tour").hidden) showTourStep(tourIdx); });
+
+if (!localStorage.getItem(TOUR_KEY)) setTimeout(startTour, 700);
+
 $("btnStyleApply").addEventListener("click", () => {
   const txt = $("styleCode").value.trim();
   if (!txt) { $("styleCode").focus(); return; }
