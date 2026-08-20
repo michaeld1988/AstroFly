@@ -1819,18 +1819,67 @@ function matchGaia(gaiaStars) {
   let pairs = flipUsed ? pairsA : pairsB;
   let fitUsed = null;
 
-  // Durchgang 2: Affin-Korrektur schätzen und enger neu zuordnen; das
-  // Ergebnis zählt nur, wenn es mehr Treffer liefert
+  const rmsOf = (ps) => {
+    let s = 0;
+    for (const { i, g } of ps) {
+      const dx = mask[i * 7] - g.x, dy = mask[i * 7 + 1] - g.y;
+      s += dx * dx + dy * dy;
+    }
+    return Math.sqrt(s / Math.max(1, ps.length));
+  };
+  const warpAll = (f) => pts.map((g) => ({
+    ...g,
+    ox: g.ox === undefined ? g.x : g.ox,
+    oy: g.oy === undefined ? g.y : g.oy,
+    x: f.ax[0] * g.x + f.ax[1] * g.y + f.ax[2],
+    y: f.ay[0] * g.x + f.ay[1] * g.y + f.ay[2],
+  }));
+
+  // Durchgang 2: Affin-Korrektur schaetzen und enger neu zuordnen. Der erste
+  // Schaetzer sitzt schief, weil der grobe Durchgang bei einem systematischen
+  // Versatz reihenweise Nachbarsterne zuordnet - deshalb wird zweimal
+  // nachgezogen: jede Runde ordnet enger zu und schaetzt aus der saubereren
+  // Zuordnung neu.
+  const orig = (g) => [g.ox === undefined ? g.x : g.ox, g.oy === undefined ? g.y : g.oy];
+  // Erste Schaetzung als reine Verschiebung ueber den Median: die haelt auch
+  // dann, wenn der grobe Durchgang reihenweise Nachbarsterne zugeordnet hat.
+  const medianShift = (ps) => {
+    if (ps.length < 8) return null;
+    const dx = [], dy = [];
+    for (const { i, g } of ps) {
+      const [ox, oy] = orig(g);
+      dx.push(mask[i * 7] - ox);
+      dy.push(mask[i * 7 + 1] - oy);
+    }
+    dx.sort((a, b) => a - b); dy.sort((a, b) => a - b);
+    const mid = (a) => a[Math.floor(a.length / 2)];
+    return { ax: [1, 0, mid(dx)], ay: [0, 1, mid(dy)] };
+  };
   if (pairs.length >= 20) {
-    const fit = affineFit(pairs.map(({ i, g }) => [g.x, g.y, mask[i * 7], mask[i * 7 + 1]]));
-    if (fit) {
-      const warped = pts.map((g) => ({
-        ...g,
-        x: fit.ax[0] * g.x + fit.ax[1] * g.y + fit.ax[2],
-        y: fit.ay[0] * g.x + fit.ay[1] * g.y + fit.ay[2],
-      }));
-      const refined = runMatch(warped, tolFine);
-      if (refined.length > pairs.length) { pairs = refined; fitUsed = fit; }
+    const tolStep = [tolCoarse * 0.5, tolFine, tolFine];
+    let cur = pairs, best = null;
+    for (let it = 0; it < 3; it++) {
+      const fit = it === 0
+        ? medianShift(cur)
+        : affineFit(cur.map(({ i, g }) => {
+          const [ox, oy] = orig(g);
+          return [ox, oy, mask[i * 7], mask[i * 7 + 1]];
+        }));
+      if (!fit) break;
+      const refined = runMatch(warpAll(fit), tolStep[it]);
+      if (refined.length < 20) break;
+      cur = refined;
+      best = { fit, pairs: refined };
+    }
+    // Die Korrektur gewinnt, wenn sie mehr Sterne zuordnet oder die
+    // Restabweichung deutlich senkt, ohne nennenswert Treffer zu verlieren.
+    // Frueher zaehlte nur die Trefferzahl: traf schon der grobe Durchgang
+    // alles, wurde die Korrektur verworfen - und die Objekt-Marker blieben
+    // um den systematischen Versatz neben ihrem Objekt.
+    if (best) {
+      const better = best.pairs.length > pairs.length ||
+        (best.pairs.length >= pairs.length * 0.85 && rmsOf(best.pairs) < rmsOf(pairs) * 0.9);
+      if (better) { pairs = best.pairs; fitUsed = best.fit; }
     }
   }
   if (pairs.length < 5) return null;
@@ -5263,6 +5312,17 @@ function applyImageFlip(fh, fv) {
   // "Nur Starless": Maske und damit das Koordinatensystem bleiben stehen -
   // für den Fall, dass Starless und Maske gegeneinander gespiegelt sind
   if (!state.flipOnlyStarless) flipMask(fh, fv);
+  // Die Feinkorrektur aus dem Gaia-Abgleich gilt nur fuer die Orientierung,
+  // in der sie geschaetzt wurde. Nach einer Spiegelung wuerde sie die
+  // Objekt-Marker verschieben: also aus dem gecachten Katalog neu abgleichen,
+  // und ohne Katalog lieber fallen lassen als falsch anwenden.
+  if (!state.flipOnlyStarless && state.wcs) {
+    if (state.gaiaCatalog) {
+      try { matchGaia(state.gaiaCatalog); } catch { state.wcsFit = null; }
+    } else if (state.wcsFit) {
+      state.wcsFit = null;
+    }
+  }
   reprojectLabels();
   uploadStars();
   updateGaiaStatus();
@@ -6252,6 +6312,11 @@ $("ctlFlipOnly").addEventListener("change", () => {
   state.flipOnlyStarless = $("ctlFlipOnly").checked;
   if (state.flipH || state.flipV) {
     flipMask(state.flipH, state.flipV);
+    if (state.wcs && state.gaiaCatalog) {
+      try { matchGaia(state.gaiaCatalog); } catch { state.wcsFit = null; }
+    } else if (state.wcsFit) {
+      state.wcsFit = null;
+    }
     reprojectLabels();
     uploadStars();
     updateGaiaStatus();
