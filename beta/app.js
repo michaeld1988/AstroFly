@@ -76,7 +76,7 @@ const state = {
   twinkle: 25,           // 0..100
   wcs: null,             // Plate-Solve-Lösung (aus FITS/WCS-Header)
   gaiaDepth: null,       // echte Tiefe je Masken-Stern (Float32Array, -1 = keine)
-  gaiaAmt: 100,          // Einfluss der echten Tiefen 0..100
+  gaiaAmt: 100,          // echte Tiefen wirken nach dem Abgleich immer voll
   gaiaInfo: null,        // { matched, total, dMin, dMax } für die Statuszeile
   gaiaOnly: false,       // Wissenschafts-Modus: nur Sterne mit echter Tiefe
   gaiaColorRGB: null,    // echte Katalogfarben je Masken-Stern (RGB, -1 = keine)
@@ -3451,18 +3451,26 @@ function bindSlider(id, outId, key, fmt) {
   out.textContent = fmt(parseFloat(el.value));
 }
 
-const asInt = (v) => String(v);
-const asPct = (v) => v + " %";
-bindSlider("ctlZoom", "outZoom", "zoomBase", (v) => v.toFixed(2) + "×");
+/**
+ * Anzeigeformat der Regler: normalerweise ganze Zahlen, im Feinmodus (Shift)
+ * kommen Nachkommastellen dazu - die zeigt die Ausgabe dann auch.
+ */
+function ctlNum(v, min) {
+  const dec = ((+v.toFixed(3)).toString().split(".")[1] || "").length;
+  return v.toFixed(Math.max(min || 0, Math.min(3, dec)));
+}
+const asInt = (v) => ctlNum(v, 0);
+const asPct = (v) => ctlNum(v, 0) + " %";
+bindSlider("ctlZoom", "outZoom", "zoomBase", (v) => ctlNum(v, 2) + "×");
 bindSlider("ctlSpeed", "outSpeed", "speed", asInt);
 bindSlider("ctlEase", "outEase", "ease", asInt);
 bindSlider("ctlParallax", "outParallax", "parallax", asInt);
 bindSlider("ctlDepthBoost", "outDepthBoost", "depthBoost", asInt);
-bindSlider("ctlRotation", "outRotation", "rotationSpeed", (v) => v.toFixed(1) + " °/s");
+bindSlider("ctlRotation", "outRotation", "rotationSpeed", (v) => ctlNum(v, 1) + " °/s");
 bindSlider("ctlOrient", "outOrient", "orientation", (v) => v + "°");
 bindSlider("ctlFrameX", "outFrameX", "frameX", asInt);
 bindSlider("ctlFrameY", "outFrameY", "frameY", asInt);
-bindSlider("ctlSpinSpeed", "outSpinSpeed", "spinSpeed", (v) => v.toFixed(1) + " °/s");
+bindSlider("ctlSpinSpeed", "outSpinSpeed", "spinSpeed", (v) => ctlNum(v, 1) + " °/s");
 bindSlider("ctlSpinRadius", "outSpinRadius", "spinRadius", asInt);
 bindSlider("ctlSpinDiff", "outSpinDiff", "spinDiff", asInt);
 bindSlider("ctlSpinFlat", "outSpinFlat", "spinFlat", asInt);
@@ -3480,7 +3488,7 @@ bindSlider("ctlTiltX", "outTiltX", "tiltX", asInt);
 bindSlider("ctlTiltY", "outTiltY", "tiltY", asInt);
 bindSlider("ctlSwayAmp", "outSwayAmp", "swayAmp", asInt);
 bindSlider("ctlSwayTempo", "outSwayTempo", "swayTempo", asInt);
-bindSlider("ctlDuration", "outDuration", "duration", (v) => v + " s");
+bindSlider("ctlDuration", "outDuration", "duration", (v) => ctlNum(v, 0) + " s");
 bindSlider("ctlSpread", "outSpread", "spread", asInt);
 bindSlider("ctlStarDist", "outStarDist", "starDist", asInt);
 bindSlider("ctlTwinkle", "outTwinkle", "twinkle", asInt);
@@ -3839,10 +3847,13 @@ $("btnStyleCopy").addEventListener("click", async () => {
 // laesst sich im Export-Bereich erneut aufrufen.
 // ---------------------------------------------------------------------------
 const TOUR_KEY = "astrofly-tour-seen";
+// Die Nummern sind nur die Textbausteine, die Reihenfolge steht hier:
+// Bilder, Ziel, Flug, Feineinstellung (5), Rendern (4)
 const TOUR_STEPS = [
   { key: "1", target: () => $("proRail").querySelector('[data-group="bild"]') || $("panelbody"), tab: "bilder" },
   { key: "2", target: () => $("glcanvas") },
   { key: "3", target: () => $("proRail").querySelector('[data-group="kamera"]') || $("panelbody"), tab: "kamera" },
+  { key: "5", target: () => $("ctlZoom").closest("label") || $("panelbody"), tab: "kamera" },
   { key: "4", target: () => $("panelFoot") },
 ];
 let tourIdx = -1;
@@ -4187,13 +4198,46 @@ function makeOutputEditable(out, range) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Shift = Feineinstellung: solange die Taste liegt, bekommt jeder Regler den
+// zehnten Schritt. Das gilt fuer Ziehen und Pfeiltasten gleichermassen, weil
+// der Browser sich am step-Attribut orientiert.
+// ---------------------------------------------------------------------------
+const FINE_DIV = 10;
+let fineOn = false;
+
+function setFineStep(on) {
+  if (on === fineOn) return;
+  fineOn = on;
+  for (const el of document.querySelectorAll('#panelbody input[type="range"]')) {
+    if (on) {
+      if (!el.dataset.step0) el.dataset.step0 = el.getAttribute("step") || "1";
+      el.step = String(+(parseFloat(el.dataset.step0) / FINE_DIV).toFixed(6));
+    } else if (el.dataset.step0) {
+      el.step = el.dataset.step0;
+    }
+  }
+  document.body.classList.toggle("finestep", on);
+}
+
+window.addEventListener("keydown", (e) => { if (e.key === "Shift") setFineStep(true); });
+window.addEventListener("keyup", (e) => { if (e.key === "Shift") setFineStep(false); });
+window.addEventListener("blur", () => setFineStep(false));
+
 function setupCtlHierarchy() {
   captureCtlDefaults();
   for (const lab of document.querySelectorAll("#panelbody label.slider")) {
     const out = lab.querySelector("output");
     const range = lab.querySelector('input[type="range"]');
-    if (out && range && changeScope(range)) makeOutputEditable(out, range);
+    if (!range) continue;
+    range.title = t("fineHint");
+    if (out && changeScope(range)) makeOutputEditable(out, range);
   }
+  I18N.onChange.push(() => {
+    for (const r of document.querySelectorAll('#panelbody label.slider input[type="range"]')) {
+      r.title = t("fineHint");
+    }
+  });
   $("panelbody").addEventListener("input", () => { refreshChangeMarks(); refreshStatusChips(); refreshRenderFoot(); });
   $("panelbody").addEventListener("change", () => { refreshChangeMarks(); refreshStatusChips(); refreshRenderFoot(); });
   I18N.onChange.push(refreshChangeMarks);
@@ -4242,9 +4286,8 @@ const STATUS_CHIPS = [
   },
   {
     tab: "gaia",
-    on: () => !!(state.gaiaDepth && state.gaiaInfo && state.gaiaAmt > 0),
+    on: () => !!(state.gaiaDepth && state.gaiaInfo),
     label: () => t("chipGaia", state.gaiaInfo ? state.gaiaInfo.matched : 0),
-    off: () => setCtl("ctlGaiaAmt", 0),
   },
   {
     // Standard ist an - gemeldet wird deshalb nur der Ausnahmefall
@@ -4582,7 +4625,6 @@ I18N.onChange.push(updateTargetInfo);
 
 // ------------------------------------------ Echte Tiefen (Gaia): Bedienung
 
-bindSlider("ctlGaiaAmt", "outGaiaAmt", "gaiaAmt", (v) => v + " %");
 bindSlider("ctlGaiaPm", "outGaiaPm", "gaiaPmYears", (v) => v.toLocaleString());
 bindSlider("ctlOcclude", "outOcclude", "occlude", (v) => v + " %");
 
@@ -4610,9 +4652,9 @@ function updateGaiaStatus() {
   const sciAllowed = pct >= 75;
   $("ctlGaiaOnly").disabled = !sciAllowed;
   // Solange NUR echte Gaia-Tiefen zählen, sind die Zufalls-Tiefen-Regler
-  // und die Mischstärke ohne Funktion - sichtbar ausgrauen
+  // ohne Funktion - sichtbar ausgrauen
   const gaiaLock = state.gaiaOnly && sciAllowed;
-  for (const id of ["ctlStarDist", "ctlSpread", "ctlLayers", "ctlGaiaAmt"]) {
+  for (const id of ["ctlStarDist", "ctlSpread", "ctlLayers"]) {
     const el = document.getElementById(id);
     if (el) el.disabled = gaiaLock;
   }
@@ -4872,6 +4914,13 @@ $("btnGaia").addEventListener("click", async () => {
     state.gaiaCatalog = stars;
     const info = matchGaia(stars);
     if (!info) gaiaTransient = { key: "gaiaNoMatch", args: [] };
+    // Der Abgleich ist der Punkt, an dem echte Daten vorliegen - ab hier
+    // zaehlen echte Tiefen ohnehin voll, also auch gleich die echten Farben
+    if (info && state.gaiaColorRGB && !state.gaiaColors) {
+      state.gaiaColors = true;
+      $("ctlGaiaColors").checked = true;
+      uploadStars();
+    }
   } catch (e) {
     gaiaTransient = e.server
       ? { key: "gaiaSrvErr", args: [e.status] }
