@@ -2806,8 +2806,10 @@ function scenarioTotal() {
 /**
  * Kameraposition entlang des Wegpunkt-Plans bei Fortschritt p (0..1).
  * Jede Etappe hat eigenes Easing; der Zoom interpoliert geometrisch
- * (wirkt gleichmaessig statt am Ende zu rasen). Position wird wie im
- * Zoom-Modus an die Bildkanten geklemmt.
+ * (wirkt gleichmaessig statt am Ende zu rasen) und die Position wird
+ * zoom-kompensiert gefuehrt, damit ein Schwenk mit gleichzeitigem Zoom
+ * auf dem Schirm gleichmaessig laeuft. Position wird wie im Zoom-Modus
+ * an die Bildkanten geklemmt.
  */
 function scenarioAt(p) {
   const wps = state.waypoints;
@@ -2830,10 +2832,16 @@ function scenarioAt(p) {
         }
         const a = wps[i - 1], b = wps[i];
         const za = Math.max(1, a.zoom || 1), zb = Math.max(1, b.zoom || 1);
-        const P = scenLegPos(a, b, k);
+        // Zoom-kompensierter Weg: der Zoom laeuft geometrisch, deshalb wuerde
+        // eine Position, die linear in Bildkoordinaten laeuft, auf dem Schirm
+        // ungleichmaessig wirken (erst kaum Bewegung, dann Heranrasen). Die
+        // Umrechnung haelt die wahrgenommene Geschwindigkeit konstant.
+        const r = zb / za;
+        const kp = Math.abs(r - 1) < 1e-4 ? k : (1 - Math.pow(r, -k)) / (1 - 1 / r);
+        const P = scenLegPos(a, b, kp);
         ax = P.x;
         ay = P.y;
-        zoom = za * Math.pow(zb / za, k);
+        zoom = za * Math.pow(r, k);
         ang = (a.angle || 0) + ((b.angle || 0) - (a.angle || 0)) * k;
         break outer;
       }
@@ -5924,8 +5932,12 @@ function rebuildWaypointList() {
             $("ctlScenOn").checked = true;
             updateScenarioUi();
           }
-          state.scenView = { x: wp.x, y: wp.y, zoom: wp.zoom, angle: wp.angle || 0 };
+          // Erst den Bearbeitungsmodus einschalten: setScenEdit setzt beim
+          // Einschalten selbst eine Ansicht (letzter Wegpunkt). Danach die
+          // gewuenschte Ansicht setzen, sonst landet der erste Klick woanders.
           setScenEdit(true);
+          state.scenView = { x: wp.x, y: wp.y, zoom: wp.zoom, angle: wp.angle || 0 };
+          scenClampView();
           selectWaypoint(i);
           startWpEdit(i);
           return;
