@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-16-54">
+<link rel="stylesheet" href="style.css?v=2026-08-16-55">
 </head>
 <body>
 
@@ -406,6 +406,10 @@
         <input type="range" id="ctlZoom" min="1" max="4" step="0.05" value="1">
       </label>
       <label class="slider">
+        <span><span data-i18n="rotation">Rotation</span> <output id="outRotation">0.0 °/s</output></span>
+        <input type="range" id="ctlRotation" min="-15" max="15" step="0.5" value="0">
+      </label>
+      <label class="slider">
         <span><span data-i18n="speed">Speed</span> <output id="outSpeed">40</output></span>
         <input type="range" id="ctlSpeed" min="0" max="100" step="1" value="40">
       </label>
@@ -423,6 +427,8 @@
         <input type="checkbox" id="ctlLoop">
         <span data-i18n="loopMode">Loop mode (there &amp; back, seamless)</span>
       </label>
+      <p class="tip" data-i18n="fineTip">Tip: hold Shift while dragging a slider for ten times
+      finer steps - that works for every slider in AstroFly.</p>
       <p class="tip"><span data-i18n-html="tip"><b>Zoom target:</b> Click the preview to choose where
       the camera flies to. Double-click = back to center.</span>
       <span id="targetInfo" data-i18n="targetCenter">Target: image center</span></p>
@@ -449,10 +455,6 @@
       </details>
       <details class="adv">
         <summary data-i18n="advFrame">Framing</summary>
-        <label class="slider">
-          <span><span data-i18n="rotation">Rotation</span> <output id="outRotation">0.0 °/s</output></span>
-          <input type="range" id="ctlRotation" min="-15" max="15" step="0.5" value="0">
-        </label>
         <label class="slider">
           <span><span data-i18n="orient">Rotate framing</span> <output id="outOrient">0°</output></span>
           <input type="range" id="ctlOrient" min="0" max="360" step="1" value="0">
@@ -790,10 +792,6 @@
       <input type="file" id="fileWcs" accept=".fits,.fit,.fts,.wcs" hidden>
       <button id="btnGaia" class="secondary" disabled data-i18n="gaiaMatchBtn">Match stars with Gaia (internet)</button>
       <p class="tip" id="gaiaStatus"></p>
-      <label class="slider">
-        <span><span data-i18n="gaiaAmt">Real depth influence</span> <output id="outGaiaAmt">100 %</output></span>
-        <input type="range" id="ctlGaiaAmt" min="0" max="100" step="1" value="100">
-      </label>
       <label class="check">
         <input type="checkbox" id="ctlGaiaOnly" disabled>
         <span data-i18n="gaiaOnly">Scientifically accurate distances (Gaia stars only)</span>
@@ -996,8 +994,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-54"></script>
-<script src="objectinfo.js?v=2026-08-16-54"></script>
-<script src="app.js?v=2026-08-16-54"></script>
+<script src="i18n.js?v=2026-08-16-55"></script>
+<script src="objectinfo.js?v=2026-08-16-55"></script>
+<script src="app.js?v=2026-08-16-55"></script>
 </body>
 </html>
