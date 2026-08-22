@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-16-56">
+<link rel="stylesheet" href="style.css?v=2026-08-16-57">
 </head>
 <body>
 
@@ -61,6 +61,20 @@
   <symbol id="i-redo" viewBox="0 0 24 24">
     <path d="M20 13a8 8 0 1 0-2.5 5.8"/>
     <path d="M20 7.5 V13 H14.5"/>
+  </symbol>
+  <symbol id="i-mtarget" viewBox="0 0 40 40">
+    <circle cx="20" cy="20" r="12.5"/>
+    <circle cx="20" cy="20" r="5.6" opacity="0.55"/>
+    <path d="M20 2.5 V8.6 M20 31.4 V37.5 M2.5 20 H8.6 M31.4 20 H37.5"/>
+    <circle cx="20" cy="20" r="1.7" fill="currentColor" stroke="none"/>
+  </symbol>
+  <symbol id="i-mspin" viewBox="0 0 40 40">
+    <path d="M6.2 17.6 A14 14 0 0 1 29 9.3"/>
+    <path d="M27.5 5.1 L29 9.3 L24.6 8.5"/>
+    <path d="M33.8 22.4 A14 14 0 0 1 11 30.7"/>
+    <path d="M12.5 34.9 L11 30.7 L15.4 31.5"/>
+    <ellipse cx="20" cy="20" rx="7.6" ry="3.2" transform="rotate(-20 20 20)" opacity="0.7"/>
+    <circle cx="20" cy="20" r="1.7" fill="currentColor" stroke="none"/>
   </symbol>
   <symbol id="i-export" viewBox="0 0 24 24">
     <path d="M12 4 V14.5 M8 11 L12 15 L16 11"/>
@@ -963,7 +977,7 @@
       <button id="wpApply" hidden></button>
       <div id="stageToast" hidden><span class="spinner"></span><span id="stageToastText"></span></div>
       </div>
-      <div id="targetMarker" hidden>🎯</div>
+      <div id="targetMarker" hidden></div>
       <div id="placeholder">
         <svg class="ic big"><use href="#i-logo"/></svg>
         <p data-i18n-html="placeholder1">Load a <b>starless image</b> and a <b>star mask</b><br>to start your flight through space.</p>
@@ -994,8 +1008,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-56"></script>
-<script src="objectinfo.js?v=2026-08-16-56"></script>
-<script src="app.js?v=2026-08-16-56"></script>
+<script src="i18n.js?v=2026-08-16-57"></script>
+<script src="objectinfo.js?v=2026-08-16-57"></script>
+<script src="app.js?v=2026-08-16-57"></script>
 </body>
 </html>
