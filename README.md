@@ -46,12 +46,26 @@ Switch to **Pro mode** anytime for every individual control.
 Download the repository and open `index.html` in your browser – that's it,
 no build step required.
 
-The control panel is organized into **six tabs** (Images · Camera · Stars ·
-Look · Science · Export) in Pro mode – each tab shows a handful of core
-controls, everything else sits behind "Advanced" expanders, and explanation
-texts open on demand via the small "?" buttons. The active tab and the
-Easy/Pro choice are remembered. Running catalog queries (Gaia/SIMBAD) are
-shown as a status overlay on the preview.
+In Pro mode the control panel is organized into **six groups** on a vertical
+rail (Projects · Image · Camera · Look · Data · Export), each with its own
+sub-tabs – Camera, for example, holds Flight, Flight plan and Galaxy. Every
+sub-tab shows a handful of core controls, everything else sits behind
+"Advanced" expanders, and explanation texts open on demand via the small "?"
+buttons. The active group and the Easy/Pro choice are remembered.
+
+A status band above the preview shows what is currently active (flight plan,
+mirroring, Gaia matching and so on); clicking a chip jumps straight to the
+control behind it. Running catalog queries (Gaia/SIMBAD) appear as a status
+overlay on the preview, and the render button sits in a fixed footer that is
+always in reach. On phones the whole panel becomes a sheet you pull up over
+the preview.
+
+**Comfort features:** undo and redo for every setting (Ctrl+Z / Ctrl+Shift+Z,
+60 steps), hold Shift while dragging a slider to move in steps ten times
+smaller, tap a slider's value to type it in, changed controls are marked with
+a dot and can be reset per group, and a guided tour explains the basics on
+first start. A **style code** turns your current settings into a short block
+of text you can copy, share and paste back in.
 
 ## Usage
 
@@ -99,8 +113,24 @@ shown as a status overlay on the preview.
    | Fade in/out | Black-to-image and image-to-black fade, adjustable 0–3 s (0 = off) |
    | Loop mode | Camera flies in and seamlessly back out – perfect for endless loops on social media |
 
+   **Flight plan** (Camera group) replaces the single flight with your own
+   sequence of waypoints. Set a view in the preview, store it as a waypoint,
+   and give each leg its own duration, hold time and easing curve. The
+   waypoints sit on a timeline under the preview – drag a diamond to change
+   how long a leg takes, click one to jump to it, and each waypoint carries a
+   thumbnail of its framing. Steering to a waypoint and then changing the
+   view offers an **Apply** button right in the image, so you can correct a
+   waypoint without rebuilding it. A pan that zooms at the same time is
+   guided so that the movement stays even on screen instead of creeping at
+   the start and rushing at the end.
+
+   **Projects** (first group) save your whole session into the browser –
+   images, plate-solve solution, Gaia data, every setting and the flight
+   plan – so you can pick a project back up later exactly where you left it.
+   Custom presets deliberately store none of that: they carry settings only.
+
    **🧪 Experimental** (marked with an "Experimental" badge – these features
-   may still produce visible artifacts): **Galaxy spin** (Camera tab) rotates only the region around a
+   may still produce visible artifacts): **Galaxy spin** (Camera group, Galaxy sub-tab) rotates only the region around a
    click-set spin center (radius, soft edge falloff) – with adjustable
    differential rotation (inner faster, like a real galaxy) and an ellipse
    option for inclined galaxies; foreground stars do not rotate. An optional
@@ -109,14 +139,15 @@ shown as a status overlay on the preview.
    overlay (Photoshop-style, auto-shown while picking the center, never
    exported) visualizes exactly where and how strongly the spin acts.
 
-   In the **Science tab**: **Real star distances (Gaia)** – load a plate-solved
+   In the **Data group**: **Real star distances (Gaia)** – load a plate-solved
    version of your image (a FITS solved by ASTAP, PixInsight or Siril, or an
    astrometry.net `.wcs` file) and AstroFly matches your detected stars
    against the **ESA Gaia DR3 catalog** (via the CDS VizieR API), assigning
    each matched star its real measured distance. The 3D star layers then
    follow the actual, log-compressed depth of the sky instead of random
-   depths; unmatched stars keep their random layer, and a slider blends
-   between random and real depths. A **scientific mode** (unlocked at a
+   depths; unmatched stars keep their random layer. As soon as the matching
+   finishes, real distances and real star colors are switched on
+   automatically. A **scientific mode** (unlocked at a
    match rate of 75 % or higher, reported in the status line) shows only
    stars with a real Gaia distance at their true depth and hides everything
    else. Matched stars can also take their **true colors** from the measured

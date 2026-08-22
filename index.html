@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-16-13">
+<link rel="stylesheet" href="style.css?v=2026-08-22-1">
 </head>
 <body>
 
@@ -14,6 +14,9 @@
     <circle cx="12" cy="12" r="4.2"/>
     <ellipse cx="12" cy="12" rx="10" ry="4.4" transform="rotate(-18 12 12)"/>
     <circle cx="20.4" cy="8.2" r="0.9" fill="currentColor" stroke="none"/>
+  </symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24">
+    <path d="M3 6.5a1.5 1.5 0 0 1 1.5-1.5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v8.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z" fill="none"/>
   </symbol>
   <symbol id="i-img" viewBox="0 0 24 24">
     <rect x="3.5" y="5" width="17" height="14" rx="2"/>
@@ -26,6 +29,12 @@
     <path d="M12 12 L5.5 17.5"/>
     <path d="M12 12 L20.2 9"/>
     <path d="M12 12 L3.8 9"/>
+  </symbol>
+  <symbol id="i-route" viewBox="0 0 24 24">
+    <circle cx="5" cy="19" r="2.2"/>
+    <circle cx="12" cy="7" r="2.2"/>
+    <circle cx="19" cy="16" r="2.2"/>
+    <path d="M6.4 17.3 10.6 8.8 M13.6 8.5 17.7 14.4" fill="none"/>
   </symbol>
   <symbol id="i-star" viewBox="0 0 24 24">
     <path d="M12 3 L13.6 10.4 L21 12 L13.6 13.6 L12 21 L10.4 13.6 L3 12 L10.4 10.4 Z"/>
@@ -45,6 +54,28 @@
     <path d="M6.5 4.5 H17.5 V20 L12 15.8 L6.5 20 Z"/>
     <path d="M9.5 9 H14.5"/>
   </symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24">
+    <path d="M4 13a8 8 0 1 1 2.5 5.8"/>
+    <path d="M4 7.5 V13 H9.5"/>
+  </symbol>
+  <symbol id="i-redo" viewBox="0 0 24 24">
+    <path d="M20 13a8 8 0 1 0-2.5 5.8"/>
+    <path d="M20 7.5 V13 H14.5"/>
+  </symbol>
+  <symbol id="i-mtarget" viewBox="0 0 40 40">
+    <circle cx="20" cy="20" r="12.5"/>
+    <circle cx="20" cy="20" r="5.6" opacity="0.55"/>
+    <path d="M20 2.5 V8.6 M20 31.4 V37.5 M2.5 20 H8.6 M31.4 20 H37.5"/>
+    <circle cx="20" cy="20" r="1.7" fill="currentColor" stroke="none"/>
+  </symbol>
+  <symbol id="i-mspin" viewBox="0 0 40 40">
+    <path d="M6.2 17.6 A14 14 0 0 1 29 9.3"/>
+    <path d="M27.5 5.1 L29 9.3 L24.6 8.5"/>
+    <path d="M33.8 22.4 A14 14 0 0 1 11 30.7"/>
+    <path d="M12.5 34.9 L11 30.7 L15.4 31.5"/>
+    <ellipse cx="20" cy="20" rx="7.6" ry="3.2" transform="rotate(-20 20 20)" opacity="0.7"/>
+    <circle cx="20" cy="20" r="1.7" fill="currentColor" stroke="none"/>
+  </symbol>
   <symbol id="i-export" viewBox="0 0 24 24">
     <path d="M12 4 V14.5 M8 11 L12 15 L16 11"/>
     <path d="M4.5 16.5 V18.5 A1.5 1.5 0 0 0 6 20 H18 A1.5 1.5 0 0 0 19.5 18.5 V16.5"/>
@@ -53,7 +84,19 @@
 
 <div id="app">
 
+  <div id="sheetGrip" title="" data-i18n-title="sheetGrip"><span></span></div>
+
+  <nav id="proRail" hidden>
+    <button data-group="projekte"><svg class="ic"><use href="#i-folder"/></svg><small data-i18n="grpProjekte">Projects</small></button>
+    <button data-group="bild" class="active"><svg class="ic"><use href="#i-img"/></svg><small data-i18n="grpBild">Image</small></button>
+    <button data-group="kamera"><svg class="ic"><use href="#i-cam"/></svg><small data-i18n="grpKamera">Camera</small></button>
+    <button data-group="look"><svg class="ic"><use href="#i-star"/></svg><small data-i18n="grpLook">Look</small></button>
+    <button data-group="daten"><svg class="ic"><use href="#i-sci"/></svg><small data-i18n="grpDaten">Data</small></button>
+    <button data-group="export"><svg class="ic"><use href="#i-export"/></svg><small data-i18n="grpExport">Export</small></button>
+  </nav>
+
   <aside id="panel">
+    <div id="panelResize"></div>
     <div class="panelhead">
       <div class="headrow">
         <div class="brand">
@@ -67,6 +110,10 @@
       </div>
       <div class="headrow2">
         <p class="sub" data-i18n="subtitle">3D camera flight from starless image + star mask</p>
+        <div class="histrow">
+          <button id="btnUndo" disabled title="" data-i18n-title="undoTitle"><svg class="ic"><use href="#i-undo"/></svg></button>
+          <button id="btnRedo" disabled title="" data-i18n-title="redoTitle"><svg class="ic"><use href="#i-redo"/></svg></button>
+        </div>
         <div class="mode" id="modeRow">
           <button id="modeSimple" data-i18n="modeSimple">Easy</button>
           <button id="modePro" data-i18n="modePro">Pro</button>
@@ -74,15 +121,7 @@
       </div>
     </div>
 
-    <nav id="proTabs" hidden>
-      <button data-tab="bilder" class="active"><svg class="ic"><use href="#i-img"/></svg><small data-i18n="tabBilder">Images</small></button>
-      <button data-tab="presets"><svg class="ic"><use href="#i-preset"/></svg><small data-i18n="tabPresets">Presets</small></button>
-      <button data-tab="kamera"><svg class="ic"><use href="#i-cam"/></svg><small data-i18n="tabKamera">Camera</small></button>
-      <button data-tab="sterne"><svg class="ic"><use href="#i-star"/></svg><small data-i18n="tabSterne">Stars</small></button>
-      <button data-tab="look"><svg class="ic"><use href="#i-look"/></svg><small data-i18n="tabLook">Look</small></button>
-      <button data-tab="sci"><svg class="ic"><use href="#i-sci"/></svg><small data-i18n="tabSci">Science</small></button>
-      <button data-tab="export"><svg class="ic"><use href="#i-export"/></svg><small data-i18n="tabExport">Export</small></button>
-    </nav>
+    <div id="subTabs" hidden></div>
 
     <div id="panelbody">
 
@@ -91,6 +130,22 @@
               background: rgba(232,179,75,0.12); color: #f2d9a0;"></p>
 
     <!-- ==================== BILDER ==================== -->
+    <section data-tab="projekte">
+      <h2 data-i18n="projHead">Projects</h2>
+      <p class="tip" data-i18n="projTip">Projects store EVERYTHING locally in your browser
+      (IndexedDB): both image files, plate solve, Gaia match, labels, all settings and the
+      flight plan - restore any animation later and keep working. Nothing ever leaves your
+      device.</p>
+      <label class="namerow">
+        <span data-i18n="projNameLbl">Name</span>
+        <input type="text" id="projName" spellcheck="false" autocomplete="off">
+      </label>
+      <button id="btnProjSave" class="secondary" data-i18n="projSaveBtn">Save current project</button>
+      <p class="tip" id="projEmpty" data-i18n="projEmpty">No saved projects yet.</p>
+      <div id="projGrid"></div>
+      <p class="tip" id="projStatus"></p>
+    </section>
+
     <section data-tab="bilder" data-easy="1">
       <h2><span data-i18n="sec1">Load images</span> <span class="hint">(TIFF, FITS, PNG, JPG)</span></h2>
       <div class="filerow">
@@ -107,9 +162,27 @@
       </div>
       <p class="tip" data-i18n="jpegTip">Tip: prefer TIFF or PNG. JPEG compression creates
       artifacts in dark areas that can affect the depth map and the nebula-color masks.</p>
+      <label class="check">
+        <input type="checkbox" id="ctlMoonMode">
+        <span data-i18n="moonMode">Subject is the Moon / a planet (no star mask needed)</span>
+        <button class="qm" data-help="hintMoon">?</button>
+      </label>
+      <div class="selrow" id="moonObjRow" hidden>
+        <label for="selMoonObj" data-i18n="moonObjLabel">Object</label>
+        <select id="selMoonObj">
+          <option value="moon" data-i18n="moonObjMoon">Moon</option>
+          <option value="planet" data-i18n="moonObjPlanet">Planet (sphere)</option>
+        </select>
+      </div>
+      <p class="tip hint2" id="hintMoon" hidden data-i18n="moonHint">For single moon shots,
+      no star mask needed: AstroFly detects the lunar disk and replaces the brightness depth
+      map with a true sphere, so the moon reads as round during camera moves. Generated
+      background stars (Stars tab) stay behind the disk. Works best with a bright, (nearly)
+      full moon against dark sky.</p>
+      <p class="tip" id="moonStatus"></p>
       <button id="btnDemo" class="secondary" data-i18n="demoBtn">Try it with a demo image (Orion Nebula)</button>
       <details class="adv">
-        <summary data-i18n="advStretch">Advanced · mask stretch</summary>
+        <summary data-i18n="advStretch">Mask stretch</summary>
         <label class="check">
           <input type="checkbox" id="ctlMaskStretched">
           <span data-i18n="maskStretched">Star mask is already stretched (skip auto-stretch)</span>
@@ -123,6 +196,47 @@
     </section>
 
     <!-- ==================== PRESETS ==================== -->
+    <section data-tab="szenario">
+      <h2><span data-i18n="scenHead">Flight plan (waypoints)</span> <button class="qm" data-help="hintScen">?</button></h2>
+      <p class="tip hint2" id="hintScen" hidden data-i18n="scenHint">Chain camera moves:
+      zoom into the center, glide to a detail, pull back out. Each waypoint stores a
+      position, a zoom level, travel seconds and an easing. The camera visits them in
+      order; the video length adapts automatically. Rotation and sway keep working on top.</p>
+      <label class="check">
+        <input type="checkbox" id="ctlScenOn">
+        <span data-i18n="scenOn">Fly the waypoint plan (replaces the flight mode)</span>
+      </label>
+      <p class="tip" data-i18n="scenAddTip">Steer the view with the pad in the preview:
+      arrows pan, + and - zoom, the arcs rotate. When the framing is right, press the
+      center button (or the one below) to save it as a waypoint, then steer on to the
+      next object. Resetting the view never deletes waypoints. Press play to preview
+      the flight; click this tab again to continue editing.</p>
+      <label class="wpnext">
+        <span data-i18n="scenNextDur">Travel time to this waypoint (s)</span>
+        <input type="range" id="wpDurNextR" min="0.2" max="10" step="0.1" value="5">
+        <input type="number" id="wpDurNext" min="0.2" max="60" step="0.1" value="5">
+      </label>
+      <div class="exportrow">
+        <button id="btnWpAdd" class="secondary" data-i18n="scenAdd">Save this view as waypoint</button>
+        <button id="btnScenReset" class="secondary" data-i18n="scenResetView">Reset view</button>
+      </div>
+      <div id="wpList"></div>
+      <div id="easeEditor" hidden>
+        <p class="tip"><span data-i18n="easeEditHead">Easing curve for the leg to waypoint</span> <b id="easeEditWp">2</b>
+          <button id="btnEaseClose" class="wpbtn" style="float:right">&#10005;</button></p>
+        <canvas id="easeCanvas" width="300" height="200"></canvas>
+        <div id="easePresets" class="exportrow">
+          <button class="secondary" data-c="0.42,0,0.58,1" data-i18n="easePreSmooth">Smooth</button>
+          <button class="secondary" data-c="0.55,0,1,0.45" data-i18n="easePreIn">Ease in</button>
+          <button class="secondary" data-c="0,0.55,0.45,1" data-i18n="easePreOut">Ease out</button>
+          <button class="secondary" data-c="0.25,0.25,0.75,0.75" data-i18n="easePreLin">Linear</button>
+        </div>
+        <p class="tip" data-i18n="easeEditTip">Drag the two handles: horizontal = timing,
+        vertical = progress. Left handle shapes the start of the leg, right handle the end.</p>
+      </div>
+      <p class="tip" id="scenStatus"></p>
+    </section>
+
     <section data-tab="presets">
       <h2 data-i18n="tabPresets">Presets</h2>
       <div class="pgroup" id="userPresetGroupHead2" hidden data-i18n="upHead">My presets</div>
@@ -164,6 +278,20 @@
         </div>
         <p class="tip" id="userPresetStatus"></p>
       </details>
+
+      <details class="adv">
+        <summary data-i18n="styleCodeHead">Style code (for the built-in styles)</summary>
+        <p class="tip" data-i18n="styleCodeTip">Set up a look you like, then copy the style
+        code: it contains only the sliders that differ from the default, in the same form the
+        built-in styles use. Paste a code here to try it out right away.</p>
+        <textarea id="styleCode" rows="4" spellcheck="false" autocomplete="off"></textarea>
+        <div class="exportrow">
+          <button id="btnStyleCopy" class="secondary" data-i18n="styleCodeCopy">Copy style code</button>
+          <button id="btnStyleApply" class="secondary" data-i18n="styleCodeApply">Apply code</button>
+        </div>
+        <p class="tip" id="styleCodeStatus"></p>
+      </details>
+
     </section>
 
     <!-- ==================== EINFACH: STIL ==================== -->
@@ -208,7 +336,7 @@
     </section>
 
     <!-- ==================== BILDER: TIEFENKARTE ==================== -->
-    <section data-tab="bilder">
+    <section data-tab="tiefe">
       <h2><span data-i18n="sec2">Depth map</span> <button class="qm" data-help="hintDepth">?</button></h2>
       <p class="tip hint2" id="hintDepth" hidden data-i18n="depthHint">Computed automatically from
       the brightness of the starless image: bright nebula regions appear "closer" to the camera.</p>
@@ -225,6 +353,47 @@
           </label>
         </div>
       </div>
+      <div class="exportrow">
+        <button id="btnDepthExport" class="secondary" data-i18n="depthExport">Export depth map (PNG)</button>
+        <button id="btnDepthImport" class="secondary" data-i18n="depthImport">Load custom depth map</button>
+      </div>
+      <input type="file" id="fileDepth" accept=".png,.jpg,.jpeg,.tif,.tiff,image/png,image/jpeg,image/tiff" hidden>
+      <p class="tip" data-i18n="depthCustomTip">The custom map must match the starless
+      image exactly (same framing; white = near, black = far). Export the automatic map,
+      refine it in any editor, load it back - smoothing and invert still apply, and
+      mirroring follows the image automatically.</p>
+      <p class="tip" id="depthCustomStatus" hidden></p>
+      <button id="btnDepthClear" class="secondary" hidden data-i18n="depthClear">Remove custom depth map</button>
+      <div class="selrow">
+        <label for="ctlDepthRes" data-i18n="depthRes">Depth map resolution</label>
+        <select id="ctlDepthRes">
+          <option value="768" data-i18n="depthResLow">Low (768 px, fast)</option>
+          <option value="1536" data-i18n="depthResMid">Medium (1536 px)</option>
+          <option value="2048" data-i18n="depthResHigh">High (2048 px)</option>
+        </select>
+      </div>
+    </section>
+
+    <!-- ==================== SPIEGELN ==================== -->
+    <section data-tab="spiegel">
+      <h2 data-i18n="flipHead">Mirroring</h2>
+      <label class="check">
+        <input type="checkbox" id="ctlFlipH">
+        <span data-i18n="flipH">Mirror image horizontally (starless + mask)</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="ctlFlipV">
+        <span data-i18n="flipV">Mirror image vertically</span>
+        <button class="qm" data-help="hintFlip">?</button>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="ctlFlipOnly">
+        <span data-i18n="flipOnly">Mirror the starless image only (mask stays)</span>
+      </label>
+      <p class="tip hint2" id="hintFlip" hidden data-i18n="flipHint">If your processed image is
+      mirrored compared to the real sky (check against Stellarium or Aladin), flip it here -
+      starless and star mask flip together, labels and the Gaia match follow automatically.
+      Re-run the Gaia match afterwards.</p>
     </section>
 
     <!-- ==================== KAMERA ==================== -->
@@ -251,6 +420,10 @@
         <input type="range" id="ctlZoom" min="1" max="4" step="0.05" value="1">
       </label>
       <label class="slider">
+        <span><span data-i18n="rotation">Rotation</span> <output id="outRotation">0.0 °/s</output></span>
+        <input type="range" id="ctlRotation" min="-15" max="15" step="0.5" value="0">
+      </label>
+      <label class="slider">
         <span><span data-i18n="speed">Speed</span> <output id="outSpeed">40</output></span>
         <input type="range" id="ctlSpeed" min="0" max="100" step="1" value="40">
       </label>
@@ -268,12 +441,14 @@
         <input type="checkbox" id="ctlLoop">
         <span data-i18n="loopMode">Loop mode (there &amp; back, seamless)</span>
       </label>
+      <p class="tip" data-i18n="fineTip">Tip: hold Shift while dragging a slider for ten times
+      finer steps - that works for every slider in AstroFly.</p>
       <p class="tip"><span data-i18n-html="tip"><b>Zoom target:</b> Click the preview to choose where
       the camera flies to. Double-click = back to center.</span>
       <span id="targetInfo" data-i18n="targetCenter">Target: image center</span></p>
 
       <details class="adv">
-        <summary data-i18n="advCamera">Advanced · acceleration, framing &amp; tilt</summary>
+        <summary data-i18n="advEase">Acceleration</summary>
         <label class="selfull">
           <span data-i18n="easeMode">Acceleration</span>
           <select id="ctlEaseMode">
@@ -291,10 +466,9 @@
           <span><span data-i18n="depthRange">Depth range</span> <output id="outDepthBoost">33</output></span>
           <input type="range" id="ctlDepthBoost" min="0" max="100" step="1" value="33">
         </label>
-        <label class="slider">
-          <span><span data-i18n="rotation">Rotation</span> <output id="outRotation">0.0 °/s</output></span>
-          <input type="range" id="ctlRotation" min="-15" max="15" step="0.5" value="0">
-        </label>
+      </details>
+      <details class="adv">
+        <summary data-i18n="advFrame">Framing</summary>
         <label class="slider">
           <span><span data-i18n="orient">Rotate framing</span> <output id="outOrient">0°</output></span>
           <input type="range" id="ctlOrient" min="0" max="360" step="1" value="0">
@@ -307,6 +481,9 @@
           <span><span data-i18n="frameY">Shift framing vertical</span> <output id="outFrameY">0</output></span>
           <input type="range" id="ctlFrameY" min="-100" max="100" step="1" value="0">
         </label>
+      </details>
+      <details class="adv">
+        <summary data-i18n="advSway">Sway &amp; tilt</summary>
         <label class="slider">
           <span><span data-i18n="tiltX">Tilt horizontal</span> <output id="outTiltX">0</output></span>
           <input type="range" id="ctlTiltX" min="-100" max="100" step="1" value="0">
@@ -339,60 +516,65 @@
           <span><span data-i18n="tiltRampDir">Tilt direction</span> <output id="outTiltRampDir">0°</output></span>
           <input type="range" id="ctlTiltRampDir" min="0" max="360" step="5" value="0">
         </label>
+      </details>
+      <details class="adv">
+        <summary data-i18n="advFade">Fade in &amp; out</summary>
         <label class="slider">
           <span><span data-i18n="fade">Fade in/out (0 = off)</span> <output id="outFade">0.0 s</output></span>
           <input type="range" id="ctlFade" min="0" max="30" step="1" value="0">
         </label>
       </details>
 
-      <details class="adv">
-        <summary><span data-i18n="spinHead">Galaxy spin</span></summary>
-        <p class="tip" data-i18n="spinHint">Galaxy spin: rotates only the region around the spin
-        center – with a soft falloff at the edge, so the rest of the image stays untouched.
-        Foreground stars do not rotate.</p>
-        <button id="btnSpinCenter" class="secondary" data-i18n="spinCenterBtn">Set spin center (then click the preview)</button>
-        <label class="check">
-          <input type="checkbox" id="ctlSpinShow">
-          <span data-i18n="spinShow">Show spin region (red mask overlay)</span>
-        </label>
-        <label class="slider">
-          <span><span data-i18n="spinSpeed">Galaxy spin (°/s at core)</span> <output id="outSpinSpeed">0.0 °/s</output></span>
-          <input type="range" id="ctlSpinSpeed" min="-10" max="10" step="0.1" value="0">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="spinRadius">Spin radius</span> <output id="outSpinRadius">40</output></span>
-          <input type="range" id="ctlSpinRadius" min="5" max="100" step="1" value="40">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="spinDiff">Differential rotation (inner faster)</span> <output id="outSpinDiff">40</output></span>
-          <input type="range" id="ctlSpinDiff" min="0" max="100" step="1" value="40">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="spinFlat">Spin ellipse (inclined galaxy)</span> <output id="outSpinFlat">0</output></span>
-          <input type="range" id="ctlSpinFlat" min="0" max="100" step="1" value="0">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="spinTilt">Ellipse angle</span> <output id="outSpinTilt">0°</output></span>
-          <input type="range" id="ctlSpinTilt" min="0" max="180" step="1" value="0">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="spinMaskAmt">Brightness mask influence</span> <output id="outSpinMaskAmt">0</output></span>
-          <input type="range" id="ctlSpinMaskAmt" min="0" max="100" step="1" value="0">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="spinMaskSmooth">Brightness mask smoothing</span> <output id="outSpinMaskSmooth">6</output></span>
-          <input type="range" id="ctlSpinMaskSmooth" min="2" max="60" step="1" value="6">
-        </label>
-        <label class="check">
-          <input type="checkbox" id="ctlSpinStars">
-          <span data-i18n="spinStars">Rotate stars inside the spin region</span>
-          <button class="qm" data-help="hintSpinStars">?</button>
-        </label>
-        <p class="tip hint2" id="hintSpinStars" hidden data-i18n="spinStarsHint">Stars inside the
-        spin area follow the galaxy's rotation and stay locked to its structure. Note: foreground
-        stars that just happen to sit in front of the galaxy will rotate too – toggle as it suits
-        your image.</p>
-      </details>
+    </section>
+
+    <!-- ==================== GALAXIEN-ROTATION ==================== -->
+    <section data-tab="galaxie">
+      <h2><span data-i18n="spinHead">Galaxy spin</span></h2>
+      <p class="tip" data-i18n="spinHint">Galaxy spin: rotates only the region around the spin
+      center – with a soft falloff at the edge, so the rest of the image stays untouched.
+      Foreground stars do not rotate.</p>
+      <button id="btnSpinCenter" class="secondary" data-i18n="spinCenterBtn">Set spin center (then click the preview)</button>
+      <label class="check">
+        <input type="checkbox" id="ctlSpinShow">
+        <span data-i18n="spinShow">Show spin region (red mask overlay)</span>
+      </label>
+      <label class="slider">
+        <span><span data-i18n="spinSpeed">Galaxy spin (°/s at core)</span> <output id="outSpinSpeed">0.0 °/s</output></span>
+        <input type="range" id="ctlSpinSpeed" min="-10" max="10" step="0.1" value="0">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="spinRadius">Spin radius</span> <output id="outSpinRadius">40</output></span>
+        <input type="range" id="ctlSpinRadius" min="5" max="100" step="1" value="40">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="spinDiff">Differential rotation (inner faster)</span> <output id="outSpinDiff">40</output></span>
+        <input type="range" id="ctlSpinDiff" min="0" max="100" step="1" value="40">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="spinFlat">Spin ellipse (inclined galaxy)</span> <output id="outSpinFlat">0</output></span>
+        <input type="range" id="ctlSpinFlat" min="0" max="100" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="spinTilt">Ellipse angle</span> <output id="outSpinTilt">0°</output></span>
+        <input type="range" id="ctlSpinTilt" min="0" max="180" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="spinMaskAmt">Brightness mask influence</span> <output id="outSpinMaskAmt">0</output></span>
+        <input type="range" id="ctlSpinMaskAmt" min="0" max="100" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="spinMaskSmooth">Brightness mask smoothing</span> <output id="outSpinMaskSmooth">6</output></span>
+        <input type="range" id="ctlSpinMaskSmooth" min="2" max="60" step="1" value="6">
+      </label>
+      <label class="check">
+        <input type="checkbox" id="ctlSpinStars">
+        <span data-i18n="spinStars">Rotate stars inside the spin region</span>
+        <button class="qm" data-help="hintSpinStars">?</button>
+      </label>
+      <p class="tip hint2" id="hintSpinStars" hidden data-i18n="spinStarsHint">Stars inside the
+      spin area follow the galaxy's rotation and stay locked to its structure. Note: foreground
+      stars that just happen to sit in front of the galaxy will rotate too – toggle as it suits
+      your image.</p>
     </section>
 
     <!-- ==================== STERNE ==================== -->
@@ -420,13 +602,23 @@
         <span><span data-i18n="starSize">Size</span> <output id="outStarSize">100 %</output></span>
         <input type="range" id="ctlStarSize" min="20" max="300" step="5" value="100">
       </label>
+      <label class="check">
+        <input type="checkbox" id="ctlRealStars" checked>
+        <span data-i18n="realStars">Real star images from your mask (brightest stars)</span>
+        <button class="qm" data-help="hintRealStars">?</button>
+      </label>
+      <p class="tip hint2" id="hintRealStars" hidden data-i18n="realStarsHint">The brightest
+      detected stars are rendered with their actual pixels from the star mask - diffraction
+      spikes, halos and exact colors included - instead of an idealized glow sprite. Faint
+      stars stay procedural (they are only a few pixels anyway). During strong motion
+      streaks a star falls back to the procedural sprite.</p>
       <label class="slider">
         <span><span data-i18n="starBright">Brightness</span> <output id="outStarBright">100 %</output></span>
         <input type="range" id="ctlStarBright" min="0" max="300" step="5" value="100">
       </label>
 
       <details class="adv">
-        <summary data-i18n="advStars">Advanced · layers, colors &amp; extra stars</summary>
+        <summary data-i18n="advStars">Layers, colors &amp; extra stars</summary>
         <label class="slider">
           <span><span data-i18n="starLayers">Depth layers (count)</span> <output id="outLayers">∞</output></span>
           <input type="range" id="ctlLayers" min="0" max="12" step="1" value="0">
@@ -498,7 +690,7 @@
       </label>
 
       <details class="adv">
-        <summary data-i18n="advLook">Advanced · color &amp; detail</summary>
+        <summary data-i18n="advLook">Color &amp; detail</summary>
         <label class="slider">
           <span><span data-i18n="exposure">Exposure</span> <output id="outExposure">0</output></span>
           <input type="range" id="ctlExposure" min="-100" max="100" step="1" value="0">
@@ -525,78 +717,80 @@
         </label>
       </details>
 
-      <details class="adv">
-        <summary><span data-i18n="nebBands">Nebula colors (Hα · OIII · SII)</span> <button class="qm" data-help="hintNebBands">?</button></summary>
-        <p class="tip hint2" id="hintNebBands" hidden data-i18n="nebBandsHint">Adjusts the typical
-        emission-line colors selectively: red (Hα), teal (OIII) and golden (SII) areas of the
-        nebula. Works on the hue, so it fits RGB and narrowband palettes alike – gray areas and
-        the stars stay untouched.</p>
-        <label class="slider">
-          <span><span data-i18n="h2Det">Hα · detection hue</span> <output id="outH2Det">0°</output></span>
-          <input type="range" id="ctlH2Det" class="huetrack" min="0" max="360" step="2" value="0">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="h2Width">Hα · range</span> <output id="outH2Width">±35°</output></span>
-          <input type="range" id="ctlH2Width" min="5" max="90" step="1" value="35">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="h2Sat">Hα / red · saturation</span> <output id="outH2Sat">100 %</output></span>
-          <input type="range" id="ctlH2Sat" min="0" max="200" step="5" value="100">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="h2Hue">Hα / red · hue</span> <output id="outH2Hue">0°</output></span>
-          <input type="range" id="ctlH2Hue" min="-45" max="45" step="1" value="0">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="o3Det">OIII · detection hue</span> <output id="outO3Det">184°</output></span>
-          <input type="range" id="ctlO3Det" class="huetrack" min="0" max="360" step="2" value="184">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="o3Width">OIII · range</span> <output id="outO3Width">±45°</output></span>
-          <input type="range" id="ctlO3Width" min="5" max="90" step="1" value="45">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="o3Sat">OIII / teal · saturation</span> <output id="outO3Sat">100 %</output></span>
-          <input type="range" id="ctlO3Sat" min="0" max="200" step="5" value="100">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="o3Hue">OIII / teal · hue</span> <output id="outO3Hue">0°</output></span>
-          <input type="range" id="ctlO3Hue" min="-45" max="45" step="1" value="0">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="s2Det">SII · detection hue</span> <output id="outS2Det">34°</output></span>
-          <input type="range" id="ctlS2Det" class="huetrack" min="0" max="360" step="2" value="34">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="s2Width">SII · range</span> <output id="outS2Width">±25°</output></span>
-          <input type="range" id="ctlS2Width" min="5" max="90" step="1" value="25">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="s2Sat">SII / gold · saturation</span> <output id="outS2Sat">100 %</output></span>
-          <input type="range" id="ctlS2Sat" min="0" max="200" step="5" value="100">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="s2Hue">SII / gold · hue</span> <output id="outS2Hue">0°</output></span>
-          <input type="range" id="ctlS2Hue" min="-45" max="45" step="1" value="0">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="bandFeather">Feather (soft detection edge)</span> <output id="outBandFeather">50 %</output></span>
-          <input type="range" id="ctlBandFeather" min="0" max="100" step="1" value="50">
-        </label>
-        <label class="selfull">
-          <span data-i18n="bandShow">Show detection mask (preview only)</span>
-          <select id="ctlBandShow">
-            <option value="off" selected data-i18n="bandShowOff">off</option>
-            <option value="h2">Hα</option>
-            <option value="o3">OIII</option>
-            <option value="s2">SII</option>
-          </select>
-        </label>
-      </details>
+    </section>
+
+    <!-- ==================== NEBELFARBEN ==================== -->
+    <section data-tab="nebel">
+      <h2><span data-i18n="nebBands">Nebula colors (Hα · OIII · SII)</span> <button class="qm" data-help="hintNebBands">?</button></h2>
+      <p class="tip hint2" id="hintNebBands" hidden data-i18n="nebBandsHint">Adjusts the typical
+      emission-line colors selectively: red (Hα), teal (OIII) and golden (SII) areas of the
+      nebula. Works on the hue, so it fits RGB and narrowband palettes alike – gray areas and
+      the stars stay untouched.</p>
+      <label class="slider">
+        <span><span data-i18n="h2Det">Hα · detection hue</span> <output id="outH2Det">0°</output></span>
+        <input type="range" id="ctlH2Det" class="huetrack" min="0" max="360" step="2" value="0">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="h2Width">Hα · range</span> <output id="outH2Width">±35°</output></span>
+        <input type="range" id="ctlH2Width" min="5" max="90" step="1" value="35">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="h2Sat">Hα / red · saturation</span> <output id="outH2Sat">100 %</output></span>
+        <input type="range" id="ctlH2Sat" min="0" max="200" step="5" value="100">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="h2Hue">Hα / red · hue</span> <output id="outH2Hue">0°</output></span>
+        <input type="range" id="ctlH2Hue" min="-45" max="45" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="o3Det">OIII · detection hue</span> <output id="outO3Det">184°</output></span>
+        <input type="range" id="ctlO3Det" class="huetrack" min="0" max="360" step="2" value="184">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="o3Width">OIII · range</span> <output id="outO3Width">±45°</output></span>
+        <input type="range" id="ctlO3Width" min="5" max="90" step="1" value="45">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="o3Sat">OIII / teal · saturation</span> <output id="outO3Sat">100 %</output></span>
+        <input type="range" id="ctlO3Sat" min="0" max="200" step="5" value="100">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="o3Hue">OIII / teal · hue</span> <output id="outO3Hue">0°</output></span>
+        <input type="range" id="ctlO3Hue" min="-45" max="45" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="s2Det">SII · detection hue</span> <output id="outS2Det">34°</output></span>
+        <input type="range" id="ctlS2Det" class="huetrack" min="0" max="360" step="2" value="34">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="s2Width">SII · range</span> <output id="outS2Width">±25°</output></span>
+        <input type="range" id="ctlS2Width" min="5" max="90" step="1" value="25">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="s2Sat">SII / gold · saturation</span> <output id="outS2Sat">100 %</output></span>
+        <input type="range" id="ctlS2Sat" min="0" max="200" step="5" value="100">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="s2Hue">SII / gold · hue</span> <output id="outS2Hue">0°</output></span>
+        <input type="range" id="ctlS2Hue" min="-45" max="45" step="1" value="0">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="bandFeather">Feather (soft detection edge)</span> <output id="outBandFeather">50 %</output></span>
+        <input type="range" id="ctlBandFeather" min="0" max="100" step="1" value="50">
+      </label>
+      <label class="selfull">
+        <span data-i18n="bandShow">Show detection mask (preview only)</span>
+        <select id="ctlBandShow">
+          <option value="off" selected data-i18n="bandShowOff">off</option>
+          <option value="h2">Hα</option>
+          <option value="o3">OIII</option>
+          <option value="s2">SII</option>
+        </select>
+      </label>
     </section>
 
     <!-- ==================== WISSENSCHAFT ==================== -->
-    <section data-tab="sci">
+    <section data-tab="gaia">
       <h2><span data-i18n="sciHead">Real data (Gaia &amp; SIMBAD)</span> <button class="qm" data-help="hintSci">?</button></h2>
       <p class="tip hint2" id="hintSci" hidden data-i18n="gaiaHint">Real star distances (Gaia):
       load a plate-solved version of your image (FITS from ASTAP, PixInsight or Siril, or a
@@ -608,31 +802,10 @@
       <div id="gaiaHelp" hidden>
         <p class="tip" data-i18n-html="gaiaHelpText">…</p>
       </div>
-      <label class="check">
-        <input type="checkbox" id="ctlFlipH">
-        <span data-i18n="flipH">Mirror image horizontally (starless + mask)</span>
-      </label>
-      <label class="check">
-        <input type="checkbox" id="ctlFlipV">
-        <span data-i18n="flipV">Mirror image vertically</span>
-        <button class="qm" data-help="hintFlip">?</button>
-      </label>
-      <label class="check">
-        <input type="checkbox" id="ctlFlipOnly">
-        <span data-i18n="flipOnly">Mirror the starless image only (mask stays)</span>
-      </label>
-      <p class="tip hint2" id="hintFlip" hidden data-i18n="flipHint">If your processed image is
-      mirrored compared to the real sky (check against Stellarium or Aladin), flip it here -
-      starless and star mask flip together, labels and the Gaia match follow automatically.
-      Re-run the Gaia match afterwards.</p>
       <button id="btnWcs" class="secondary" data-i18n="gaiaWcsBtn">Load plate-solved FITS / WCS file</button>
       <input type="file" id="fileWcs" accept=".fits,.fit,.fts,.wcs" hidden>
       <button id="btnGaia" class="secondary" disabled data-i18n="gaiaMatchBtn">Match stars with Gaia (internet)</button>
       <p class="tip" id="gaiaStatus"></p>
-      <label class="slider">
-        <span><span data-i18n="gaiaAmt">Real depth influence</span> <output id="outGaiaAmt">100 %</output></span>
-        <input type="range" id="ctlGaiaAmt" min="0" max="100" step="1" value="100">
-      </label>
       <label class="check">
         <input type="checkbox" id="ctlGaiaOnly" disabled>
         <span data-i18n="gaiaOnly">Scientifically accurate distances (Gaia stars only)</span>
@@ -668,17 +841,17 @@
       distant object: it barely reacts to the flight while all stars pass in front – the most
       scientifically accurate 3D behavior. The depth-map parallax inside the image is disabled
       while active.</p>
-      <label class="slider">
-        <span><span data-i18n="anchorStars">Anchor stars in the nebula</span> <button class="qm" data-help="hintAnchor">?</button> <output id="outAnchor">0 %</output></span>
-        <input type="range" id="ctlAnchor" min="0" max="100" step="1" value="0">
-      </label>
-      <p class="tip hint2" id="hintAnchor" hidden data-i18n="anchorStarsHint">Stars sitting on
-      dense nebula regions adopt the nebula's depth and motion – they stay inside the nebula
-      during the 3D flight instead of drifting in front of it (like the Wolf-Rayet stars in
-      the Lion Nebula). After a Gaia match, stars clearly in front of or behind the nebula
-      stay free.</p>
+      <p class="tip autonote"><b data-i18n="autoOn">Always on</b>
+      <span data-i18n="anchorStarsHint">Stars sitting on dense nebula regions automatically
+      adopt the nebula's depth and motion – they stay inside the nebula during the 3D flight
+      instead of drifting in front of it (like the Wolf-Rayet stars in the Lion Nebula). After
+      a Gaia match, stars clearly in front of or behind the nebula stay free.</span></p>
 
-      <h2 class="subhead"><span data-i18n="objHead">Objects in the field</span> <button class="qm" data-help="hintObj">?</button></h2>
+    </section>
+
+    <!-- ==================== OBJEKTE IM FELD ==================== -->
+    <section data-tab="objekte">
+      <h2><span data-i18n="objHead">Objects in the field</span> <button class="qm" data-help="hintObj">?</button></h2>
       <p class="tip hint2" id="hintObj" hidden data-i18n="objHint">Object info &amp; field labels:
       with a plate-solve solution loaded, AstroFly can identify the objects in your image via
       the SIMBAD database (CDS) and render an info card (distance, size, stars, age for popular
@@ -758,39 +931,85 @@
       <button id="btnFeedbackGithub" class="secondary" data-i18n="feedbackGithub">Report on GitHub</button>
       <button id="btnFeedbackMail" class="secondary" data-i18n="feedbackMail">Send by email</button>
       <button id="btnInstagram" class="secondary" data-i18n="instagramBtn">AstroFly on Instagram</button>
+      <button id="btnTourReplay" class="secondary" data-i18n="tourReplay">Show the intro again</button>
+
+      <h2 data-i18n="aboutHead">About</h2>
+      <div class="about">
+        <p><span data-i18n="aboutBy">Created by</span> <b>Michael Döhler</b> <span data-i18n="aboutFrom">from Germany</span><br>
+        <span data-i18n="aboutClaude">Developed together with Claude (Anthropic)</span></p>
+        <p><span data-i18n="creditsBeta">Beta testing:</span><br>
+        <a href="https://www.instagram.com/anthonymichel13/" target="_blank" rel="noopener">Anthony MICHEL &middot; @anthonymichel13</a></p>
+      </div>
     </section>
 
     </div><!-- /panelbody -->
+
+    <!-- Rendern bleibt immer erreichbar, statt hinter einem Tab zu warten -->
+    <div id="panelFoot">
+      <div class="footinfo">
+        <b data-i18n="footRender">Create video</b>
+        <small id="footMeta"></small>
+      </div>
+      <button id="btnRenderFoot" class="primary" disabled data-i18n="footBtn">Render</button>
+    </div>
   </aside>
 
   <main id="stage">
+    <div id="stageChips" hidden></div>
     <div id="canvasWrap">
+      <div id="stageInner">
       <canvas id="glcanvas"></canvas>
-      <div id="targetMarker" hidden>🎯</div>
+      <div id="transport">
+        <button id="btnPlay" title="Play/Pause" data-i18n-title="playTitle">⏸</button>
+        <button id="btnRestart" title="Restart" data-i18n-title="restartTitle">⏮</button>
+        <div id="timeline">
+          <div id="timelineTrack"><div id="timelineFill"></div></div>
+          <div id="timelineWps"></div>
+        </div>
+        <span id="timecode">0.0 s</span>
+        <span class="viewsize" title="Preview size" data-i18n-title="viewSize">🔍<input type="range" id="ctlViewSize" min="40" max="100" step="5" value="70"></span>
+      </div>
+      <div id="scenPad" hidden>
+        <button data-p="rotl" title="Rotation">&#10226;</button><button data-p="up">&#9650;</button><button data-p="rotr" title="Rotation">&#10227;</button>
+        <button data-p="left">&#9664;</button><button data-p="set" title="Waypoint" data-i18n-title="scenPadSet">&#9678;</button><button data-p="right">&#9654;</button>
+        <button data-p="zout">&#8722;</button><button data-p="down">&#9660;</button><button data-p="zin">+</button>
+      </div>
+      <button id="wpApply" hidden></button>
       <div id="stageToast" hidden><span class="spinner"></span><span id="stageToastText"></span></div>
+      </div>
+      <div id="targetMarker" hidden></div>
       <div id="placeholder">
         <svg class="ic big"><use href="#i-logo"/></svg>
         <p data-i18n-html="placeholder1">Load a <b>starless image</b> and a <b>star mask</b><br>to start your flight through space.</p>
         <p class="small" data-i18n-html="placeholder2">You can also drag &amp; drop files here<br>(1st file = starless, 2nd file = star mask).</p>
       </div>
     </div>
-    <div id="transport">
-      <button id="btnPlay" title="Play/Pause" data-i18n-title="playTitle">⏸</button>
-      <button id="btnRestart" title="Restart" data-i18n-title="restartTitle">⏮</button>
-      <div id="timeline"><div id="timelineFill"></div></div>
-      <span id="timecode">0.0 s</span>
-      <span class="viewsize" title="Preview size" data-i18n-title="viewSize">🔍<input type="range" id="ctlViewSize" min="40" max="100" step="5" value="70"></span>
-    </div>
   </main>
 
+</div>
+
+<!-- Gefuehrter Einstieg beim ersten Start -->
+<div id="tour" hidden>
+  <div id="tourRing"></div>
+  <div id="tourCard">
+    <div class="tourstep" id="tourStep"></div>
+    <h3 id="tourTitle"></h3>
+    <p id="tourText"></p>
+    <div class="tourbtns">
+      <button id="btnTourSkip" class="secondary" data-i18n="tourSkip">Skip</button>
+      <span class="grow"></span>
+      <button id="btnTourBack" class="secondary" data-i18n="tourBack">Back</button>
+      <button id="btnTourNext" class="primary" data-i18n="tourNext">Next</button>
+    </div>
+  </div>
 </div>
 
 <script src="vendor/pako.min.js"></script>
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-13"></script>
-<script src="objectinfo.js?v=2026-08-16-13"></script>
-<script src="app.js?v=2026-08-16-13"></script>
+<script src="i18n.js?v=2026-08-22-1"></script>
+<script src="objectinfo.js?v=2026-08-22-1"></script>
+<script src="app.js?v=2026-08-22-1"></script>
 </body>
 </html>
