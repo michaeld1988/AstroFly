@@ -375,15 +375,27 @@ button.secondary + button.secondary { margin-top: 7px; }
 
 #targetMarker {
   position: absolute;
-  font-size: 26px;
   transform: translate(-50%, -50%);
   pointer-events: none;
-  animation: markerFade 1.6s ease-out forwards;
+  line-height: 0;
+  animation: markerFade 1.8s ease-out forwards;
 }
+#targetMarker svg {
+  width: 46px; height: 46px;
+  fill: none; stroke: currentColor; stroke-width: 1.4;
+  stroke-linecap: round; stroke-linejoin: round;
+  filter: drop-shadow(0 0 5px rgba(0, 0, 0, 0.85));
+}
+#targetMarker.target { color: var(--accent); }
+#targetMarker.spin { color: var(--accent2); }
+/* Skalierung gehoert in dieselbe transform-Kette wie die Zentrierung,
+   sonst wird die Verschiebung mitskaliert und der Marker sitzt daneben. */
 @keyframes markerFade {
-  0% { opacity: 1; scale: 1.4; }
-  70% { opacity: 0.9; scale: 1; }
-  100% { opacity: 0; scale: 1; }
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(1.45); }
+  12% { opacity: 1; transform: translate(-50%, -50%) scale(1.12); }
+  35% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  75% { opacity: 0.85; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(0.96); }
 }
 
 /* Status-Toast über der Vorschau (Gaia-/SIMBAD-Abfragen) */

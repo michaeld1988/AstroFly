@@ -4993,12 +4993,17 @@ canvas.addEventListener("click", (e) => {
     updateTargetInfo();
   }
 
-  // Marker kurz einblenden
+  // Marker kurz einblenden - genau unter dem Mauszeiger. Die Position wird
+  // gegen den Bezugsrahmen des Markers gerechnet (offsetParent), sonst
+  // verschiebt ihn jede Polsterung der Buehne.
   const marker = $("targetMarker");
-  marker.textContent = wasSpinPick ? "🌀" : "🎯";
+  marker.className = wasSpinPick ? "spin" : "target";
+  marker.innerHTML = '<svg><use href="#' + (wasSpinPick ? "i-mspin" : "i-mtarget") + '"/></svg>';
   marker.hidden = false;
-  marker.style.left = (canvas.offsetLeft + fx * rect.width) + "px";
-  marker.style.top = (canvas.offsetTop + fy * rect.height) + "px";
+  const host = marker.offsetParent || canvas.parentElement;
+  const hr = host.getBoundingClientRect();
+  marker.style.left = (e.clientX - hr.left) + "px";
+  marker.style.top = (e.clientY - hr.top) + "px";
   marker.style.animation = "none";
   void marker.offsetWidth; // Animation neu starten
   marker.style.animation = "";
