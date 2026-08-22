@@ -60,6 +60,9 @@ const state = {
   duration: 20,          // s
   loopMode: false,       // hin & zurück, nahtlos
   smooth: 18,
+  depthRes: 768,        // Kantenlaenge der Tiefenkarte (768/1536/2048)
+  customDepth: null,     // eigene, importierte Tiefenkarte { canvas, width, height }
+  srcFiles: { starless: null, stars: null, depth: null }, // Original-Dateien (Projekt-Speicherung)
   invertDepth: false,
   target: { x: 0, y: 0 }, // Zoomziel in Bildebenen-Einheiten (0,0 = Mitte)
 
@@ -73,7 +76,7 @@ const state = {
   twinkle: 25,           // 0..100
   wcs: null,             // Plate-Solve-Lösung (aus FITS/WCS-Header)
   gaiaDepth: null,       // echte Tiefe je Masken-Stern (Float32Array, -1 = keine)
-  gaiaAmt: 100,          // Einfluss der echten Tiefen 0..100
+  gaiaAmt: 100,          // echte Tiefen wirken nach dem Abgleich immer voll
   gaiaInfo: null,        // { matched, total, dMin, dMax } für die Statuszeile
   gaiaOnly: false,       // Wissenschafts-Modus: nur Sterne mit echter Tiefe
   gaiaColorRGB: null,    // echte Katalogfarben je Masken-Stern (RGB, -1 = keine)
@@ -82,11 +85,19 @@ const state = {
   gaiaPmYears: 0,        // Zeitraffer-Spanne in Jahren (0 = aus)
   objFar: false,         // Objekt einheitlich in die Ferne (hinter alle Sterne)
   occlude: 0,
+  scenarioOn: false,     // Szenario-Flug: Kamera fliegt die Wegpunkte ab
+  scenEdit: false,       // Flugplan-Einrichtung: Kamera folgt dem Steuerkreuz
+  scenView: { x: 0, y: 0, zoom: 1, angle: 0 }, // aktuell eingerichteter Blick
+  waypoints: [],         // [{ x, y, zoom, dur, hold, ease }] in Ebenen-Einheiten
+  moonMode: false,       // Mond-Modus: Kugel-Tiefe statt Luminanz-Tiefe
+  moonDisk: null,        // erkannte Mondscheibe { cx, cy, r } (normiert auf Bildbreite)
+  moonObj: "moon",       // Auswahl im Bilder-Tab: moon | planet (gleiche Kugel-Logik)
   starDetails: true,     // Sternphysik (Größe/Alter) in Labels anzeigen
+  realStars: true,       // hellste Sterne mit ihrem echten Pixel-Abbild rendern
   flipH: false,          // Bild horizontal gespiegelt (Starless + Maske)
   flipV: false,          // Bild vertikal gespiegelt
   flipOnlyStarless: false, // Spiegeln wirkt nur aufs Starless (Maske/Koordinaten bleiben)
-  anchorStars: 0,       // % Sterne im Nebel verankern (Tiefe/Bewegung des Nebels)            // Nebel verdeckt dahinterliegende Sterne (0 = aus)
+  anchorStars: 100,      // Sterne im Nebel verankern: immer an (physikalisch korrekt)
   objInfo: null,         // erkanntes Hauptobjekt { id, facts, otype }
   labels: null,          // Feld-Beschriftungen [{ id, x, y, sizePlane, otype, on }]
   showInfo: true,        // Infokarte ins Video einblenden
@@ -208,6 +219,9 @@ uniform float uBicubic;     // 1 = bikubisch abtasten (beim Hineinzoomen)
 uniform float uObjFar;      // 1 = Objekt einheitlich in die Ferne legen
 uniform float uViewAspect;  // Breite/Höhe des Ausgabeformats
 uniform float uImgAspect;   // Breite/Höhe des Bildes
+uniform float uMoonMode;    // Mond-Modus: Himmel ausserhalb der Scheibe schwarz
+uniform vec2 uMoonC;        // Scheibenzentrum in Textur-UV
+uniform float uMoonR;       // Scheibenradius als Anteil der Bildbreite
 uniform float uZoom;        // aktueller Gesamtzoom
 uniform float uParallax;    // 0..1
 uniform float uAngle;       // rad
@@ -390,6 +404,14 @@ void main() {
     float ring = smoothstep(0.05, 0.0, abs(r - 1.0));
     col = mix(col, vec3(1.0, 0.35, 0.25), ring * 0.85);
   }
+  // Mond-Modus: alles ausserhalb der erkannten Scheibe ist Himmel - schwarz.
+  // Ohne diese Maske sampeln Hintergrund-Pixel (ferne Tiefe) mit anderem
+  // Zoom-Exponenten in die helle Scheibe hinein -> Echo-Ring um den Mond;
+  // beim Rauszoomen erschienen zudem gespiegelte Kopien (Textur-Wrap)
+  if (uMoonMode > 0.5) {
+    vec2 ddM = vec2(uv.x - uMoonC.x, (uv.y - uMoonC.y) / uImgAspect);
+    col *= 1.0 - smoothstep(uMoonR * 1.005, uMoonR * 1.04, length(ddM));
+  }
   outColor = vec4(col, 1.0);
 }`;
 
@@ -402,6 +424,7 @@ layout(location=2) in float aSize;  // Radius in Ebenen-Einheiten
 layout(location=3) in vec3 aColor;
 layout(location=4) in float aGaia;  // echte Tiefe 0..1 aus Gaia (-1 = keine)
 layout(location=5) in vec2 aPm;     // Eigenbewegung in Ebenen-Einheiten/Jahr
+layout(location=6) in vec4 aAtlas;  // echtes Sternabbild: Zentrum-UV, halbe Groesse (UV / Ebene); x<0 = keins
 uniform float uViewAspect;
 uniform float uZoom;
 uniform float uParallax;
@@ -449,6 +472,10 @@ uniform float uPmYears;   // Zeitraffer: verstrichene Jahre zum Zeitpunkt t
 uniform float uPmYears2;  // ... und kurz danach (für die Streifen)
 // Nebel-Okklusion: Nebelschwaden, die VOR einem Stern liegen, verdecken ihn
 uniform float uOcclude;    // Stärke 0..1 (0 = aus)
+uniform float uMoonMode;   // Mond-Modus: Sterne hinter die Mondscheibe zwingen
+uniform float uRealStars;  // 1 = hellste Sterne mit echtem Pixel-Abbild rendern
+uniform vec2 uMoonCS;      // Scheibenzentrum in Textur-UV
+uniform float uMoonRS;     // Scheibenradius als Anteil der Bildbreite
 uniform float uAnchor;     // Sterne im Nebel verankern: Stärke 0..1
 uniform vec2 uTiltB2;      // Nebel-Kippwert der zweiten Kamera (für Anker-Streifen)
 uniform float uObjFarS;    // 1 = Objekt liegt einheitlich weit hinten
@@ -461,6 +488,8 @@ out vec2 vDir;    // Streifen-Richtung in Pixeln (normiert)
 out float vLen;   // Streifen-Länge in px
 out float vBase;  // Stern-Durchmesser in px
 out float vSize;  // gl_PointSize (für gl_PointCoord -> px)
+out vec3 vAtlasUv;   // Atlas: Zentrum-UV + halbe Groesse in UV (x<0 = prozedural)
+out float vPatchHalf; // halbe Patch-Groesse auf dem Bildschirm in px
 
 // Sternposition mit der Galaxien-Rotation mitdrehen (identische Falloff-,
 // Differenzial- und Masken-Logik wie im Hintergrund-Shader)
@@ -506,8 +535,13 @@ void main() {
     gl_PointSize = 1.0;
     vColor = vec3(0.0); vAlpha = 0.0;
     vDir = vec2(1.0, 0.0); vLen = 0.0; vBase = 1.0; vSize = 1.0;
+    vAtlasUv = vec3(-1.0); vPatchHalf = 0.0;
     return;
   }
+
+  // Mond-Modus: Sterne stehen quasi im Unendlichen - weit hinter dem Mond
+  // und nahezu unbewegt (der Mond ist das einzig nahe Objekt im Bild)
+  if (uMoonMode > 0.5) depth = min(depth, 0.03);
 
   // Sterne im Nebel verankern: Sterne auf dichten Nebelregionen übernehmen
   // Tiefe und Bewegung des Nebels an ihrer Bildposition - sie bleiben beim
@@ -538,6 +572,9 @@ void main() {
   ex = mix(ex, 1.0 + uParallax * (dNA - 0.45) * uDepthRange, anchorW);
   // Ferne Sterne nie rückwärts fliegen lassen (Exponent bliebe sonst negativ)
   ex = max(ex, 0.12);
+  // Mond-Modus: Sterne stehen fest am Himmel (Exponent 0 = kein Mitzoomen).
+  // Wer bewusst Bewegung will, zieht die Stern-Parallaxe ueber 100 %
+  if (uMoonMode > 0.5) ex = 0.3 * max(0.0, uStarPar - 1.0);
   float scale = uCover * pow(uZoom, ex);
   vec2 sp1 = spinStar(aPos + aPm * uPmYears, uSpinAngleS);
   vec2 tOff = mix(uTilt * (depth - 0.45), uTiltB * (dNA - 0.45), anchorW);
@@ -553,7 +590,8 @@ void main() {
   // liegt der Nebel dort NÄHER an der Kamera als der Stern, schluckt seine
   // Dichte (Helligkeit des Starless-Bilds) das Sternlicht
   float occ = 0.0;
-  if (uOcclude > 0.0) {
+  float occStr = max(uOcclude, uMoonMode);
+  if (occStr > 0.0) {
     vec2 qn = uCenter + pr / (uCover * uZoom);
     vec2 uvN = vec2(qn.x / uImgAspectS, qn.y) + 0.5;
     float dN = 0.02;
@@ -570,7 +608,11 @@ void main() {
       float lum = dot(cN, vec3(0.299, 0.587, 0.114));
       float front = smoothstep(0.02, 0.14, dN - depth);
       float dens = smoothstep(0.04, 0.45, lum);
-      occ = uOcclude * front * dens;
+      if (uMoonMode > 0.5) {
+        vec2 ddM = vec2(uvN.x - uMoonCS.x, (uvN.y - uMoonCS.y) / uImgAspectS);
+        dens = 1.0 - smoothstep(uMoonRS * 0.99, uMoonRS * 1.02, length(ddM));
+      }
+      occ = occStr * front * dens;
     }
   }
 
@@ -615,6 +657,23 @@ void main() {
   }
   gl_Position = vec4(clipMid, 0.0, 1.0);
   float size = base + min(len + 4.0, uMaxPoint - base);
+  // Echtes Sternabbild: Sprite auf die Patch-Groesse aufziehen. Sobald ein
+  // sichtbarer Streifen entsteht, faellt der Stern auf das prozedurale
+  // Sprite zurueck (gestreckte Spikes/Halos wuerden haesslich verschmieren)
+  vAtlasUv = vec3(-1.0);
+  vPatchHalf = 0.0;
+  // Absorbierte Paar-Partner (Marke -2) sind im Patch des helleren Sterns
+  // enthalten - ihr eigenes Partikel wuerde sie doppelt zeichnen
+  if (uRealStars > 0.5 && aAtlas.x < -1.5) vAlpha = 0.0;
+  if (uRealStars > 0.5 && aAtlas.x >= 0.0 && len < base * 0.5) {
+    float patchHalf = aAtlas.w * scale * uPixelsY * uStarSize;
+    if (patchHalf > 1.5) {
+      vPatchHalf = min(patchHalf, uMaxPoint * 0.5 - 1.0);
+      size = max(size, vPatchHalf * 2.0 + 2.0);
+      vAtlasUv = vec3(aAtlas.x, aAtlas.y, aAtlas.z);
+      len = 0.0;
+    }
+  }
   gl_PointSize = size;
   vDir = dirPx;
   vLen = len;
@@ -651,8 +710,38 @@ in vec2 vDir;
 in float vLen;
 in float vBase;
 in float vSize;
+in vec3 vAtlasUv;
+in float vPatchHalf;
+uniform sampler2D uAtlas;   // echte Sternabbilder (Ausschnitte der Maske)
+uniform float uStarBrightF; // Helligkeits-Regler (wie uStarBright im VS)
+uniform float uAngleF;      // Kamerawinkel: Patch dreht mit dem Bild mit
 out vec4 outColor;
 void main() {
+  // Echtes Sternabbild: Patch aus dem Atlas statt prozeduraler Glocke.
+  // Additives Blending -> schwarzer Patch-Hintergrund addiert nichts;
+  // ein weicher radialer Rand vermeidet sichtbare Kachelkanten
+  if (vAtlasUv.x >= 0.0 && vPatchHalf > 0.5) {
+    vec2 d = (gl_PointCoord - 0.5) * vSize;
+    float rn = length(d) / vPatchHalf;
+    if (rn > 1.0) discard;
+    // Bildschirm-Offset in die (mitrotierte) Bildebene drehen: Spikes und
+    // Halos bleiben dadurch am Bild verankert statt am Bildschirm
+    float caF = cos(uAngleF), saF = sin(uAngleF);
+    vec2 duUp = vec2(d.x, -d.y);
+    vec2 di = vec2(caF * duUp.x + saF * duUp.y, -saF * duUp.x + caF * duUp.y);
+    vec2 uv = vec2(vAtlasUv.x + di.x / vPatchHalf * vAtlasUv.z,
+                   vAtlasUv.y + di.y / vPatchHalf * vAtlasUv.z);
+    vec3 c = texture(uAtlas, uv).rgb;
+    float edge = 1.0 - smoothstep(0.78, 1.0, rn);
+    // Helligkeit wirkt RADIAL wie eine kuerzere Belichtung: Der Kern bleibt
+    // weiss, nur Saum/Spikes dunkeln ab (globales Dimmen machte die Kerne
+    // grau - unnatuerlich). Erst unter ~30 % verschwindet auch der Kern
+    float b = uStarBrightF;
+    float coreKeep = smoothstep(0.0, 0.3, b);
+    float w = b >= 1.0 ? b : mix(coreKeep, b, smoothstep(0.15, 0.8, rn));
+    outColor = vec4(c * edge * vAlpha * w, 1.0);
+    return;
+  }
   // Kapsel entlang der Flugrichtung: Abstand zur Streifen-Mittellinie,
   // normiert auf den Stern-Radius (vLen = 0 -> runder Stern wie bisher)
   vec2 d = (gl_PointCoord - 0.5) * vSize;
@@ -687,7 +776,9 @@ out vec4 outColor;
 uniform sampler2D uScene;
 uniform sampler2D uStarsTex; // separate Sternebene (schwarz, wenn nicht getrennt)
 void main() {
-  vec3 c = texture(uScene, vUv).rgb + texture(uStarsTex, vUv).rgb;
+  vec3 sN = texture(uScene, vUv).rgb;
+  vec3 sS = texture(uStarsTex, vUv).rgb;
+  vec3 c = 1.0 - (1.0 - clamp(sN, 0.0, 1.0)) * (1.0 - clamp(sS, 0.0, 1.0));
   float l = max(max(c.r, c.g), c.b);
   // Empfindlicher (niedrige Schwelle, weiches Knie): auch schwache Sterne
   // glimmen - die Gesamtstärke regelt der Composite entsprechend sanfter
@@ -797,7 +888,10 @@ void main() {
   }
 
   // Sterne erst NACH Klarheit/Struktur/Schärfe dazulegen
-  col += stars;
+  // Sterne per Screen-Modus auf den Nebel legen (Astro-Standard wie in
+  // Photoshop/PixInsight): 1-(1-a)*(1-b) statt Addition - weicher Uebergang,
+  // helle Sternkerne auf hellem Nebel brennen nicht mehr aus
+  col = 1.0 - (1.0 - clamp(col, 0.0, 1.0)) * (1.0 - clamp(stars, 0.0, 1.0));
 
   col += texture(uBloom, vUv).rgb * uBloomStrength;
 
@@ -835,6 +929,7 @@ const starBuf = gl.createBuffer();
 let texColor = null;
 let texDepth = null;
 let texSpinMask = null;
+let texStarAtlas = null;
 
 function makeTexture(source) {
   const t = gl.createTexture();
@@ -1018,8 +1113,12 @@ function downscale(img, maxEdge) {
 // ---------------------------------------------------------------- Tiefenkarte
 
 /** Geglättete, kontrastgestreckte Luminanzkarte des Starless-Bildes. */
-function computeLuminanceMap(radius, invert) {
-  const src = downscale(state.starless, 768);
+function computeLuminanceMap(radius, invert, maxEdge) {
+  const res = maxEdge || state.depthRes;
+  const src = downscale(state.starless, res);
+  // Radius ist in Karten-Pixeln: bei hoeherer Aufloesung mitskalieren,
+  // damit die Glaettung optisch identisch bleibt
+  radius = Math.max(1, Math.round(radius * res / 768));
   const w = src.width, h = src.height;
   const data = src.getContext("2d").getImageData(0, 0, w, h).data;
 
@@ -1060,9 +1159,163 @@ function computeLuminanceMap(radius, invert) {
   return { canvas: c, data: dst, w, h };
 }
 
+
+/**
+ * Mondscheibe im Starless-Bild finden: helle Region vor dunklem Himmel ->
+ * Randpunkte -> konvexe Huelle -> Kreis-Fit (Kasa). Die Huelle sorgt dafuer,
+ * dass bei Mondphasen der beleuchtete Rand (echter Kreisbogen) den Fit
+ * dominiert und der Terminator weitgehend rausfaellt.
+ * Rueckgabe { cx, cy, r } normiert (x und r auf Bildbreite, y auf Hoehe).
+ */
+function detectMoonDisk() {
+  if (!state.starless) return null;
+  const src = downscale(state.starless, 512);
+  const w = src.width, h = src.height;
+  const data = src.getContext("2d").getImageData(0, 0, w, h).data;
+  const lum = new Float32Array(w * h);
+  let hi = 0;
+  for (let i = 0, j = 0; i < lum.length; i++, j += 4) {
+    lum[i] = 0.299 * data[j] + 0.587 * data[j + 1] + 0.114 * data[j + 2];
+    if (lum[i] > hi) hi = lum[i];
+  }
+  const th = Math.max(18, hi * 0.25);
+  const pts = [];
+  let area = 0;
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      if (lum[i] < th) continue;
+      area++;
+      if (lum[i - 1] < th || lum[i + 1] < th || lum[i - w] < th || lum[i + w] < th) {
+        pts.push([x, y]);
+      }
+    }
+  }
+  if (area < w * h * 0.004 || pts.length < 24) return null;
+
+  // Konvexe Huelle (Monotone Chain)
+  pts.sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [];
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper = [];
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const p = pts[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  const hull = lower.slice(0, -1).concat(upper.slice(0, -1));
+  if (hull.length < 8) return null;
+
+  // Kreis-Fit nach Kasa: x^2+y^2 = a*x + b*y + c, kleinste Quadrate
+  let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, sxz = 0, syz = 0, sz = 0;
+  for (const [x, y] of hull) {
+    const z = x * x + y * y;
+    sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y;
+    sxz += x * z; syz += y * z; sz += z;
+  }
+  const n = hull.length;
+  const det = sxx * (syy * n - sy * sy) - sxy * (sxy * n - sy * sx) + sx * (sxy * sy - syy * sx);
+  if (Math.abs(det) < 1e-6) return null;
+  const a = (sxz * (syy * n - sy * sy) - sxy * (syz * n - sy * sz) + sx * (syz * sy - syy * sz)) / det;
+  const b = (sxx * (syz * n - sy * sz) - sxz * (sxy * n - sx * sy) + sx * (sxy * sz - syz * sx)) / det;
+  const c = (sxx * (syy * sz - syz * sy) - sxy * (sxy * sz - syz * sx) + sxz * (sxy * sy - syy * sx)) / det;
+  const cx = a / 2, cy = b / 2;
+  const r = Math.sqrt(Math.max(0, c + cx * cx + cy * cy));
+
+  // Plausibilitaet: Radius sinnvoll, Zentrum nahe am Bild, helle Flaeche
+  // passt zur Kreisflaeche (bei Phasen ist sie kleiner, nie viel groesser)
+  const circleArea = Math.PI * r * r;
+  if (r < Math.min(w, h) * 0.04 || r > Math.max(w, h) * 0.9) return null;
+  if (cx < -0.3 * w || cx > 1.3 * w || cy < -0.3 * h || cy > 1.3 * h) return null;
+  if (area > circleArea * 1.25 || area < circleArea * 0.12) return null;
+
+  return { cx: cx / w, cy: cy / h, r: r / w };
+}
+
+/**
+ * Kugel-Tiefenkarte fuer den Mond-Modus: innerhalb der erkannten Scheibe
+ * echte Kugelgeometrie (Mitte nah, Rand kruemmt sich weg), aussen ferner
+ * Himmel. Leichte Glaettung vermeidet eine harte Tiefenkante am Mondrand.
+ */
+function computeMoonSphereMap() {
+  const src = downscale(state.starless, state.depthRes);
+  const w = src.width, h = src.height;
+  const d = state.moonDisk;
+  const cx = d.cx * w, cy = d.cy * h, R = Math.max(2, d.r * w);
+  let a = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const rr = Math.hypot(x - cx, y - cy) / R;
+      // Himmel liegt auf derselben Grundtiefe wie der Mondrand (0.5):
+      // KEIN Tiefensprung an der Scheibenkante - der Sprung erzeugte beim
+      // Vorbeiflug ein Echo/Doppelbild des Mondes (die Warp-Iteration fand
+      // am Rand die falsche von zwei Loesungen). Der Himmel ist schwarz,
+      // seine Bewegung ist unsichtbar - die Kugel waechst nur nach vorn
+      a[y * w + x] = rr >= 1 ? 0.5 : 0.5 + 0.38 * Math.sqrt(1 - rr * rr);
+    }
+  }
+  const b = new Float32Array(w * h);
+  const rM = Math.max(1, Math.round(2 * state.depthRes / 768));
+  boxBlurH(a, b, w, h, rM);
+  boxBlurV(b, a, w, h, rM);
+  const dst = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0, j = 0; i < a.length; i++, j += 4) {
+    const v = Math.round(Math.min(1, Math.max(0, a[i])) * 255);
+    dst[j] = dst[j + 1] = dst[j + 2] = v;
+    dst[j + 3] = 255;
+  }
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  c.getContext("2d").putImageData(new ImageData(dst, w, h), 0, 0);
+  return { canvas: c, data: dst, w, h };
+}
+
+
+/**
+ * Importierte Tiefenkarte aufbereiten: Luminanz wird 1:1 uebernommen
+ * (keine Kontraststreckung - gemalte Werte bleiben exakt), Glaettung
+ * und Invertieren wirken wie bei der automatischen Karte.
+ */
+function computeCustomDepthMap(radius, invert, maxEdge) {
+  const res = maxEdge || state.depthRes;
+  const src = downscale(state.customDepth, res);
+  const w = src.width, h = src.height;
+  const data = src.getContext("2d").getImageData(0, 0, w, h).data;
+  let a = new Float32Array(w * h);
+  for (let i = 0, j = 0; i < a.length; i++, j += 4) {
+    a[i] = (0.299 * data[j] + 0.587 * data[j + 1] + 0.114 * data[j + 2]) / 255;
+  }
+  const r = Math.max(1, Math.round(radius * res / 768));
+  const b = new Float32Array(w * h);
+  for (let pass = 0; pass < 3; pass++) {
+    boxBlurH(a, b, w, h, r);
+    boxBlurV(b, a, w, h, r);
+  }
+  const dst = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0, j = 0; i < a.length; i++, j += 4) {
+    let d = a[i];
+    if (invert) d = 1 - d;
+    const v = Math.round(Math.min(1, Math.max(0, d)) * 255);
+    dst[j] = dst[j + 1] = dst[j + 2] = v;
+    dst[j + 3] = 255;
+  }
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  c.getContext("2d").putImageData(new ImageData(dst, w, h), 0, 0);
+  return { canvas: c, data: dst, w, h };
+}
+
 function buildDepthMap() {
   if (!state.starless) return;
-  const m = computeLuminanceMap(state.smooth, state.invertDepth);
+  const m = state.moonMode && state.moonDisk
+    ? computeMoonSphereMap()
+    : state.customDepth
+      ? computeCustomDepthMap(state.smooth, state.invertDepth)
+      : computeLuminanceMap(state.smooth, state.invertDepth);
   state.depthCanvas = m.canvas;
   state.depthData = { data: m.data, w: m.w, h: m.h }; // CPU-Kopie für die Klick-Zuordnung
 
@@ -1121,6 +1374,112 @@ function boxBlurV(src, dst, w, h, r) {
 function clampi(v, n) { return v < 0 ? 0 : (v >= n ? n - 1 : v); }
 
 // ---------------------------------------------------------------- Stern-Extraktion
+
+
+/**
+ * Textur-Atlas mit den echten Pixel-Abbildern der hellsten Sterne: je Stern
+ * wird ein Ausschnitt (inkl. Halo/Spikes-Rand) aus dem Sternmasken-Bild in
+ * einen 2048er-Atlas gepackt (Shelf-Packing, hellste zuerst). Die Eintraege
+ * speichern Zentrum (Textur-UV, y bereits geflippt wie makeTexture), halbe
+ * Groesse in Atlas-UV und halbe Groesse in Ebenen-Einheiten.
+ */
+function buildStarAtlas(list, srcCanvas, srcData) {
+  const A = 2048;
+  const c = document.createElement("canvas");
+  c.width = A; c.height = A;
+  const g = c.getContext("2d");
+  const entries = new Float32Array(list.length * 4).fill(-1);
+  const h = srcCanvas.height;
+  // Nachbarsuche ueber ein grobes Raster: fremde Sternkerne muessen aus
+  // jedem Patch entfernt werden - sonst rendert ein enges Paar den Partner
+  // DOPPELT (eigenes Sprite + Abbild im Patch des Nachbarn) und leuchtet
+  // beim additiven Blending viel zu hell (Anthonys Doppelstern-Report)
+  const CELL = 64;
+  const gw = Math.ceil(srcCanvas.width / CELL), gh = Math.ceil(srcCanvas.height / CELL);
+  const grid = new Map();
+  list.forEach((st, i) => {
+    const key = ((st.x / CELL) | 0) + ((st.y / CELL) | 0) * gw;
+    if (!grid.has(key)) grid.set(key, []);
+    grid.get(key).push(i);
+  });
+  const coreR = (st) => Math.sqrt(st.area / Math.PI) * 0.9 + 2.5;
+  // Enge Paare: ueberlappen sich die Kerne, wird der schwaechere Stern vom
+  // helleren "absorbiert" - er bleibt im Patch des Partners sichtbar, sein
+  // eigenes Partikel wird im Echtbild-Modus ausgeblendet (Marke -2). Ein
+  // Ausradieren wuerde sonst den eigenen Kern mit treffen (Anthonys Paar)
+  const absorbed = new Uint8Array(list.length);
+  let x = 0, y = 0, rowH = 0, packed = 0;
+  const N = Math.min(list.length, 2500);
+  for (let i = 0; i < N; i++) {
+    if (absorbed[i]) continue;
+    const st = list[i];
+    // Ausschnitt grosszuegig: 2,4x der Kernradius nimmt Halo und Spikes mit.
+    // Die hellsten Sterne bekommen deutlich groessere Ausschnitte - lange
+    // Newton-Spikes wurden sonst am Patchrand gekappt
+    const cap = i < 4 ? 200 : i < 24 ? 120 : 90;
+    const rPx = Math.min(cap, Math.max(4, Math.ceil(coreR(st) * 2.4)));
+    const s = 2 * rPx + 2;
+    if (x + s > A) { x = 0; y += rowH + 1; rowH = 0; }
+    if (y + s > A) break;
+    g.drawImage(srcCanvas, st.x - rPx, st.y - rPx, 2 * rPx, 2 * rPx, x + 1, y + 1, 2 * rPx, 2 * rPx);
+    // Fremde Sternkerne im Patch weich ausradieren (schwarz = additiv nichts)
+    const c0x = ((st.x - rPx) / CELL | 0) - 1, c1x = ((st.x + rPx) / CELL | 0) + 1;
+    const c0y = ((st.y - rPx) / CELL | 0) - 1, c1y = ((st.y + rPx) / CELL | 0) + 1;
+    for (let cy = c0y; cy <= c1y; cy++) {
+      for (let cx = c0x; cx <= c1x; cx++) {
+        const cell = grid.get(cx + cy * gw);
+        if (!cell) continue;
+        for (const j of cell) {
+          if (j === i || absorbed[j]) continue;
+          const nb = list[j];
+          const dx = nb.x - st.x, dy = nb.y - st.y;
+          const dist = Math.hypot(dx, dy);
+          if (dist > rPx + coreR(nb) * 2) continue;
+          if (j > i && dist < (coreR(st) + coreR(nb)) * 0.95) {
+            // Kerne ueberlappen: Partner absorbieren statt radieren
+            absorbed[j] = 1;
+            entries[j * 4] = -2;
+            continue;
+          }
+          // Schwache Nachbarn im Saum NICHT ausradieren: ihr doppelter
+          // Beitrag ist unsichtbar, ein Loch im Saum faellt dagegen auf
+          if (nb.flux < st.flux * 0.03) continue;
+          // Hellere Nachbarn weich ausradieren - Radius so begrenzen, dass
+          // der EIGENE Kern nie mit getroffen wird
+          const eraseR = Math.min(coreR(nb) * 2.0, Math.max(0, dist - coreR(st) * 0.8));
+          if (eraseR < 1.5) continue;
+          const px = x + 1 + rPx + dx, py = y + 1 + rPx + dy;
+          // Loch mit der Saumfarbe fuellen statt schwarz: der Saum eines
+          // Sterns ist radialsymmetrisch - die Farbe an der gespiegelten
+          // Stelle (gleicher Abstand, gegenueber) ist ein sauberer Ersatz
+          // Direkt aus dem ImageData der Erkennung lesen (getImageData auf
+          // dem Atlas erzwang tausende langsame Canvas-Synchronisationen)
+          let fill = "rgba(0,0,0,1)";
+          const mx = Math.round(st.x - dx), my = Math.round(st.y - dy);
+          if (srcData && mx >= 0 && my >= 0 && mx < srcCanvas.width && my < srcCanvas.height) {
+            const mi = (my * srcCanvas.width + mx) * 4;
+            fill = `rgba(${srcData[mi]},${srcData[mi + 1]},${srcData[mi + 2]},1)`;
+          }
+          const grad = g.createRadialGradient(px, py, 0, px, py, eraseR);
+          grad.addColorStop(0, fill);
+          grad.addColorStop(0.6, fill.replace(",1)", ",0.9)"));
+          grad.addColorStop(1, fill.replace(",1)", ",0)"));
+          g.fillStyle = grad;
+          g.beginPath();
+          g.arc(px, py, eraseR, 0, Math.PI * 2);
+          g.fill();
+        }
+      }
+    }
+    entries[i * 4]     = (x + 1 + rPx) / A;       // Zentrum u
+    entries[i * 4 + 1] = 1 - (y + 1 + rPx) / A;   // Zentrum v (Flip wie makeTexture)
+    entries[i * 4 + 2] = rPx / A;                 // halbe Groesse in Atlas-UV
+    entries[i * 4 + 3] = rPx / h;                 // halbe Groesse in Ebenen-Einheiten
+    x += s; rowH = Math.max(rowH, s);
+    packed++;
+  }
+  return { canvas: c, entries, packed };
+}
 
 /**
  * Findet Sterne in der Maske über Zusammenhangskomponenten und baut den
@@ -1201,6 +1560,10 @@ function buildStarBuffer() {
 
   state.maskStarCount = list.length;
   state.maskStarFloats = buf;
+  // Echte Sternabbilder: Atlas aus demselben Arbeits-Canvas wie die Erkennung
+  state.starAtlas = buildStarAtlas(list, src, data);
+  if (texStarAtlas) gl.deleteTexture(texStarAtlas);
+  texStarAtlas = makeTexture(state.starAtlas.canvas);
   // Neue Maske -> alte Gaia-Zuordnung passt nicht mehr. Wenn der Katalog
   // gecacht ist, gleichen wir sofort neu ab - der Wissenschafts-Modus soll
   // einen Masken-Neuaufbau überleben, statt kommentarlos herauszufallen
@@ -1456,18 +1819,67 @@ function matchGaia(gaiaStars) {
   let pairs = flipUsed ? pairsA : pairsB;
   let fitUsed = null;
 
-  // Durchgang 2: Affin-Korrektur schätzen und enger neu zuordnen; das
-  // Ergebnis zählt nur, wenn es mehr Treffer liefert
+  const rmsOf = (ps) => {
+    let s = 0;
+    for (const { i, g } of ps) {
+      const dx = mask[i * 7] - g.x, dy = mask[i * 7 + 1] - g.y;
+      s += dx * dx + dy * dy;
+    }
+    return Math.sqrt(s / Math.max(1, ps.length));
+  };
+  const warpAll = (f) => pts.map((g) => ({
+    ...g,
+    ox: g.ox === undefined ? g.x : g.ox,
+    oy: g.oy === undefined ? g.y : g.oy,
+    x: f.ax[0] * g.x + f.ax[1] * g.y + f.ax[2],
+    y: f.ay[0] * g.x + f.ay[1] * g.y + f.ay[2],
+  }));
+
+  // Durchgang 2: Affin-Korrektur schaetzen und enger neu zuordnen. Der erste
+  // Schaetzer sitzt schief, weil der grobe Durchgang bei einem systematischen
+  // Versatz reihenweise Nachbarsterne zuordnet - deshalb wird zweimal
+  // nachgezogen: jede Runde ordnet enger zu und schaetzt aus der saubereren
+  // Zuordnung neu.
+  const orig = (g) => [g.ox === undefined ? g.x : g.ox, g.oy === undefined ? g.y : g.oy];
+  // Erste Schaetzung als reine Verschiebung ueber den Median: die haelt auch
+  // dann, wenn der grobe Durchgang reihenweise Nachbarsterne zugeordnet hat.
+  const medianShift = (ps) => {
+    if (ps.length < 8) return null;
+    const dx = [], dy = [];
+    for (const { i, g } of ps) {
+      const [ox, oy] = orig(g);
+      dx.push(mask[i * 7] - ox);
+      dy.push(mask[i * 7 + 1] - oy);
+    }
+    dx.sort((a, b) => a - b); dy.sort((a, b) => a - b);
+    const mid = (a) => a[Math.floor(a.length / 2)];
+    return { ax: [1, 0, mid(dx)], ay: [0, 1, mid(dy)] };
+  };
   if (pairs.length >= 20) {
-    const fit = affineFit(pairs.map(({ i, g }) => [g.x, g.y, mask[i * 7], mask[i * 7 + 1]]));
-    if (fit) {
-      const warped = pts.map((g) => ({
-        ...g,
-        x: fit.ax[0] * g.x + fit.ax[1] * g.y + fit.ax[2],
-        y: fit.ay[0] * g.x + fit.ay[1] * g.y + fit.ay[2],
-      }));
-      const refined = runMatch(warped, tolFine);
-      if (refined.length > pairs.length) { pairs = refined; fitUsed = fit; }
+    const tolStep = [tolCoarse * 0.5, tolFine, tolFine];
+    let cur = pairs, best = null;
+    for (let it = 0; it < 3; it++) {
+      const fit = it === 0
+        ? medianShift(cur)
+        : affineFit(cur.map(({ i, g }) => {
+          const [ox, oy] = orig(g);
+          return [ox, oy, mask[i * 7], mask[i * 7 + 1]];
+        }));
+      if (!fit) break;
+      const refined = runMatch(warpAll(fit), tolStep[it]);
+      if (refined.length < 20) break;
+      cur = refined;
+      best = { fit, pairs: refined };
+    }
+    // Die Korrektur gewinnt, wenn sie mehr Sterne zuordnet oder die
+    // Restabweichung deutlich senkt, ohne nennenswert Treffer zu verlieren.
+    // Frueher zaehlte nur die Trefferzahl: traf schon der grobe Durchgang
+    // alles, wurde die Korrektur verworfen - und die Objekt-Marker blieben
+    // um den systematischen Versatz neben ihrem Objekt.
+    if (best) {
+      const better = best.pairs.length > pairs.length ||
+        (best.pairs.length >= pairs.length * 0.85 && rmsOf(best.pairs) < rmsOf(pairs) * 0.9);
+      if (better) { pairs = best.pairs; fitUsed = best.fit; }
     }
   }
   if (pairs.length < 5) return null;
@@ -1657,13 +2069,22 @@ function uploadStars() {
   state.starCount = n;
   if (!n) return;
 
-  const F = 10; // [x, y, hell, größe, r, g, b, gaia, pmx, pmy]
+  const F = 14; // [x, y, hell, größe, r, g, b, gaia, pmx, pmy, atlasU, atlasV, atlasHalfUv, atlasHalfPlane]
   const buf = new Float32Array(n * F);
   const gcol = state.gaiaColors && state.gaiaColorRGB ? state.gaiaColorRGB : null;
   const gpm = state.gaiaPM;
+  const atl = state.starAtlas ? state.starAtlas.entries : null;
   for (let i = 0; i < nMask; i++) {
     buf.set(mask.subarray(i * 7, i * 7 + 7), i * F);
     buf[i * F + 7] = state.gaiaDepth ? state.gaiaDepth[i] : -1;
+    if (atl && i * 4 + 3 < atl.length) {
+      buf[i * F + 10] = atl[i * 4];
+      buf[i * F + 11] = atl[i * 4 + 1];
+      buf[i * F + 12] = atl[i * 4 + 2];
+      buf[i * F + 13] = atl[i * 4 + 3];
+    } else {
+      buf[i * F + 10] = -1;
+    }
     // Echte Katalogfarbe (nur Farbton) statt Fotofarbe, wenn aktiviert
     if (gcol && gcol[i * 3] >= 0) {
       buf[i * F + 4] = 0.35 + 0.65 * gcol[i * 3];
@@ -1675,6 +2096,7 @@ function uploadStars() {
   for (let i = 0; i < nGen; i++) {
     buf.set(gen.subarray(i * 7, i * 7 + 7), (nMask + i) * F);
     buf[(nMask + i) * F + 7] = -1;
+    buf[(nMask + i) * F + 10] = -1;
   }
 
   gl.bindVertexArray(starVao);
@@ -1687,6 +2109,7 @@ function uploadStars() {
   gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 3, gl.FLOAT, false, stride, 16);
   gl.enableVertexAttribArray(4); gl.vertexAttribPointer(4, 1, gl.FLOAT, false, stride, 28);
   gl.enableVertexAttribArray(5); gl.vertexAttribPointer(5, 2, gl.FLOAT, false, stride, 32);
+  gl.enableVertexAttribArray(6); gl.vertexAttribPointer(6, 4, gl.FLOAT, false, stride, 40);
   gl.bindVertexArray(null);
 }
 
@@ -2250,6 +2673,9 @@ function drawPreviewOverlay(loopT, cam, fade) {
   overlayCanvas.style.height = canvas.clientHeight + "px";
   overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
   drawOverlayTo(overlayCtx, overlayCanvas.width, overlayCanvas.height, loopT, cam, fade);
+  if (state.scenEdit && state.starless && !state.exporting && state.waypoints.length) {
+    drawWaypointOverlay(overlayCtx, overlayCanvas.width, overlayCanvas.height, cam);
+  }
 }
 
 // ---------------------------------------------------------------- Kamera & Zeit
@@ -2320,7 +2746,146 @@ function coverBase(viewAspect, imgAspect) {
  * Ablauf: Rohzeit -> Loop-Dreieck (hin & zurück) -> Easing -> effektive
  * Flugzeit te, aus der Zoom, Rotation, Ziel-Fahrt und Schwenk berechnet werden.
  */
+
+// ------------------------------------------------- Szenario-Flug (Wegpunkte)
+
+
+/**
+ * Kubisches Bezier-Easing wie CSS cubic-bezier(x1,y1,x2,y2):
+ * P0=(0,0), P3=(1,1); fuer die Zeit k wird t mit Newton-Iteration
+ * (Bisektion als Rueckfall) aus x(t)=k bestimmt, Ergebnis ist y(t).
+ */
+function bezierEase(x1, y1, x2, y2, k) {
+  if (k <= 0) return 0;
+  if (k >= 1) return 1;
+  const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx;
+  const cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
+  const sampleX = (t) => ((ax * t + bx) * t + cx) * t;
+  const sampleY = (t) => ((ay * t + by) * t + cy) * t;
+  const slopeX = (t) => (3 * ax * t + 2 * bx) * t + cx;
+  let t = k;
+  for (let i = 0; i < 6; i++) {
+    const d = slopeX(t);
+    if (Math.abs(d) < 1e-6) break;
+    t -= (sampleX(t) - k) / d;
+    t = Math.min(1, Math.max(0, t));
+  }
+  if (Math.abs(sampleX(t) - k) > 1e-4) {
+    let lo = 0, hi = 1;
+    for (let i = 0; i < 24; i++) {
+      t = (lo + hi) / 2;
+      if (sampleX(t) < k) lo = t; else hi = t;
+    }
+  }
+  return sampleY(t);
+}
+
+/** Position entlang einer Etappe: Gerade oder Bogen durch wp.via. */
+function scenLegPos(a, b, k) {
+  if (b.via) {
+    const cx = 2 * b.via.x - (a.x + b.x) / 2;
+    const cy = 2 * b.via.y - (a.y + b.y) / 2;
+    const u = 1 - k;
+    return { x: u * u * a.x + 2 * u * k * cx + k * k * b.x,
+             y: u * u * a.y + 2 * u * k * cy + k * k * b.y };
+  }
+  return { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k };
+}
+
+/** Gesamtdauer des Wegpunkt-Plans in Sekunden (Etappen + Pausen). */
+function scenarioTotal() {
+  const wps = state.waypoints;
+  let total = 0;
+  for (let i = 0; i < wps.length; i++) {
+    total += Math.max(0, wps[i].hold || 0);
+    if (i > 0) total += Math.max(0.2, wps[i].dur || 0.2);
+  }
+  return Math.max(0.4, total);
+}
+
+/**
+ * Kameraposition entlang des Wegpunkt-Plans bei Fortschritt p (0..1).
+ * Jede Etappe hat eigenes Easing; der Zoom interpoliert geometrisch
+ * (wirkt gleichmaessig statt am Ende zu rasen) und die Position wird
+ * zoom-kompensiert gefuehrt, damit ein Schwenk mit gleichzeitigem Zoom
+ * auf dem Schirm gleichmaessig laeuft. Position wird wie im Zoom-Modus
+ * an die Bildkanten geklemmt.
+ */
+function scenarioAt(p) {
+  const wps = state.waypoints;
+  const total = scenarioTotal();
+  let s = Math.min(1, Math.max(0, p)) * total;
+  let ax = wps[0].x, ay = wps[0].y, zoom = Math.max(1, wps[0].zoom || 1);
+  let ang = wps[0].angle || 0;
+  outer:
+  for (let i = 0; i < wps.length; i++) {
+    if (i > 0) {
+      const dur = Math.max(0.2, wps[i].dur || 0.2);
+      if (s <= dur) {
+        let k = s / dur;
+        const easeMode = wps[i].ease || "smooth";
+        if (easeMode === "custom") {
+          const cv = wps[i].curve || [0.42, 0, 0.58, 1];
+          k = bezierEase(cv[0], cv[1], cv[2], cv[3], k);
+        } else if (easeMode !== "linear") {
+          k = smoothstep(k);
+        }
+        const a = wps[i - 1], b = wps[i];
+        const za = Math.max(1, a.zoom || 1), zb = Math.max(1, b.zoom || 1);
+        // Zoom-kompensierter Weg: der Zoom laeuft geometrisch, deshalb wuerde
+        // eine Position, die linear in Bildkoordinaten laeuft, auf dem Schirm
+        // ungleichmaessig wirken (erst kaum Bewegung, dann Heranrasen). Die
+        // Umrechnung haelt die wahrgenommene Geschwindigkeit konstant.
+        const r = zb / za;
+        const kp = Math.abs(r - 1) < 1e-4 ? k : (1 - Math.pow(r, -k)) / (1 - 1 / r);
+        const P = scenLegPos(a, b, kp);
+        ax = P.x;
+        ay = P.y;
+        zoom = za * Math.pow(r, k);
+        ang = (a.angle || 0) + ((b.angle || 0) - (a.angle || 0)) * k;
+        break outer;
+      }
+      s -= dur;
+    }
+    ax = wps[i].x; ay = wps[i].y; zoom = Math.max(1, wps[i].zoom || 1);
+    ang = wps[i].angle || 0;
+    const hold = Math.max(0, wps[i].hold || 0);
+    if (s <= hold) {
+      // Schwebe-Effekt (optional je Wegpunkt): sanftes Treiben waehrend der
+      // Pause, wie eine schwebende Kamera - weich ein- und ausblendend,
+      // damit der Uebergang in die Etappen nahtlos bleibt
+      if (wps[i].floatOn && hold > 0.4) {
+        const ramp = smoothstep(Math.min(1, s / 1.2)) * smoothstep(Math.min(1, (hold - s) / 1.2));
+        const amp = 0.006 / zoom;
+        ax += amp * ramp * (Math.sin(s * 0.9 + i * 2.1) + 0.5 * Math.sin(s * 0.47 + 1.3));
+        ay += amp * ramp * 0.8 * (Math.sin(s * 0.73 + i * 1.4 + 0.9) + 0.5 * Math.sin(s * 0.31 + 0.4));
+      }
+      break;
+    }
+    s -= hold;
+  }
+  const viewAspect = state.aspect;
+  const imgAspect = state.starless
+    ? state.starless.width / state.starless.height : 16 / 9;
+  const cover = coverBase(viewAspect, imgAspect);
+  const sc = cover * zoom;
+  const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.98;
+  const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.98;
+  return { zoom, angle: ang, cx: Math.min(freeX, Math.max(-freeX, ax)), cy: Math.min(freeY, Math.max(-freeY, ay)) };
+}
+
+function scenarioActive() {
+  return state.scenarioOn && state.waypoints.length >= 2;
+}
+
 function camAt(loopT) {
+  // Flugplan-Einrichtung: feste Kamera aus dem Steuerkreuz statt Animation
+  if (state.scenEdit) {
+    const v = state.scenView;
+    return { zoom: v.zoom, angle: (state.orientation + v.angle) * Math.PI / 180,
+      rate: 0, te: 0, tiltAddX: 0, tiltAddY: 0,
+      cx: v.x, cy: v.y, driftTX: 0, driftTY: 0 };
+  }
   const D = state.duration;
   const u = Math.min(1, Math.max(0, loopT / D));
   const p = state.loopMode ? 1 - Math.abs(1 - 2 * u) : u;
@@ -2336,11 +2901,15 @@ function camAt(loopT) {
   const te = pe * D * (state.loopMode ? 0.5 : 1);
 
   const rate = (state.speed / 100) * 0.09;
-  const angle = (state.orientation + state.rotationSpeed * te) * Math.PI / 180;
+  let angle = (state.orientation + state.rotationSpeed * te) * Math.PI / 180;
 
   // Flugmodus: entweder in den Nebel zoomen oder seitlich übers Bild gleiten
   let zoom, cx, cy, driftTX = 0, driftTY = 0;
-  if (state.flightMode === "lateral") {
+  if (scenarioActive()) {
+    const sp = scenarioAt(p);
+    zoom = sp.zoom; cx = sp.cx; cy = sp.cy;
+    angle = (state.orientation + sp.angle) * Math.PI / 180;
+  } else if (state.flightMode === "lateral") {
     // Konstanter Zoom; die Kamera fährt entlang der eingestellten Richtung
     // durch das Ziel (Klickpunkt). Die Strecke ist so begrenzt, dass der
     // Bildausschnitt nicht über den Rand hinausläuft.
@@ -2375,7 +2944,7 @@ function camAt(loopT) {
   // Schwenk-Animation: langsame elliptische Kippbewegung (Funktion von te,
   // dadurch im Loop-Modus automatisch nahtlos)
   let tiltAddX = 0, tiltAddY = 0;
-  const swayA = (state.swayAmp / 100) * 0.06;
+  const swayA = scenarioActive() ? 0 : (state.swayAmp / 100) * 0.06;
   if (swayA > 0) {
     // Kreisende Kippbewegung statt Hin-und-her-Pendeln: Der Kipp-Vektor
     // läuft auf einer flachen Ellipse (Hauptachse = eingestellte Richtung).
@@ -2399,7 +2968,7 @@ function camAt(loopT) {
   // langsam in eine Richtung (folgt der Beschleunigungskurve; basiert auf pe,
   // das im Loop-Modus hin & zurück läuft -> nahtlos). Volle Stärke entspricht
   // einer Fahrt des Kipp-Reglers von -100 nach +100, mittig neutral.
-  const rampA = (state.tiltRampAmp / 100) * 0.08;
+  const rampA = scenarioActive() ? 0 : (state.tiltRampAmp / 100) * 0.08;
   if (rampA > 0) {
     const rdir = state.tiltRampDir * Math.PI / 180;
     const q = (pe - 0.5) * 2; // -1 .. +1 über die Flugdauer
@@ -2412,7 +2981,7 @@ function camAt(loopT) {
   // Loop-Modus nahtlos hin & zurück). Startpunkt ist der per Regler
   // verschiebbare Ausschnitt; beides wird an die Bildkanten geklemmt, damit
   // nie über den Bildrand hinaus geschwenkt wird.
-  if (state.flightMode !== "lateral") {
+  if (state.flightMode !== "lateral" && !scenarioActive()) {
     const viewAspect = state.aspect;
     const imgAspect = state.starless
       ? state.starless.width / state.starless.height : 16 / 9;
@@ -2534,6 +3103,10 @@ function render(forcedT) {
   // Galaxien-Rotation (te-basiert -> im Loop-Modus nahtlos hin & zurück)
   u1f(bgProg, "uSpinAngle", state.spinSpeed * Math.PI / 180 * cam.te);
   u2f(bgProg, "uSpinCenter", state.spinCenter.x, state.spinCenter.y);
+  const mdU = state.moonMode && state.moonDisk ? state.moonDisk : null;
+  u1f(bgProg, "uMoonMode", mdU ? 1 : 0);
+  u2f(bgProg, "uMoonC", mdU ? mdU.cx : 0, mdU ? 1 - mdU.cy : 0);
+  u1f(bgProg, "uMoonR", mdU ? mdU.r : 1);
   u1f(bgProg, "uSpinRadius", Math.max(0.02, (state.spinRadius / 100) * 0.75));
   u1f(bgProg, "uSpinDiff", state.spinDiff / 100);
   const spinTiltRad = state.spinTilt * Math.PI / 180;
@@ -2629,6 +3202,10 @@ function render(forcedT) {
     u1f(starProg, "uPmYears2", state.gaiaPmYears * (cam2.te / pmSpan));
     // Nebel-Okklusion: Tiefe + Dichte des Nebels an der Sternposition
     u1f(starProg, "uOcclude", state.occlude / 100);
+    const mdS = state.moonMode && state.moonDisk ? state.moonDisk : null;
+    u1f(starProg, "uMoonMode", mdS ? 1 : 0);
+    u2f(starProg, "uMoonCS", mdS ? mdS.cx : 0, mdS ? 1 - mdS.cy : 0);
+    u1f(starProg, "uMoonRS", mdS ? mdS.r : 1);
     u1f(starProg, "uAnchor", state.anchorStars / 100);
     u2f(starProg, "uTiltB2", tilt2X + cam2.driftTX * drK, tilt2Y + cam2.driftTY * drK);
     u1f(starProg, "uObjFarS", state.objFar ? 1 : 0);
@@ -2637,9 +3214,17 @@ function render(forcedT) {
     gl.bindTexture(gl.TEXTURE_2D, texDepth);
     gl.activeTexture(gl.TEXTURE7);
     gl.bindTexture(gl.TEXTURE_2D, texColor);
+    if (texStarAtlas) {
+      gl.activeTexture(gl.TEXTURE8);
+      gl.bindTexture(gl.TEXTURE_2D, texStarAtlas);
+      u1i(starProg, "uAtlas", 8);
+    }
     gl.activeTexture(gl.TEXTURE0);
     u1i(starProg, "uDepthS", 6);
     u1i(starProg, "uColorS", 7);
+    u1f(starProg, "uRealStars", state.realStars && texStarAtlas ? 1 : 0);
+    u1f(starProg, "uStarBrightF", state.starBright / 100);
+    u1f(starProg, "uAngleF", cam.angle);
     gl.drawArrays(gl.POINTS, 0, state.starCount);
     gl.disable(gl.BLEND);
   }
@@ -2784,8 +3369,15 @@ function fitCanvas() {
   // Mobil (schmale Bildschirme) nutzt die Vorschau immer die volle Fläche
   const mobile = window.innerWidth <= 820;
   const scaleView = (mobile ? 100 : state.viewScale) / 100;
-  const availW = (wrap.clientWidth - 36) * scaleView;
-  const availH = (wrap.clientHeight - 36) * scaleView;
+  const bar = $("transport").offsetHeight || 46;
+  const availW = (wrap.clientWidth - (mobile ? 16 : 36)) * scaleView;
+  // Mobil richtet sich die Buehne nach dem Bild, damit ueber der Vorschau
+  // kein toter Raum steht - die Obergrenze bleibt der CSS-Anteil der Hoehe
+  const limitH = mobile
+    ? window.innerHeight * ($("app").classList.contains("sheetup") ? 0.30 : 0.52)
+    : wrap.clientHeight;
+  const chips = mobile ? $("stageChips").offsetHeight : 0;
+  const availH = (limitH - (mobile ? 16 : 36) - bar - chips) * scaleView;
   let w = availW, h = w / state.aspect;
   if (h > availH) { h = availH; w = h * state.aspect; }
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -2793,9 +3385,57 @@ function fitCanvas() {
   canvas.height = Math.round(h * dpr);
   canvas.style.width = Math.round(w) + "px";
   canvas.style.height = Math.round(h) + "px";
+  if (mobile) $("stage").style.height = Math.round(h + bar + chips + 16) + "px";
+  else $("stage").style.height = "";
 }
 window.addEventListener("resize", fitCanvas);
 fitCanvas();
+
+// ---------------------------------------------------------------------------
+// Mobil: die Bedienung ist ein Blatt unter der Vorschau. Der Griff zieht es
+// hoch (mehr Regler) oder runter (groesseres Bild); die Gruppenleiste wandert
+// dabei in den Blattkopf, damit die Reihenfolge stimmt.
+// ---------------------------------------------------------------------------
+function isNarrow() { return window.innerWidth <= 820; }
+
+function placeRail() {
+  const rail = $("proRail");
+  if (isNarrow()) {
+    if (rail.parentElement !== $("panel")) $("panel").insertBefore(rail, $("subTabs"));
+  } else if (rail.parentElement !== $("app")) {
+    $("app").insertBefore(rail, $("panel"));
+  }
+}
+
+function setSheetUp(up) {
+  $("app").classList.toggle("sheetup", up);
+  setTimeout(fitCanvas, 200);
+}
+
+{
+  const grip = $("sheetGrip");
+  let startY = 0, moved = false;
+  grip.addEventListener("pointerdown", (e) => {
+    startY = e.clientY;
+    moved = false;
+    grip.setPointerCapture(e.pointerId);
+  });
+  grip.addEventListener("pointermove", (e) => {
+    if (!grip.hasPointerCapture(e.pointerId)) return;
+    const dy = e.clientY - startY;
+    if (Math.abs(dy) > 24) {
+      moved = true;
+      setSheetUp(dy < 0);
+      startY = e.clientY;
+    }
+  });
+  grip.addEventListener("pointerup", (e) => {
+    if (grip.hasPointerCapture(e.pointerId)) grip.releasePointerCapture(e.pointerId);
+    if (!moved) setSheetUp(!$("app").classList.contains("sheetup"));
+  });
+}
+window.addEventListener("resize", placeRail);
+placeRail();
 
 // ---------------------------------------------------------------- UI-Verdrahtung
 
@@ -2819,18 +3459,26 @@ function bindSlider(id, outId, key, fmt) {
   out.textContent = fmt(parseFloat(el.value));
 }
 
-const asInt = (v) => String(v);
-const asPct = (v) => v + " %";
-bindSlider("ctlZoom", "outZoom", "zoomBase", (v) => v.toFixed(2) + "×");
+/**
+ * Anzeigeformat der Regler: normalerweise ganze Zahlen, im Feinmodus (Shift)
+ * kommen Nachkommastellen dazu - die zeigt die Ausgabe dann auch.
+ */
+function ctlNum(v, min) {
+  const dec = ((+v.toFixed(3)).toString().split(".")[1] || "").length;
+  return v.toFixed(Math.max(min || 0, Math.min(3, dec)));
+}
+const asInt = (v) => ctlNum(v, 0);
+const asPct = (v) => ctlNum(v, 0) + " %";
+bindSlider("ctlZoom", "outZoom", "zoomBase", (v) => ctlNum(v, 2) + "×");
 bindSlider("ctlSpeed", "outSpeed", "speed", asInt);
 bindSlider("ctlEase", "outEase", "ease", asInt);
 bindSlider("ctlParallax", "outParallax", "parallax", asInt);
 bindSlider("ctlDepthBoost", "outDepthBoost", "depthBoost", asInt);
-bindSlider("ctlRotation", "outRotation", "rotationSpeed", (v) => v.toFixed(1) + " °/s");
+bindSlider("ctlRotation", "outRotation", "rotationSpeed", (v) => ctlNum(v, 1) + " °/s");
 bindSlider("ctlOrient", "outOrient", "orientation", (v) => v + "°");
 bindSlider("ctlFrameX", "outFrameX", "frameX", asInt);
 bindSlider("ctlFrameY", "outFrameY", "frameY", asInt);
-bindSlider("ctlSpinSpeed", "outSpinSpeed", "spinSpeed", (v) => v.toFixed(1) + " °/s");
+bindSlider("ctlSpinSpeed", "outSpinSpeed", "spinSpeed", (v) => ctlNum(v, 1) + " °/s");
 bindSlider("ctlSpinRadius", "outSpinRadius", "spinRadius", asInt);
 bindSlider("ctlSpinDiff", "outSpinDiff", "spinDiff", asInt);
 bindSlider("ctlSpinFlat", "outSpinFlat", "spinFlat", asInt);
@@ -2848,7 +3496,7 @@ bindSlider("ctlTiltX", "outTiltX", "tiltX", asInt);
 bindSlider("ctlTiltY", "outTiltY", "tiltY", asInt);
 bindSlider("ctlSwayAmp", "outSwayAmp", "swayAmp", asInt);
 bindSlider("ctlSwayTempo", "outSwayTempo", "swayTempo", asInt);
-bindSlider("ctlDuration", "outDuration", "duration", (v) => v + " s");
+bindSlider("ctlDuration", "outDuration", "duration", (v) => ctlNum(v, 0) + " s");
 bindSlider("ctlSpread", "outSpread", "spread", asInt);
 bindSlider("ctlStarDist", "outStarDist", "starDist", asInt);
 bindSlider("ctlTwinkle", "outTwinkle", "twinkle", asInt);
@@ -2938,6 +3586,7 @@ $("btnSpinCenter").addEventListener("click", () => {
 
 $("ctlLoop").addEventListener("change", () => {
   state.loopMode = $("ctlLoop").checked;
+  updateScenarioUi();
   state.t0 = performance.now();
   state.pausedAt = 0;
 });
@@ -3021,7 +3670,7 @@ function setCtl(id, value) {
   const el = $(id);
   if (!el) return;
   el.value = value;
-  el.dispatchEvent(new Event("input"));
+  el.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 function applyFlightPreset(name) {
@@ -3074,6 +3723,222 @@ for (const card of document.querySelectorAll(".pcard")) {
   card.addEventListener("click", () => applyFlightPreset(card.dataset.preset));
 }
 
+// ---------------------------------------------------------------------------
+// Stil-Code: die eingebauten Stile stehen im Quelltext als kompakte Zeile.
+// Der Knopf erzeugt genau diese Zeile aus den aktuellen Reglern - und zwar nur
+// aus denen, die vom Stil-Standard abweichen. So laesst sich ein neu
+// eingestellter Stil weitergeben und wieder einspielen, ohne jeden Wert
+// einzeln abzutippen.
+// ---------------------------------------------------------------------------
+const STYLE_CHECKS = ["ctlMblurStars", "ctlLoop", "ctlRealStars", "ctlSpinStars"];
+
+/**
+ * Bezugswert eines Reglers fuer den Stil-Code: Kamera- und Sternregler messen
+ * gegen die Neutralwerte, die Look-Regler gegen den gewaehlten Look - genau
+ * so, wie ein Stil beim Anwenden aufgebaut wird.
+ */
+function styleBase(id, look) {
+  if (SIMPLE_DEFAULTS[id] !== undefined) return SIMPLE_DEFAULTS[id];
+  for (const [key, sid] of Object.entries(PRESET_SLIDERS)) {
+    if (sid === id) {
+      const p = PRESETS[look] || PRESETS.neutral;
+      return p[key];
+    }
+  }
+  return undefined;
+}
+
+function styleIds() {
+  return [...Object.keys(SIMPLE_DEFAULTS), ...Object.values(PRESET_SLIDERS)];
+}
+
+function styleCodeStatus(msg, bad) {
+  const el = $("styleCodeStatus");
+  el.textContent = msg || "";
+  el.style.color = bad ? "#ff8080" : "";
+}
+
+function buildStyleCode() {
+  const look = $("ctlPreset").value;
+  const set = {};
+  for (const id of styleIds()) {
+    const el = $(id);
+    const def = styleBase(id, look);
+    if (!el || def === undefined) continue;
+    const v = parseFloat(el.value);
+    if (!isNaN(v) && Math.abs(v - def) > 1e-9) set[id] = Math.round(v * 1000) / 1000;
+  }
+  const checks = {};
+  const lookChk = !!(PRESETS[look] || {}).mblurStars;
+  for (const id of STYLE_CHECKS) {
+    const el = $(id);
+    if (!el) continue;
+    const base = id === "ctlMblurStars" ? lookChk : el.defaultChecked;
+    if (el.checked !== base) checks[id] = el.checked;
+  }
+  const name = state.activePreset || "meinStil";
+  const parts = [`look: "${look}"`];
+  if ($("ctlFlightMode").value !== "zoom") parts.push(`flightMode: "${$("ctlFlightMode").value}"`);
+  parts.push("set: { " + Object.entries(set).map(([k, v]) => `${k}: ${v}`).join(", ") + " }");
+  if (Object.keys(checks).length) {
+    parts.push("checks: { " + Object.entries(checks).map(([k, v]) => `${k}: ${v}`).join(", ") + " }");
+  }
+  return `${name}: { ${parts.join(", ")} },`;
+}
+
+/** Stil-Code lesen: bewusst per Muster statt eval - der Text kommt von aussen. */
+function parseStyleCode(txt) {
+  const out = { name: null, look: "neutral", flightMode: "zoom", set: {}, checks: {} };
+  const nm = txt.match(/([A-Za-z][A-Za-z0-9_]*)\s*:\s*\{/);
+  if (nm && !/^(set|checks|look|flightMode)$/.test(nm[1])) out.name = nm[1];
+  const lk = txt.match(/look\s*:\s*"([a-z0-9_]+)"/i);
+  if (lk) out.look = lk[1];
+  const fm = txt.match(/flightMode\s*:\s*"([a-z]+)"/i);
+  if (fm) out.flightMode = fm[1];
+  const chk = txt.match(/checks\s*:\s*\{([^}]*)\}/i);
+  if (chk) {
+    for (const m of chk[1].matchAll(/(ctl[A-Za-z0-9]+)\s*:\s*(true|false)/g)) {
+      out.checks[m[1]] = m[2] === "true";
+    }
+  }
+  const setB = txt.match(/set\s*:\s*\{([^}]*)\}/i);
+  const src = setB ? setB[1] : txt.replace(/checks\s*:\s*\{[^}]*\}/i, "");
+  const known = new Set(styleIds());
+  for (const m of src.matchAll(/(ctl[A-Za-z0-9]+)\s*:\s*(-?[0-9]+(?:\.[0-9]+)?)/g)) {
+    if (known.has(m[1])) out.set[m[1]] = parseFloat(m[2]);
+  }
+  return out;
+}
+
+/** Wie applyFlightPreset, aber 1:1 ohne die Effektstaerke des Einfach-Modus. */
+function applyStyleCode(p) {
+  $("ctlFlightMode").value = p.flightMode || "zoom";
+  $("ctlFlightMode").dispatchEvent(new Event("change", { bubbles: true }));
+  $("ctlEaseMode").value = "linear";
+  $("ctlEaseMode").dispatchEvent(new Event("change", { bubbles: true }));
+  $("ctlLoop").checked = false;
+  $("ctlLoop").dispatchEvent(new Event("change", { bubbles: true }));
+  for (const [id, v] of Object.entries(SIMPLE_DEFAULTS)) setCtl(id, v);
+  if ($("ctlPreset").querySelector(`option[value="${p.look}"]`)) {
+    $("ctlPreset").value = p.look;
+    $("ctlPreset").dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  for (const [id, v] of Object.entries(p.set)) setCtl(id, v);
+  for (const [id, v] of Object.entries(p.checks)) {
+    const el = $(id);
+    if (!el) continue;
+    el.checked = v;
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  state.activePreset = p.name && FLIGHT_PRESETS[p.name] ? p.name : null;
+  for (const card of document.querySelectorAll(".pcard")) {
+    card.classList.toggle("active", card.dataset.preset === state.activePreset);
+  }
+}
+
+$("btnStyleCopy").addEventListener("click", async () => {
+  const code = buildStyleCode();
+  $("styleCode").value = code;
+  $("styleCode").select();
+  try {
+    await navigator.clipboard.writeText(code);
+    styleCodeStatus(t("styleCodeCopied"));
+  } catch {
+    // ohne Zwischenablage-Recht bleibt der markierte Text im Feld
+    styleCodeStatus(t("styleCodeCopyManual"));
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Gefuehrter Einstieg: vier Schritte, die einmal zeigen, wo Bild laden, Ziel
+// setzen, Flug einstellen und Rendern sitzen. Laeuft beim ersten Start und
+// laesst sich im Export-Bereich erneut aufrufen.
+// ---------------------------------------------------------------------------
+const TOUR_KEY = "astrofly-tour-seen";
+// Die Nummern sind nur die Textbausteine, die Reihenfolge steht hier:
+// Bilder, Ziel, Flug, Feineinstellung (5), Rendern (4)
+const TOUR_STEPS = [
+  { key: "1", target: () => $("proRail").querySelector('[data-group="bild"]') || $("panelbody"), tab: "bilder" },
+  { key: "2", target: () => $("glcanvas") },
+  { key: "3", target: () => $("proRail").querySelector('[data-group="kamera"]') || $("panelbody"), tab: "kamera" },
+  { key: "5", target: () => $("ctlZoom").closest("label") || $("panelbody"), tab: "kamera" },
+  { key: "4", target: () => $("panelFoot") },
+];
+let tourIdx = -1;
+
+function placeTour(el) {
+  const ring = $("tourRing");
+  const card = $("tourCard");
+  const r = el.getBoundingClientRect();
+  const pad = 6;
+  ring.style.left = (r.left - pad) + "px";
+  ring.style.top = (r.top - pad) + "px";
+  ring.style.width = (r.width + pad * 2) + "px";
+  ring.style.height = (r.height + pad * 2) + "px";
+  // Karte bevorzugt rechts neben das Ziel, sonst darunter, immer im Fenster
+  const cw = card.offsetWidth || 310, ch = card.offsetHeight || 190;
+  let x = r.right + 16, y = r.top;
+  if (x + cw > window.innerWidth - 12) {
+    x = Math.min(r.left, window.innerWidth - cw - 12);
+    y = r.bottom + 14;
+  }
+  if (y + ch > window.innerHeight - 12) y = Math.max(12, window.innerHeight - ch - 12);
+  card.style.left = Math.max(12, x) + "px";
+  card.style.top = Math.max(12, y) + "px";
+}
+
+function showTourStep(i) {
+  const step = TOUR_STEPS[i];
+  if (!step) { endTour(); return; }
+  tourIdx = i;
+  if (step.tab && state.uiMode === "pro") gotoTab(step.tab);
+  $("tour").hidden = false;
+  $("tourStep").textContent = t("tourStepOf", i + 1, TOUR_STEPS.length);
+  $("tourTitle").textContent = t("tourTitle" + step.key);
+  $("tourText").textContent = t("tourText" + step.key);
+  $("btnTourBack").hidden = i === 0;
+  $("btnTourNext").textContent = i === TOUR_STEPS.length - 1 ? t("tourDone") : t("tourNext");
+  // erst nach dem Layout messen, sonst steht die Karte am alten Platz
+  requestAnimationFrame(() => placeTour(step.target()));
+}
+
+function endTour() {
+  tourIdx = -1;
+  $("tour").hidden = true;
+  localStorage.setItem(TOUR_KEY, "1");
+}
+
+function startTour() { showTourStep(0); }
+
+$("btnTourNext").addEventListener("click", () => showTourStep(tourIdx + 1));
+$("btnTourBack").addEventListener("click", () => showTourStep(Math.max(0, tourIdx - 1)));
+$("btnTourSkip").addEventListener("click", endTour);
+$("btnTourReplay").addEventListener("click", startTour);
+document.addEventListener("keydown", (e) => {
+  if ($("tour").hidden) return;
+  if (e.key === "Escape") endTour();
+  else if (e.key === "ArrowRight" || e.key === "Enter") showTourStep(tourIdx + 1);
+  else if (e.key === "ArrowLeft") showTourStep(Math.max(0, tourIdx - 1));
+});
+window.addEventListener("resize", () => {
+  if (!$("tour").hidden && TOUR_STEPS[tourIdx]) placeTour(TOUR_STEPS[tourIdx].target());
+});
+I18N.onChange.push(() => { if (!$("tour").hidden) showTourStep(tourIdx); });
+
+if (!localStorage.getItem(TOUR_KEY)) setTimeout(startTour, 700);
+
+$("btnStyleApply").addEventListener("click", () => {
+  const txt = $("styleCode").value.trim();
+  if (!txt) { $("styleCode").focus(); return; }
+  const p = parseStyleCode(txt);
+  if (!Object.keys(p.set).length && !Object.keys(p.checks).length) {
+    styleCodeStatus(t("styleCodeBad"), true);
+    return;
+  }
+  applyStyleCode(p);
+  styleCodeStatus(t("styleCodeApplied", Object.keys(p.set).length));
+});
+
 // Dauer-Regler im Einfach-Modus spiegelt den echten Dauer-Regler
 $("ctlSimpleDuration").addEventListener("input", () => {
   const v = $("ctlSimpleDuration").value;
@@ -3085,17 +3950,73 @@ $("ctlSimpleDuration").addEventListener("input", () => {
 // (ihren Profi-Tab) und optional data-easy (im Einfach-Modus sichtbar).
 // Im Einfach-Modus werden die data-easy-Sektionen gestapelt angezeigt,
 // im Profi-Modus nur die Sektionen des aktiven Tabs.
+// Gruppen der Profi-Bedienung: sechs Gruppen in der linken Leiste, darin
+// benannte Untergruppen. Jede Sektion traegt data-tab (= Untergruppe) und
+// optional data-easy (im Einfach-Modus sichtbar).
+const TAB_GROUPS = [
+  { id: "projekte", subs: [["projekte", "subProjekte"]] },
+  { id: "bild", subs: [["bilder", "subLaden"], ["tiefe", "subTiefe"], ["spiegel", "subSpiegel"]] },
+  { id: "kamera", subs: [["kamera", "subFlug"], ["szenario", "subFlugplan"], ["galaxie", "subGalaxie"]] },
+  { id: "look", subs: [["sterne", "subSterne"], ["look", "subEffekte"], ["nebel", "subNebel"], ["presets", "subStile"]] },
+  { id: "daten", subs: [["gaia", "subGaia"], ["objekte", "subObjekte"]] },
+  { id: "export", subs: [["export", "subExport"]] },
+];
+// Alte gespeicherte Tab-Namen (vor dem Gruppen-Umbau) auf die neuen abbilden
+const TAB_ALIAS = { sci: "gaia" };
+
+function groupOfTab(tab) {
+  for (const g of TAB_GROUPS) {
+    if (g.subs.some((s) => s[0] === tab)) return g;
+  }
+  return TAB_GROUPS[1];
+}
+
 state.uiMode = localStorage.getItem("astrofly-mode") || "simple";
-state.activeTab = localStorage.getItem("astrofly-tab") || "bilder";
+{
+  const saved = localStorage.getItem("astrofly-tab") || "bilder";
+  state.activeTab = TAB_ALIAS[saved] || saved;
+  if (!groupOfTab(state.activeTab).subs.some((s) => s[0] === state.activeTab)) state.activeTab = "bilder";
+  state.activeGroup = groupOfTab(state.activeTab).id;
+}
+
+// Untergruppen-Leiste unter dem Panelkopf; entfaellt bei Gruppen mit nur einer
+function buildSubTabs() {
+  const box = $("subTabs");
+  const grp = TAB_GROUPS.find((g) => g.id === state.activeGroup) || TAB_GROUPS[1];
+  box.innerHTML = "";
+  box.hidden = state.uiMode !== "pro" || grp.subs.length < 2;
+  if (box.hidden) return;
+  for (const [tab, key] of grp.subs) {
+    const b = document.createElement("button");
+    b.textContent = t(key);
+    b.className = tab === state.activeTab ? "active" : "";
+    b.addEventListener("click", () => {
+      state.activeTab = tab;
+      $("panelbody").scrollTop = 0;
+      applyUiMode();
+    });
+    if (tab === "szenario") {
+      const n = document.createElement("span");
+      n.className = "subcount";
+      n.textContent = String(state.waypoints ? state.waypoints.length : 0);
+      n.hidden = !state.waypoints || !state.waypoints.length;
+      b.appendChild(n);
+    }
+    box.appendChild(b);
+  }
+}
 
 function applyUiMode() {
   const simple = state.uiMode === "simple";
   $("modeSimple").classList.toggle("active", simple);
   $("modePro").classList.toggle("active", !simple);
-  $("proTabs").hidden = simple;
-  for (const b of document.querySelectorAll("#proTabs button")) {
-    b.classList.toggle("active", b.dataset.tab === state.activeTab);
+  $("proRail").hidden = simple;
+  const grp = TAB_GROUPS.find((g) => g.id === state.activeGroup) || TAB_GROUPS[1];
+  if (!grp.subs.some((s) => s[0] === state.activeTab)) state.activeTab = grp.subs[0][0];
+  for (const b of document.querySelectorAll("#proRail button")) {
+    b.classList.toggle("active", b.dataset.group === state.activeGroup);
   }
+  buildSubTabs();
   for (const sec of document.querySelectorAll("#panel section")) {
     if (sec.id === "simpleSection") { sec.hidden = !simple; continue; }
     sec.hidden = simple ? !sec.hasAttribute("data-easy")
@@ -3103,17 +4024,491 @@ function applyUiMode() {
   }
   localStorage.setItem("astrofly-mode", state.uiMode);
   localStorage.setItem("astrofly-tab", state.activeTab);
+  // Flugplan-Einrichtung (inkl. Steuerkreuz) haengt an Pro-Modus + Tab -
+  // der Easy/Pro-Umschalter liess das Steuerkreuz sonst stehen
+  setScenEdit(state.uiMode === "pro" && state.activeTab === "szenario");
 }
+// Panel-Breite per Anfasser verstellbar (wird gespeichert)
+{
+  const savedW = parseInt(localStorage.getItem("astrofly-panelw") || "0", 10);
+  if (savedW >= 300 && savedW <= 640) {
+    $("panel").style.width = savedW + "px";
+    $("panel").style.minWidth = savedW + "px";
+  }
+  let panelDrag = false;
+  $("panelResize").addEventListener("pointerdown", (e) => {
+    panelDrag = true;
+    e.preventDefault();
+    $("panelResize").setPointerCapture(e.pointerId);
+  });
+  $("panelResize").addEventListener("pointermove", (e) => {
+    if (!panelDrag) return;
+    const left = $("panel").getBoundingClientRect().left;
+    const w = Math.min(640, Math.max(300, Math.round(e.clientX - left)));
+    $("panel").style.width = w + "px";
+    $("panel").style.minWidth = w + "px";
+    localStorage.setItem("astrofly-panelw", String(w));
+  });
+  for (const evName of ["pointerup", "pointercancel"]) {
+    $("panelResize").addEventListener(evName, () => { panelDrag = false; });
+  }
+}
+
 $("modeSimple").addEventListener("click", () => { state.uiMode = "simple"; applyUiMode(); });
 $("modePro").addEventListener("click", () => { state.uiMode = "pro"; applyUiMode(); });
-for (const b of document.querySelectorAll("#proTabs button")) {
+for (const b of document.querySelectorAll("#proRail button")) {
   b.addEventListener("click", () => {
-    state.activeTab = b.dataset.tab;
+    const grp = TAB_GROUPS.find((g) => g.id === b.dataset.group);
+    if (!grp) return;
+    state.activeGroup = grp.id;
+    // beim Gruppenwechsel immer die erste Untergruppe zeigen
+    if (!grp.subs.some((s) => s[0] === state.activeTab)) state.activeTab = grp.subs[0][0];
     $("panelbody").scrollTop = 0;
     applyUiMode();
   });
 }
 applyUiMode();
+
+// ---------------------------------------------------------------------------
+// Reglerhierarchie: Abweichung vom Standard anzeigen, gruppenweise
+// zuruecksetzen, Zahlenwerte direkt eintippen.
+// Der Standard ist der im HTML notierte Ausgangswert (value-Attribut bzw.
+// selected-Option) - damit bleibt alles automatisch in Sicht, ohne dass
+// irgendwo eine zweite Liste gepflegt werden muss.
+// ---------------------------------------------------------------------------
+const CTL_DEFAULTS = new Map();
+// Regler, die nichts ueber das Bild aussagen (Ansicht, Namen, Auswahllisten)
+const CHANGE_IGNORE = new Set([
+  "ctlViewSize", "ctlSimpleFx", "ctlSimpleDir", "ctlSimpleDuration",
+  "ctlBandShow", "ctlSpinShow", "selMoonObj", "ctlDepthRes",
+]);
+
+function changeScope(el) {
+  // nur echte Bild-/Flugregler in Sektionen mit data-tab
+  const sec = el.closest("section[data-tab]");
+  if (!sec || sec.id === "simpleSection") return null;
+  if (!el.id || CHANGE_IGNORE.has(el.id)) return null;
+  if (el.type === "range" || el.type === "checkbox" || el.tagName === "SELECT") return sec;
+  return null;
+}
+
+function captureCtlDefaults() {
+  for (const el of document.querySelectorAll("#panelbody input, #panelbody select")) {
+    if (!changeScope(el)) continue;
+    if (el.type === "checkbox") CTL_DEFAULTS.set(el.id, el.defaultChecked ? "1" : "");
+    else if (el.tagName === "SELECT") {
+      const sel = el.querySelector("option[selected]");
+      CTL_DEFAULTS.set(el.id, sel ? sel.value : (el.options[0] ? el.options[0].value : ""));
+    } else CTL_DEFAULTS.set(el.id, el.defaultValue);
+  }
+}
+
+function ctlValue(el) {
+  return el.type === "checkbox" ? (el.checked ? "1" : "") : el.value;
+}
+
+function ctlIsChanged(el) {
+  if (!CTL_DEFAULTS.has(el.id)) return false;
+  const def = CTL_DEFAULTS.get(el.id);
+  const cur = ctlValue(el);
+  if (el.type === "range") return Math.abs(parseFloat(cur) - parseFloat(def)) > 1e-9;
+  return cur !== def;
+}
+
+function changedIn(root) {
+  const out = [];
+  for (const el of root.querySelectorAll("input, select")) {
+    if (changeScope(el) && ctlIsChanged(el)) out.push(el);
+  }
+  return out;
+}
+
+function resetCtls(list) {
+  for (const el of list) {
+    const def = CTL_DEFAULTS.get(el.id);
+    if (el.type === "checkbox") el.checked = def === "1";
+    else el.value = def;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  refreshChangeMarks();
+}
+
+// Marke (Punkt + Zuruecksetzen) an eine Ueberschrift oder ein Summary haengen
+function changeMark(host, list, withCount) {
+  let mark = host.querySelector(":scope > .chgmark");
+  if (!list.length) { if (mark) mark.remove(); return; }
+  if (!mark) {
+    mark = document.createElement("span");
+    mark.className = "chgmark";
+    mark.innerHTML = '<span class="chgdot"></span><button type="button" class="chgreset"></button>';
+    mark.querySelector(".chgreset").addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      resetCtls(changedIn(host.parentElement));
+    });
+    host.appendChild(mark);
+  }
+  const dot = mark.querySelector(".chgdot");
+  dot.textContent = withCount ? t("grpChanged", list.length) : "";
+  dot.classList.toggle("countonly", !!withCount);
+  mark.querySelector(".chgreset").textContent = t("grpReset");
+}
+
+function refreshChangeMarks() {
+  for (const det of document.querySelectorAll("#panelbody details.adv")) {
+    const sum = det.querySelector(":scope > summary");
+    if (sum) changeMark(sum, changedIn(det), false);
+  }
+  for (const sec of document.querySelectorAll("#panelbody section[data-tab]")) {
+    const h2 = sec.querySelector(":scope > h2");
+    if (!h2) continue;
+    // im Sektionskopf zaehlt alles der Sektion, auch die Klappgruppen
+    changeMark(h2, changedIn(sec), true);
+  }
+}
+
+// Zahlenwert direkt eintippen: Klick auf die Ausgabe macht daraus ein Feld
+function makeOutputEditable(out, range) {
+  out.classList.add("editable");
+  out.title = t("ctlValueEdit");
+  out.addEventListener("click", () => {
+    if (out.dataset.editing) return;
+    out.dataset.editing = "1";
+    const inp = document.createElement("input");
+    inp.type = "number";
+    inp.className = "outedit";
+    inp.value = range.value;
+    inp.min = range.min; inp.max = range.max; inp.step = range.step || "any";
+    const finish = (apply) => {
+      if (!out.dataset.editing) return;
+      delete out.dataset.editing;
+      if (apply) {
+        const v = parseFloat(inp.value);
+        if (!isNaN(v)) {
+          range.value = String(Math.min(parseFloat(range.max), Math.max(parseFloat(range.min), v)));
+          range.dispatchEvent(new Event("input", { bubbles: true }));
+          range.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      }
+      inp.remove();
+      out.hidden = false;
+    };
+    inp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") finish(true);
+      else if (e.key === "Escape") finish(false);
+    });
+    inp.addEventListener("blur", () => finish(true));
+    out.hidden = true;
+    out.parentElement.appendChild(inp);
+    inp.focus();
+    inp.select();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Shift = Feineinstellung: solange die Taste liegt, bekommt jeder Regler den
+// zehnten Schritt. Das gilt fuer Ziehen und Pfeiltasten gleichermassen, weil
+// der Browser sich am step-Attribut orientiert.
+// ---------------------------------------------------------------------------
+const FINE_DIV = 10;
+let fineOn = false;
+
+function setFineStep(on) {
+  if (on === fineOn) return;
+  fineOn = on;
+  for (const el of document.querySelectorAll('#panelbody input[type="range"]')) {
+    if (on) {
+      if (!el.dataset.step0) el.dataset.step0 = el.getAttribute("step") || "1";
+      el.step = String(+(parseFloat(el.dataset.step0) / FINE_DIV).toFixed(6));
+    } else if (el.dataset.step0) {
+      el.step = el.dataset.step0;
+    }
+  }
+  document.body.classList.toggle("finestep", on);
+}
+
+window.addEventListener("keydown", (e) => { if (e.key === "Shift") setFineStep(true); });
+window.addEventListener("keyup", (e) => { if (e.key === "Shift") setFineStep(false); });
+window.addEventListener("blur", () => setFineStep(false));
+
+function setupCtlHierarchy() {
+  captureCtlDefaults();
+  for (const lab of document.querySelectorAll("#panelbody label.slider")) {
+    const out = lab.querySelector("output");
+    const range = lab.querySelector('input[type="range"]');
+    if (!range) continue;
+    range.title = t("fineHint");
+    if (out && changeScope(range)) makeOutputEditable(out, range);
+  }
+  I18N.onChange.push(() => {
+    for (const r of document.querySelectorAll('#panelbody label.slider input[type="range"]')) {
+      r.title = t("fineHint");
+    }
+  });
+  $("panelbody").addEventListener("input", () => { refreshChangeMarks(); refreshStatusChips(); refreshRenderFoot(); });
+  $("panelbody").addEventListener("change", () => { refreshChangeMarks(); refreshStatusChips(); refreshRenderFoot(); });
+  I18N.onChange.push(refreshChangeMarks);
+  I18N.onChange.push(refreshStatusChips);
+  I18N.onChange.push(refreshRenderFoot);
+  refreshChangeMarks();
+}
+setupCtlHierarchy();
+
+// ---------------------------------------------------------------------------
+// Statusband ueber der Vorschau: zeigt, welche Zustaende gerade auf das Bild
+// wirken. Ein Klick springt zu der Einstellung, das x schaltet sie ab.
+// ---------------------------------------------------------------------------
+function setCheck(id, on) {
+  const el = $(id);
+  if (!el || el.checked === on) return;
+  el.checked = on;
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+const STATUS_CHIPS = [
+  {
+    tab: "szenario", main: true,
+    on: () => state.scenarioOn && state.waypoints.length > 0,
+    label: () => t("chipScen", state.waypoints.length),
+    off: () => setCheck("ctlScenOn", false),
+  },
+  {
+    tab: "bilder",
+    on: () => state.moonMode,
+    label: () => t("chipMoon"),
+    off: () => setCheck("ctlMoonMode", false),
+  },
+  {
+    tab: "tiefe",
+    on: () => !!state.customDepth,
+    label: () => t("chipDepth"),
+    off: () => $("btnDepthClear").click(),
+  },
+  {
+    tab: "spiegel",
+    on: () => state.flipH || state.flipV,
+    label: () => t("chipFlip", (state.flipH ? "H" : "") + (state.flipV ? "V" : "")),
+    off: () => { setCheck("ctlFlipH", false); setCheck("ctlFlipV", false); },
+  },
+  {
+    tab: "gaia",
+    on: () => !!(state.gaiaDepth && state.gaiaInfo),
+    label: () => t("chipGaia", state.gaiaInfo ? state.gaiaInfo.matched : 0),
+  },
+  {
+    // Standard ist an - gemeldet wird deshalb nur der Ausnahmefall
+    tab: "sterne",
+    on: () => !state.realStars && state.maskStarCount > 0,
+    label: () => t("chipRealStarsOff"),
+  },
+  {
+    tab: "objekte",
+    on: () => overlayActive(),
+    label: () => t("chipLabels"),
+    off: () => { setCheck("ctlShowLabels", false); setCheck("ctlShowInfo", false); },
+  },
+];
+
+function gotoTab(tab) {
+  const grp = groupOfTab(tab);
+  state.uiMode = "pro";
+  state.activeGroup = grp.id;
+  state.activeTab = tab;
+  $("panelbody").scrollTop = 0;
+  applyUiMode();
+}
+
+function refreshStatusChips() {
+  const box = $("stageChips");
+  if (!box) return;
+  const active = STATUS_CHIPS.filter((c) => {
+    try { return c.on(); } catch (e) { return false; }
+  });
+  box.hidden = active.length === 0;
+  box.innerHTML = "";
+  for (const c of active) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "schip" + (c.main ? " main" : "");
+    chip.textContent = c.label();
+    chip.title = t("chipGoto");
+    if (!c.off) chip.style.paddingRight = "12px";
+    chip.addEventListener("click", () => gotoTab(c.tab));
+    if (!c.off) { box.appendChild(chip); continue; }
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "schipoff";
+    x.textContent = "\u00d7";
+    x.title = t("chipOff");
+    x.addEventListener("click", (e) => {
+      e.stopPropagation();
+      c.off();
+      refreshStatusChips();
+    });
+    chip.appendChild(x);
+    box.appendChild(chip);
+  }
+}
+refreshStatusChips();
+
+// ---------------------------------------------------------------------------
+// Feste Fussleiste: zeigt, was beim Rendern herauskommt, und startet es.
+// Der eigentliche Export bleibt in der Export-Sektion, hier liegt nur der
+// Weg dorthin.
+// ---------------------------------------------------------------------------
+function refreshRenderFoot() {
+  const meta = $("footMeta");
+  const btn = $("btnRenderFoot");
+  if (!meta || !btn) return;
+  const aspBtn = document.querySelector("#aspectBtns button.active");
+  const [w, h] = exportDims();
+  const dur = state.duration || 0;
+  const mime = pickMime();
+  const fmt = mime.startsWith("video/mp4") ? "MP4" : (mime ? "WebM" : "-");
+  meta.textContent = (aspBtn ? aspBtn.dataset.aspect : "16:9") + " \u00b7 " +
+    w + "\u00d7" + h + " \u00b7 " + dur.toFixed(0) + " s \u00b7 " + fmt;
+  btn.disabled = $("btnExport").disabled;
+}
+
+refreshRenderFoot();
+
+// ---------------------------------------------------------------------------
+// Rueckgaengig / Wiederholen fuer alle Einstellungen: Regler, Haken, Format,
+// Zoomziel, Rotationszentrum und den kompletten Flugplan. Aufgezeichnet wird
+// gebuendelt (kurze Pause nach der letzten Aenderung), damit ein Reglerzug
+// ein Schritt bleibt und nicht hundert.
+// ---------------------------------------------------------------------------
+const UNDO_MAX = 60;
+const undoStack = [];   // letzter Eintrag ist immer der aktuelle Zustand
+const redoStack = [];
+let undoBusy = false;
+let undoTimer = null;
+
+function histSnapshot() {
+  const aspBtn = document.querySelector("#aspectBtns button.active");
+  return JSON.stringify({
+    c: captureControls(),
+    w: state.waypoints,
+    asp: aspBtn ? aspBtn.dataset.aspect : "16:9",
+    tgt: state.target,
+    spin: state.spinCenter,
+    scen: state.scenarioOn,
+  });
+}
+
+function histApply(str) {
+  const snap = JSON.parse(str);
+  undoBusy = true;
+  try {
+    const aspBtn = document.querySelector(`#aspectBtns button[data-aspect="${snap.asp}"]`);
+    if (aspBtn && !aspBtn.classList.contains("active")) aspBtn.click();
+    state.target = snap.tgt || { x: 0, y: 0 };
+    state.spinCenter = snap.spin || { x: 0, y: 0 };
+    state.waypoints = (snap.w || []).map((w) => ({ ...w }));
+    applyControls(snap.c || {});
+    state.scenarioOn = !!snap.scen;
+    $("ctlScenOn").checked = state.scenarioOn;
+    wpSel = -1;
+    stopWpEdit();
+    rebuildWaypointList();
+    updateScenarioUi();
+    updateTargetInfo();
+    refreshChangeMarks();
+    refreshStatusChips();
+    refreshRenderFoot();
+  } finally {
+    undoBusy = false;
+  }
+}
+
+function updateHistUi() {
+  $("btnUndo").disabled = undoStack.length < 2;
+  $("btnRedo").disabled = redoStack.length === 0;
+}
+
+function histPush() {
+  if (undoBusy) return;
+  const snap = histSnapshot();
+  if (undoStack.length && undoStack[undoStack.length - 1] === snap) return;
+  undoStack.push(snap);
+  if (undoStack.length > UNDO_MAX) undoStack.shift();
+  redoStack.length = 0;
+  updateHistUi();
+}
+
+function histSchedule() {
+  if (undoBusy) return;
+  clearTimeout(undoTimer);
+  undoTimer = setTimeout(histPush, 350);
+}
+
+/**
+ * Offene Aenderungen sofort festhalten. Laeuft vor jedem Klick, damit eine
+ * Aktion (Wegpunkt anlegen, loeschen, uebernehmen) ein eigener Schritt wird
+ * und nicht mit der Reglerbewegung davor verschmilzt.
+ */
+function histFlush() {
+  if (!undoTimer || undoBusy) return;
+  clearTimeout(undoTimer);
+  undoTimer = null;
+  histPush();
+}
+document.addEventListener("pointerdown", histFlush, true);
+
+/** Verlauf neu beginnen (neues Bild, geladenes Projekt). */
+function histReset() {
+  clearTimeout(undoTimer);
+  undoStack.length = 0;
+  redoStack.length = 0;
+  undoStack.push(histSnapshot());
+  updateHistUi();
+}
+
+function histUndo() {
+  clearTimeout(undoTimer);
+  if (undoStack.length < 2) return;
+  redoStack.push(undoStack.pop());
+  histApply(undoStack[undoStack.length - 1]);
+  updateHistUi();
+}
+
+function histRedo() {
+  clearTimeout(undoTimer);
+  if (!redoStack.length) return;
+  const snap = redoStack.pop();
+  undoStack.push(snap);
+  histApply(snap);
+  updateHistUi();
+}
+
+$("btnUndo").addEventListener("click", histUndo);
+$("btnRedo").addEventListener("click", histRedo);
+
+// Tastenkuerzel - in Textfeldern bleibt das Rueckgaengig des Browsers aktiv
+document.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  const el = e.target;
+  if (el && (el.tagName === "TEXTAREA" ||
+    (el.tagName === "INPUT" && ["text", "number", "search"].includes(el.type)))) return;
+  const k = e.key.toLowerCase();
+  if (k === "z" && !e.shiftKey) { e.preventDefault(); histUndo(); }
+  else if ((k === "z" && e.shiftKey) || k === "y") { e.preventDefault(); histRedo(); }
+});
+
+$("panelbody").addEventListener("input", histSchedule);
+$("panelbody").addEventListener("change", histSchedule);
+$("aspectBtns").addEventListener("click", histSchedule);
+histReset();
+
+$("btnRenderFoot").addEventListener("click", () => {
+  if ($("btnExport").disabled) return;
+  // in die Export-Sektion springen, damit Fortschritt und Meldungen sichtbar
+  // sind, und dort den echten Export ausloesen
+  gotoTab("export");
+  $("btnExport").click();
+});
 
 let smoothTimer = null;
 $("ctlSmooth").addEventListener("input", () => {
@@ -3125,6 +4520,79 @@ $("ctlSmooth").addEventListener("input", () => {
 $("ctlInvert").addEventListener("change", () => {
   state.invertDepth = $("ctlInvert").checked;
   buildDepthMap();
+});
+// Tiefenkarte exportieren / eigene Tiefenkarte importieren
+function updateDepthCustomUi(msg) {
+  refreshStatusChips();
+  const status = $("depthCustomStatus");
+  const active = !!state.customDepth;
+  status.hidden = !msg && !active;
+  status.textContent = msg || (active
+    ? t("depthCustomActive", state.customDepth.width + "\u00d7" + state.customDepth.height) : "");
+  $("btnDepthClear").hidden = !active;
+}
+
+$("btnDepthExport").addEventListener("click", () => {
+  if (!state.starless) return;
+  // In nativer Bildaufloesung rechnen, damit in Photoshop & Co.
+  // pixelgenau auf dem Original gearbeitet werden kann
+  const native = Math.max(state.starless.width, state.starless.height);
+  const m = state.customDepth
+    ? computeCustomDepthMap(state.smooth, state.invertDepth, native)
+    : computeLuminanceMap(state.smooth, state.invertDepth, native);
+  m.canvas.toBlob((blob) => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    const base = (state.starless.name || "astrofly").replace(/\.[^.]+$/, "");
+    a.download = base + "-depthmap.png";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }, "image/png");
+});
+
+$("btnDepthImport").addEventListener("click", () => {
+  if (!state.starless) {
+    updateDepthCustomUi(t("depthNoStarless"));
+    return;
+  }
+  $("fileDepth").click();
+});
+
+$("fileDepth").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file || !state.starless) return;
+  try {
+    const img = await decodeFile(file);
+    const aImg = img.width / img.height;
+    const aStar = state.starless.width / state.starless.height;
+    if (Math.abs(aImg - aStar) / aStar > 0.01) {
+      updateDepthCustomUi(t("depthAspectErr"));
+      return;
+    }
+    state.customDepth = img;
+    state.srcFiles.depth = file;
+    updateDepthCustomUi();
+    buildDepthMap();
+  } catch (err) {
+    console.error(err);
+    updateDepthCustomUi(t("loadFailed", file.name, err.message));
+  }
+});
+
+$("btnDepthClear").addEventListener("click", () => {
+  state.customDepth = null;
+  state.srcFiles.depth = null;
+  updateDepthCustomUi();
+  buildDepthMap();
+});
+
+$("ctlDepthRes").addEventListener("change", () => {
+  state.depthRes = parseInt($("ctlDepthRes").value, 10);
+  buildDepthMap();
+  buildSpinMask();
 });
 
 $("btnShuffle").addEventListener("click", () => {
@@ -3140,12 +4608,15 @@ $("aspectBtns").addEventListener("click", (e) => {
   btn.classList.add("active");
   const [aw, ah] = btn.dataset.aspect.split(":").map(Number);
   state.aspect = aw / ah;
+  if (typeof refreshRenderFoot === "function") refreshRenderFoot();
+  if (typeof rebuildWaypointList === "function" && state.waypoints.length) rebuildWaypointList();
   state.aspectName = btn.dataset.aspect;
   fitCanvas();
 });
 
 // Zoomziel-Anzeige (sprachabhängig, wird bei Sprachwechsel aktualisiert)
 function updateTargetInfo() {
+  if (typeof histSchedule === "function") histSchedule();
   const el = $("targetInfo");
   if (!state.starless || (state.target.x === 0 && state.target.y === 0)) {
     el.setAttribute("data-i18n", "targetCenter");
@@ -3162,10 +4633,8 @@ I18N.onChange.push(updateTargetInfo);
 
 // ------------------------------------------ Echte Tiefen (Gaia): Bedienung
 
-bindSlider("ctlGaiaAmt", "outGaiaAmt", "gaiaAmt", (v) => v + " %");
 bindSlider("ctlGaiaPm", "outGaiaPm", "gaiaPmYears", (v) => v.toLocaleString());
 bindSlider("ctlOcclude", "outOcclude", "occlude", (v) => v + " %");
-bindSlider("ctlAnchor", "outAnchor", "anchorStars", (v) => v + " %");
 
 // Laufende Katalog-Abfragen prominent über der Vorschau anzeigen -
 // die kleine Statuszeile im Panel übersieht man leicht
@@ -3180,6 +4649,7 @@ function stageToast(text) {
 // Statuszeile: transienter Text (Laden/Fehler) oder Zustand aus state
 let gaiaTransient = null; // { key, args } | null
 function updateGaiaStatus() {
+  refreshStatusChips();
   const el = $("gaiaStatus");
   if (!el) return;
   $("btnGaia").disabled = !(state.wcs && state.maskStarCount > 0);
@@ -3190,9 +4660,9 @@ function updateGaiaStatus() {
   const sciAllowed = pct >= 75;
   $("ctlGaiaOnly").disabled = !sciAllowed;
   // Solange NUR echte Gaia-Tiefen zählen, sind die Zufalls-Tiefen-Regler
-  // und die Mischstärke ohne Funktion - sichtbar ausgrauen
+  // ohne Funktion - sichtbar ausgrauen
   const gaiaLock = state.gaiaOnly && sciAllowed;
-  for (const id of ["ctlStarDist", "ctlSpread", "ctlLayers", "ctlGaiaAmt"]) {
+  for (const id of ["ctlStarDist", "ctlSpread", "ctlLayers"]) {
     const el = document.getElementById(id);
     if (el) el.disabled = gaiaLock;
   }
@@ -3452,6 +4922,13 @@ $("btnGaia").addEventListener("click", async () => {
     state.gaiaCatalog = stars;
     const info = matchGaia(stars);
     if (!info) gaiaTransient = { key: "gaiaNoMatch", args: [] };
+    // Der Abgleich ist der Punkt, an dem echte Daten vorliegen - ab hier
+    // zaehlen echte Tiefen ohnehin voll, also auch gleich die echten Farben
+    if (info && state.gaiaColorRGB && !state.gaiaColors) {
+      state.gaiaColors = true;
+      $("ctlGaiaColors").checked = true;
+      uploadStars();
+    }
   } catch (e) {
     gaiaTransient = e.server
       ? { key: "gaiaSrvErr", args: [e.status] }
@@ -3463,6 +4940,21 @@ $("btnGaia").addEventListener("click", async () => {
 // Zoomziel per Klick in die Vorschau
 canvas.addEventListener("click", (e) => {
   if (!state.starless || state.exporting) return;
+  if (state.scenEdit) {
+    if (scenDragDist > 6) return; // Zieh-Ende ist kein Auswahl-Klick
+    const rect = canvas.getBoundingClientRect();
+    const cam = camAt(0);
+    let best = -1; // oberster Marker im Trefferradius gewinnt
+    state.waypoints.forEach((wp, i) => {
+      const S = wpToScreen(wp.x, wp.y, cam, canvas.width, canvas.height);
+      const sx = (S.x / canvas.width) * rect.width;
+      const sy = (S.y / canvas.height) * rect.height;
+      const d = Math.hypot(e.clientX - rect.left - sx, e.clientY - rect.top - sy);
+      if (d < 20) best = i;
+    });
+    if (best >= 0) selectWaypoint(best);
+    return;
+  }
   const rect = canvas.getBoundingClientRect();
   const fx = (e.clientX - rect.left) / rect.width;
   const fy = (e.clientY - rect.top) / rect.height;
@@ -3501,17 +4993,23 @@ canvas.addEventListener("click", (e) => {
     updateTargetInfo();
   }
 
-  // Marker kurz einblenden
+  // Marker kurz einblenden - genau unter dem Mauszeiger. Die Position wird
+  // gegen den Bezugsrahmen des Markers gerechnet (offsetParent), sonst
+  // verschiebt ihn jede Polsterung der Buehne.
   const marker = $("targetMarker");
-  marker.textContent = wasSpinPick ? "🌀" : "🎯";
+  marker.className = wasSpinPick ? "spin" : "target";
+  marker.innerHTML = '<svg><use href="#' + (wasSpinPick ? "i-mspin" : "i-mtarget") + '"/></svg>';
   marker.hidden = false;
-  marker.style.left = (canvas.offsetLeft + fx * rect.width) + "px";
-  marker.style.top = (canvas.offsetTop + fy * rect.height) + "px";
+  const host = marker.offsetParent || canvas.parentElement;
+  const hr = host.getBoundingClientRect();
+  marker.style.left = (e.clientX - hr.left) + "px";
+  marker.style.top = (e.clientY - hr.top) + "px";
   marker.style.animation = "none";
   void marker.offsetWidth; // Animation neu starten
   marker.style.animation = "";
 });
 canvas.addEventListener("dblclick", () => {
+  if (state.scenEdit) return;
   state.target.x = 0;
   state.target.y = 0;
   updateTargetInfo();
@@ -3519,6 +5017,7 @@ canvas.addEventListener("dblclick", () => {
 
 // Transport
 $("btnPlay").addEventListener("click", () => {
+  if (state.scenEdit) setScenEdit(false);
   if (state.playing) {
     state.pausedAt = currentTime();
     state.playing = false;
@@ -3542,7 +5041,80 @@ document.addEventListener("keydown", (e) => {
   e.preventDefault();
   $("btnPlay").click();
 });
+/**
+ * Wegpunkte und Pausen auf der Abspiel-Zeitachse.
+ * Die Rauten sind die Ankunftszeiten, die helleren Balken die Pausen -
+ * eine Raute laesst sich ziehen, das aendert die Fahrtzeit dorthin.
+ */
+let tlDragging = false;
+
+function markTimelineSel() {
+  document.querySelectorAll("#timelineWps .tlwp").forEach((d, idx) => {
+    d.classList.toggle("sel", idx === wpSel);
+  });
+}
+
+function rebuildTimelineWps() {
+  const box = $("timelineWps");
+  if (!box) return;
+  const on = typeof scenarioActive === "function" && scenarioActive();
+  box.hidden = !on;
+  box.innerHTML = "";
+  if (!on) return;
+  const total = scenarioTotal();
+  state.waypoints.forEach((wp, i) => {
+    const tA = scenarioArrival(i);
+    const hold = Math.max(0, wp.hold || 0);
+    if (hold > 0) {
+      const bar = document.createElement("div");
+      bar.className = "tlhold";
+      bar.style.left = (tA / total) * 100 + "%";
+      bar.style.width = (hold / total) * 100 + "%";
+      box.appendChild(bar);
+    }
+    const d = document.createElement("div");
+    d.className = "tlwp" + (i === wpSel ? " sel" : "") + (i === 0 ? " fixed" : "");
+    d.style.left = (tA / total) * 100 + "%";
+    d.title = t("tlWpTitle", i + 1, tA.toFixed(1));
+    d.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      selectWaypoint(i);
+      if (i === 0) return;              // der Start liegt immer bei 0 s
+      // Das Ziehen haengt an der Zeitachse selbst: die Rauten werden beim
+      // Nachziehen neu gebaut, ein Pointer-Capture auf der Raute ginge dabei
+      // verloren
+      const tl = $("timeline");
+      tl.setPointerCapture(e.pointerId);
+      const rect = tl.getBoundingClientRect();
+      const prev = scenarioArrival(i - 1) + Math.max(0, state.waypoints[i - 1].hold || 0);
+      const move = (ev) => {
+        const f = Math.min(1, Math.max(0, (ev.clientX - rect.left) / rect.width));
+        const want = f * scenarioTotal();
+        const dur = Math.min(20, Math.max(0.2, Math.round((want - prev) * 10) / 10));
+        if (dur === state.waypoints[i].dur) return;
+        state.waypoints[i].dur = dur;
+        rebuildWaypointList();
+        updateScenarioUi();
+      };
+      const up = (ev) => {
+        tl.removeEventListener("pointermove", move);
+        tl.removeEventListener("pointerup", up);
+        tl.removeEventListener("pointercancel", up);
+        if (tl.hasPointerCapture(ev.pointerId)) tl.releasePointerCapture(ev.pointerId);
+        tlDragging = false;
+      };
+      tlDragging = true;
+      tl.addEventListener("pointermove", move);
+      tl.addEventListener("pointerup", up);
+      tl.addEventListener("pointercancel", up);
+    });
+    box.appendChild(d);
+  });
+}
+
 $("timeline").addEventListener("click", (e) => {
+  if (tlDragging || e.target.classList.contains("tlwp")) return;
   const rect = $("timeline").getBoundingClientRect();
   const f = (e.clientX - rect.left) / rect.width;
   const t = f * state.duration;
@@ -3560,6 +5132,9 @@ async function loadFile(which, file) {
     const img = await decodeFile(file);
     if (which === "starless") {
       state.starless = img;
+      clearWpThumbCache();
+      state.srcFiles.starless = file;
+      if (state.flipH || state.flipV) flipImage(state.starless, state.flipH, state.flipV);
       $("nameStarless").removeAttribute("data-i18n");
       $("nameStarless").textContent = `${file.name} (${img.width}×${img.height})`;
       $("dropStarless").classList.add("loaded");
@@ -3568,14 +5143,35 @@ async function loadFile(which, file) {
       texColor = makeTexture(colSrc);
       state.texColorW = colSrc.width;
       state.texColorH = colSrc.height;
+      if (state.customDepth) {
+        state.customDepth = null;
+        updateDepthCustomUi(t("depthCustomCleared"));
+      }
+      if (state.moonMode) {
+        state.moonDisk = detectMoonDisk();
+        if (!state.moonDisk) {
+          state.moonMode = false;
+          $("ctlMoonMode").checked = false;
+          $("moonStatus").textContent = t("moonNotFound");
+        } else {
+          $("moonStatus").textContent = t("moonFound", Math.round(state.moonDisk.r * 200));
+        }
+      }
       buildDepthMap();
       buildSpinMask();
+      setScenEdit(state.scenEdit);
       // generierte Sterne nutzen das Seitenverhältnis des Starless-Bildes
       if (state.genStars > 0) uploadStars();
       // Export-Dateiname vom Bildnamen ableiten (bleibt überschreibbar)
       $("ctlFilename").placeholder = deriveExportName();
     } else {
       state.starsOriginal = img;
+      state.srcFiles.stars = file;
+      // Aktive Spiegelung sofort auf die NEUE Maske anwenden - sonst passte
+      // eine nach dem Spiegeln getauschte Maske nicht mehr zum Starless-Bild
+      if ((state.flipH || state.flipV) && !state.flipOnlyStarless) {
+        flipImage(state.starsOriginal, state.flipH, state.flipV);
+      }
       $("nameStars").removeAttribute("data-i18n");
       $("nameStars").textContent = `${file.name} (${img.width}×${img.height})`;
       $("dropStars").classList.add("loaded");
@@ -3597,6 +5193,8 @@ async function loadFile(which, file) {
     if (state.starless) {
       $("placeholder").style.display = "none";
       $("btnExport").disabled = false;
+      refreshRenderFoot();
+      if (which === "starless" && typeof histReset === "function") histReset();
       state.t0 = performance.now();
       if (which === "starless") status.textContent = t("starlessLoaded");
     }
@@ -3626,7 +5224,7 @@ const USER_PRESET_GROUPS = {
     "ctlSpinMaskAmt", "ctlSpinStars"],
   stars: ["ctlSpread", "ctlStarDist", "ctlLayers", "ctlStarPar", "ctlTwinkle",
     "ctlTwinkleSpeed", "ctlStarSize", "ctlStarBright", "ctlStarSat",
-    "ctlGenStars", "ctlOcclude", "ctlAnchor"],
+    "ctlGenStars", "ctlOcclude"],
   look: ["ctlBloom", "ctlMblur", "ctlMblurStars", "ctlWarp", "ctlVignette",
     "ctlExposure", "ctlContrast", "ctlSaturation", "ctlClarity",
     "ctlStructure", "ctlSharpen", "ctlH2Det", "ctlH2Width", "ctlH2Sat",
@@ -3761,8 +5359,10 @@ function flipMask(fh, fv) {
 }
 
 function applyImageFlip(fh, fv) {
+  clearWpThumbCache();
   if (state.starless) {
     flipImage(state.starless, fh, fv);
+    if (state.customDepth) flipImage(state.customDepth, fh, fv);
     if (texColor) gl.deleteTexture(texColor);
     const colSrc = downscale(state.starless, 4096);
     texColor = makeTexture(colSrc);
@@ -3774,10 +5374,996 @@ function applyImageFlip(fh, fv) {
   // "Nur Starless": Maske und damit das Koordinatensystem bleiben stehen -
   // für den Fall, dass Starless und Maske gegeneinander gespiegelt sind
   if (!state.flipOnlyStarless) flipMask(fh, fv);
+  // Die Feinkorrektur aus dem Gaia-Abgleich gilt nur fuer die Orientierung,
+  // in der sie geschaetzt wurde. Nach einer Spiegelung wuerde sie die
+  // Objekt-Marker verschieben: also aus dem gecachten Katalog neu abgleichen,
+  // und ohne Katalog lieber fallen lassen als falsch anwenden.
+  if (!state.flipOnlyStarless && state.wcs) {
+    if (state.gaiaCatalog) {
+      try { matchGaia(state.gaiaCatalog); } catch { state.wcsFit = null; }
+    } else if (state.wcsFit) {
+      state.wcsFit = null;
+    }
+  }
   reprojectLabels();
   uploadStars();
   updateGaiaStatus();
 }
+// ------------------------------------------------- Projekte (IndexedDB)
+// Anders als Presets speichern Projekte ALLES lokal im Browser: die
+// Original-Bilddateien, Plate-Solve, Gaia-Abgleich, SIMBAD-Labels, alle
+// Regler und den Flugplan. Zwei Stores: "meta" (Liste ohne Blob-Last)
+// und "data" (kompletter Payload je Projekt-Id). Nichts verlaesst den PC.
+
+function projectDb() {
+  return new Promise((resolve, reject) => {
+    const rq = indexedDB.open("astrofly-projects", 1);
+    rq.onupgradeneeded = () => {
+      rq.result.createObjectStore("meta", { keyPath: "id", autoIncrement: true });
+      rq.result.createObjectStore("data");
+    };
+    rq.onsuccess = () => resolve(rq.result);
+    rq.onerror = () => reject(rq.error);
+  });
+}
+
+function idbReq(rq) {
+  return new Promise((resolve, reject) => {
+    rq.onsuccess = () => resolve(rq.result);
+    rq.onerror = () => reject(rq.error);
+  });
+}
+
+function projStatus(msg, isErr) {
+  const el = $("projStatus");
+  el.textContent = msg || "";
+  el.classList.toggle("error", !!isErr);
+}
+
+function captureProjectThumb() {
+  render(currentTime());
+  const w = 240, h = Math.max(1, Math.round(canvas.height / canvas.width * 240));
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  c.getContext("2d").drawImage(canvas, 0, 0, w, h);
+  return c.toDataURL("image/jpeg", 0.7);
+}
+
+function captureControls() {
+  const out = {};
+  for (const el of document.querySelectorAll("#panel input[id], #panel select[id]")) {
+    if (el.type === "file") continue;
+    if (el.id === "projName" || el.id === "userPresetName") continue;
+    if (el.closest("#wpList") || el.closest("#easeEditor")) continue;
+    out[el.id] = el.type === "checkbox" ? el.checked : el.value;
+  }
+  return out;
+}
+
+function applyControls(controls) {
+  for (const [id, val] of Object.entries(controls)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (el.type === "checkbox") {
+      if (el.checked !== !!val) {
+        el.checked = !!val;
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    } else if (String(el.value) !== String(val)) {
+      el.value = val;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  }
+}
+
+async function saveProject() {
+  if (!state.starless || !state.srcFiles.starless) {
+    projStatus(t("projNeedImg"), true);
+    return;
+  }
+  const name = $("projName").value.trim() ||
+    (state.srcFiles.starless.name || "AstroFly").replace(/\.[^.]+$/, "");
+  const S = state;
+  const cleanLabels = S.labels
+    ? S.labels.map((l) => Object.fromEntries(Object.entries(l).filter(([k]) => !k.startsWith("_"))))
+    : null;
+  const activeAspect = document.querySelector("#aspectBtns button.active");
+  const meta = {
+    name,
+    date: Date.now(),
+    thumb: captureProjectThumb(),
+    starlessName: S.srcFiles.starless.name,
+    starsName: S.srcFiles.stars ? S.srcFiles.stars.name : null,
+  };
+  const data = {
+    controls: captureControls(),
+    aspect: activeAspect ? activeAspect.dataset.aspect : null,
+    files: { starless: S.srcFiles.starless, stars: S.srcFiles.stars, depth: S.srcFiles.depth },
+    extra: {
+      waypoints: S.waypoints.map((w) => ({ ...w, via: w.via ? { ...w.via } : null, curve: w.curve ? [...w.curve] : null })),
+      scenarioOn: S.scenarioOn,
+      target: { ...S.target },
+      seed: S.seed,
+      spinCenter: S.spinCenter ? { ...S.spinCenter } : null,
+      wcs: S.wcs, wcsFit: S.wcsFit, wcsFlip: S.wcsFlip,
+      gaiaCatalog: S.gaiaCatalog, gaiaDepth: S.gaiaDepth, gaiaColorRGB: S.gaiaColorRGB,
+      gaiaPM: S.gaiaPM, gaiaInfo: S.gaiaInfo,
+      labels: cleanLabels, objInfo: S.objInfo, objChoices: S.objChoices, objRegion: S.objRegion,
+      moonObj: S.moonObj,
+    },
+  };
+  try {
+    const db = await projectDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(["meta", "data"], "readwrite");
+      const rq = tx.objectStore("meta").add(meta);
+      rq.onsuccess = () => tx.objectStore("data").put(data, rq.result);
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+    projStatus(t("projSaved", name));
+    $("projName").value = "";
+    rebuildProjectList();
+  } catch (err) {
+    console.error(err);
+    projStatus(t("projSaveErr", err && err.name === "QuotaExceededError" ? t("projQuota") : (err.message || "")), true);
+  }
+}
+
+async function loadProject(id) {
+  projStatus(t("projLoading"));
+  try {
+    const db = await projectDb();
+    const tx = db.transaction(["meta", "data"]);
+    const meta = await idbReq(tx.objectStore("meta").get(id));
+    const data = await idbReq(tx.objectStore("data").get(id));
+    if (!meta || !data) throw new Error("not found");
+
+    // Sauberer Ausgangszustand: Spiegelungen aus, BEVOR die Bilder aus den
+    // Original-Blobs laufen - die Regler-Wiederherstellung spiegelt danach
+    // exakt einmal (gleicher Weg wie ein manueller Neuaufbau)
+    state.flipH = false; state.flipV = false; state.flipOnlyStarless = false;
+    $("ctlFlipH").checked = false; $("ctlFlipV").checked = false; $("ctlFlipOnly").checked = false;
+    state.customDepth = null; state.srcFiles.depth = null;
+    updateDepthCustomUi();
+    state.moonMode = false; state.moonDisk = null; $("ctlMoonMode").checked = false;
+    $("moonObjRow").hidden = true;
+
+    // 1) Bilder durch den normalen Lade-Pfad (inkl. FITS-Header/WCS)
+    await loadFile("starless", data.files.starless);
+    if (data.files.stars) await loadFile("stars", data.files.stars);
+
+    // 2) Eigene Tiefenkarte
+    if (data.files.depth) {
+      state.customDepth = await decodeFile(data.files.depth);
+      state.srcFiles.depth = data.files.depth;
+      updateDepthCustomUi();
+    }
+
+    // 3) Wegpunkte vor den Reglern (der Plan-Haken braucht sie)
+    const X = data.extra;
+    state.waypoints = (X.waypoints || []).map((w) => ({ ...w }));
+
+    // 4) Alle Regler anwenden (loest Spiegeln, Mond-Modus, Laengen usw. aus)
+    applyControls(data.controls);
+    if (data.aspect) {
+      const btn = document.querySelector(`#aspectBtns button[data-aspect="${data.aspect}"]`);
+      if (btn && !btn.classList.contains("active")) btn.click();
+    }
+
+    // 5) Zustands-Extras - Gaia zuletzt (Reihenfolge: erst Flips, dann
+    //    Zuordnung, sonst passen die Stern-Indizes nicht)
+    state.scenarioOn = !!X.scenarioOn;
+    $("ctlScenOn").checked = state.scenarioOn;
+    state.target = X.target || { x: 0, y: 0 };
+    state.seed = X.seed || state.seed;
+    if (X.spinCenter) state.spinCenter = X.spinCenter;
+    state.wcs = X.wcs || null;
+    state.wcsFit = X.wcsFit || null;
+    state.wcsFlip = X.wcsFlip;
+    state.gaiaCatalog = X.gaiaCatalog || null;
+    state.gaiaDepth = X.gaiaDepth || null;
+    state.gaiaColorRGB = X.gaiaColorRGB || null;
+    state.gaiaPM = X.gaiaPM || null;
+    state.gaiaInfo = X.gaiaInfo || null;
+    state.labels = X.labels || null;
+    state.objInfo = X.objInfo || null;
+    state.objChoices = X.objChoices || null;
+    state.objRegion = X.objRegion || null;
+    state.moonObj = X.moonObj || "moon";
+    $("selMoonObj").value = state.moonObj;
+
+    uploadStars();
+    updateGaiaStatus();
+    updateTargetInfo();
+    rebuildObjList();
+    rebuildWaypointList();
+    updateScenarioUi();
+    buildDepthMap();
+    state.pausedAt = 0;
+    state.t0 = performance.now();
+    histReset();   // ein geladenes Projekt ist der neue Ausgangspunkt
+    projStatus(t("projLoaded", meta.name));
+  } catch (err) {
+    console.error(err);
+    projStatus(t("projLoadErr", err.message || ""), true);
+  }
+}
+
+async function deleteProject(id) {
+  const db = await projectDb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(["meta", "data"], "readwrite");
+    tx.objectStore("meta").delete(id);
+    tx.objectStore("data").delete(id);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+  rebuildProjectList();
+}
+
+async function rebuildProjectList() {
+  const grid = $("projGrid");
+  if (!grid) return;
+  let metas = [];
+  try {
+    const db = await projectDb();
+    metas = await idbReq(db.transaction("meta").objectStore("meta").getAll());
+  } catch { /* IndexedDB nicht verfuegbar (z. B. Privatmodus) */ }
+  grid.innerHTML = "";
+  metas.sort((a, b) => b.date - a.date);
+  const lang = I18N.lang === "de" ? "de-DE" : "en-US";
+  for (const m of metas) {
+    const card = document.createElement("div");
+    card.className = "projcard";
+    const img = document.createElement("img");
+    img.src = m.thumb;
+    img.alt = "";
+    const info = document.createElement("div");
+    info.className = "projinfo";
+    const nm = document.createElement("b");
+    nm.textContent = m.name;
+    const dt = document.createElement("small");
+    dt.textContent = new Date(m.date).toLocaleString(lang, { dateStyle: "medium", timeStyle: "short" });
+    const row = document.createElement("div");
+    row.className = "projbtns";
+    const bLoad = document.createElement("button");
+    bLoad.className = "secondary";
+    bLoad.textContent = t("projLoadBtn");
+    bLoad.addEventListener("click", () => loadProject(m.id));
+    const bDel = document.createElement("button");
+    bDel.className = "wpbtn";
+    bDel.textContent = "\u2715";
+    bDel.title = t("projDeleteBtn");
+    bDel.addEventListener("click", () => {
+      if (bDel.dataset.arm) { deleteProject(m.id); return; }
+      bDel.dataset.arm = "1";
+      bDel.textContent = t("projDeleteSure");
+      setTimeout(() => { bDel.dataset.arm = ""; bDel.textContent = "\u2715"; }, 3000);
+    });
+    row.appendChild(bLoad);
+    row.appendChild(bDel);
+    info.appendChild(nm);
+    info.appendChild(dt);
+    info.appendChild(row);
+    card.appendChild(img);
+    card.appendChild(info);
+    grid.appendChild(card);
+  }
+  $("projEmpty").hidden = metas.length > 0;
+}
+
+$("btnProjSave").addEventListener("click", saveProject);
+rebuildProjectList();
+I18N.onChange.push(rebuildProjectList);
+
+// ------------------------------------------------- Szenario-Tab (Wegpunkte)
+
+// Flugplan-Overlay: nummerierte Wegpunkte, Pfad und Bogen-Punkte in der
+// Vorschau (nur waehrend der Einrichtung, nie im Export)
+let wpSel = -1;
+
+function wpToScreen(qx, qy, cam, W, H) {
+  const viewAspect = state.aspect;
+  const imgAspect = state.starless.width / state.starless.height;
+  const cover = coverBase(viewAspect, imgAspect);
+  const parallax = state.parallax / 100;
+  const depthRange = 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
+  const d = depthAtPlane(qx, qy, imgAspect);
+  const ex = 1 + parallax * (d - 0.45) * depthRange;
+  const scaleD = cover * Math.pow(cam.zoom, ex);
+  const prx = (qx - cam.cx) * scaleD;
+  const pry = (qy - cam.cy) * scaleD;
+  const rc = Math.cos(cam.angle), rs = Math.sin(cam.angle);
+  const px = rc * prx - rs * pry, py = rs * prx + rc * pry;
+  return { x: (px / viewAspect + 0.5) * W, y: (1 - (py + 0.5)) * H };
+}
+
+function drawWaypointOverlay(ctx, W, H, cam) {
+  updateWpApply();
+  ctx.save(); // eigener Zustand: nichts darf in die Infokarten-Zeichnung lecken
+  const wps = state.waypoints;
+  const px = W / 1000; // grob aufloesungsunabhaengige Strichstaerken
+  // Pfad (mit Boegen) als Linie
+  ctx.lineWidth = 2 * px;
+  ctx.strokeStyle = "rgba(143, 176, 255, 0.55)";
+  ctx.setLineDash([6 * px, 5 * px]);
+  for (let i = 1; i < wps.length; i++) {
+    ctx.beginPath();
+    for (let k = 0; k <= 16; k++) {
+      const P = scenLegPos(wps[i - 1], wps[i], k / 16);
+      const S = wpToScreen(P.x, P.y, cam, W, H);
+      if (k === 0) ctx.moveTo(S.x, S.y); else ctx.lineTo(S.x, S.y);
+    }
+    ctx.stroke();
+    // Bogen-Punkt als Raute
+    if (wps[i].via) {
+      const V = wpToScreen(wps[i].via.x, wps[i].via.y, cam, W, H);
+      ctx.save();
+      ctx.translate(V.x, V.y);
+      ctx.rotate(Math.PI / 4);
+      ctx.setLineDash([]);
+      ctx.fillStyle = "rgba(143, 176, 255, 0.9)";
+      ctx.fillRect(-5 * px, -5 * px, 10 * px, 10 * px);
+      ctx.restore();
+      ctx.setLineDash([6 * px, 5 * px]);
+    }
+  }
+  ctx.setLineDash([]);
+  // Nummerierte Marker
+  for (let i = 0; i < wps.length; i++) {
+    const S = wpToScreen(wps[i].x, wps[i].y, cam, W, H);
+    const r = 14 * px;
+    const sel = i === wpSel;
+    ctx.beginPath();
+    ctx.arc(S.x, S.y, r, 0, Math.PI * 2);
+    ctx.fillStyle = sel ? "#8fb0ff" : "rgba(10, 14, 22, 0.85)";
+    ctx.fill();
+    ctx.lineWidth = (sel ? 2.5 : 1.5) * px;
+    ctx.strokeStyle = "#8fb0ff";
+    ctx.stroke();
+    ctx.fillStyle = sel ? "#0a0e16" : "#dfe6f5";
+    ctx.font = `600 ${13 * px}px system-ui, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(String(i + 1), S.x, S.y + 0.5 * px);
+  }
+  ctx.restore();
+}
+
+/** Ankunftszeit an Wegpunkt i im Plan (Sekunden ab Flugbeginn). */
+function scenarioArrival(i) {
+  const wps = state.waypoints;
+  let tA = 0;
+  for (let j = 0; j <= i && j < wps.length; j++) {
+    if (j > 0) tA += Math.max(0.2, wps[j].dur || 0.2);
+    if (j < i) tA += Math.max(0, wps[j].hold || 0);
+  }
+  return tA;
+}
+
+/** Wegpunkt auswaehlen: Highlight im Bild UND in der Liste (beide Wege). */
+function selectWaypoint(i) {
+  wpSel = i;
+  if (typeof markTimelineSel === "function") markTimelineSel();
+  document.querySelectorAll("#wpList .wprow").forEach((row, idx) => {
+    row.classList.toggle("sel", idx === i);
+  });
+  const row = document.querySelectorAll("#wpList .wprow")[i];
+  if (row && row.scrollIntoView) row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
+/** Kamera-Regler sperren/freigeben und Videolaenge an den Plan koppeln. */
+function updateScenarioUi() {
+  if (typeof histSchedule === "function") histSchedule();
+  const on = scenarioActive();
+  if (typeof rebuildTimelineWps === "function") rebuildTimelineWps();
+  if (typeof refreshRenderFoot === "function") refreshRenderFoot();
+  for (const id of ["ctlFlightMode", "ctlDriftDir", "ctlZoom", "ctlSpeed",
+    "ctlEaseMode", "ctlEase", "ctlDuration",
+    "ctlRotation", "ctlSwayAmp", "ctlTiltRamp"]) {
+    const el = $(id);
+    if (el) el.disabled = on;
+  }
+  if (on) {
+    const total = scenarioTotal();
+    state.duration = state.loopMode ? total * 2 : total;
+    $("outDuration").textContent = state.duration.toFixed(1).replace(/\.0$/, "") + " s";
+    $("scenStatus").textContent = t("scenActive", state.waypoints.length,
+      state.duration.toFixed(1).replace(/\.0$/, ""));
+  } else {
+    state.duration = parseFloat($("ctlDuration").value);
+    $("outDuration").textContent = state.duration + " s";
+    $("scenStatus").textContent = state.scenarioOn && state.waypoints.length < 2
+      ? t("scenNeedTwo") : "";
+  }
+}
+
+/** Wegpunkt-Liste als editierbare Zeilen neu aufbauen. */
+// ---------------------------------------------------------------------------
+// Miniaturen an den Wegpunkten: zeigen den Bildausschnitt, den die Kamera an
+// diesem Wegpunkt sieht. Gerechnet wird dieselbe Abbildung wie im Renderer,
+// nur ohne Parallaxe und Kippen - fuer ein Vorschaubild ist die Ebene bei
+// mittlerer Tiefe genau richtig.
+// ---------------------------------------------------------------------------
+function wpThumbSource() {
+  if (!state.starless) return null;
+  if (state.thumbSrc && state.thumbSrcFor === state.starless &&
+      state.thumbSrcW === state.starless.width) return state.thumbSrc;
+  const maxW = 512;
+  const sc = Math.min(1, maxW / state.starless.width);
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(state.starless.width * sc));
+  c.height = Math.max(1, Math.round(state.starless.height * sc));
+  c.getContext("2d").drawImage(state.starless.canvas, 0, 0, c.width, c.height);
+  state.thumbSrc = c;
+  state.thumbSrcFor = state.starless;
+  state.thumbSrcW = state.starless.width;
+  return c;
+}
+
+/** Cache verwerfen (neues Bild, Spiegelung, geladenes Projekt). */
+function clearWpThumbCache() {
+  state.thumbSrc = null;
+  state.thumbSrcFor = null;
+}
+
+function drawWpThumb(cv, wp) {
+  const src = wpThumbSource();
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if (!src) return;
+  const W = cv.width, H = cv.height;
+  const viewAspect = state.aspect;
+  const imgAspect = state.starless.width / state.starless.height;
+  const scaleD = coverBase(viewAspect, imgAspect) * Math.max(1, wp.zoom || 1);
+  const ang = ((wp.angle || 0) * Math.PI) / 180;
+  const c = Math.cos(ang), sn = Math.sin(ang);
+  // Bildpixel -> Ebene
+  const a1 = imgAspect / src.width, b1 = -imgAspect / 2 - (wp.x || 0);
+  const a2 = -1 / src.height, b2 = 0.5 - (wp.y || 0);
+  // Ebene -> Miniatur (Drehung, Zoom, Seitenverhaeltnis)
+  const kx = (W * scaleD) / viewAspect, ky = H * scaleD;
+  ctx.setTransform(
+    kx * c * a1, -ky * sn * a1,
+    kx * -sn * a2, -ky * c * a2,
+    kx * (c * b1 - sn * b2) + W / 2, -ky * (sn * b1 + c * b2) + H / 2,
+  );
+  ctx.drawImage(src, 0, 0);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+
+function wpThumbSize() {
+  const h = Math.min(40, Math.round(64 / state.aspect));
+  return { w: Math.max(24, Math.round(h * state.aspect)), h };
+}
+
+function rebuildWaypointList() {
+  const list = $("wpList");
+  list.innerHTML = "";
+  buildSubTabs();   // Zaehler an der Untergruppe "Flugplan" mitfuehren
+  refreshStatusChips();
+  if (typeof rebuildTimelineWps === "function") rebuildTimelineWps();
+  const imgAspect = state.starless
+    ? state.starless.width / state.starless.height : 16 / 9;
+  state.waypoints.forEach((wp, i) => {
+    const row = document.createElement("div");
+    row.className = "wprow" + (i === wpSel ? " sel" : "");
+    row.addEventListener("click", (e) => {
+      if (e.target.closest("input, select, button")) return;
+      selectWaypoint(i);
+    });
+    const pos = `${Math.round(wp.x / imgAspect * 200)} | ${Math.round(wp.y * 200)}`;
+    const th = wpThumbSize();
+    row.innerHTML =
+      `<b>${i + 1}</b><canvas class="wpthumb" width="${th.w}" height="${th.h}"></canvas>` +
+      `<span class="wppos">${pos}</span>` +
+      `<label>${t("wpZoom")} <input type="number" data-k="zoom" min="1" max="8" step="0.05" value="${wp.zoom}"></label>` +
+      `<label>${t("wpAngle")} <input type="number" data-k="angle" min="-180" max="180" step="0.5" value="${wp.angle || 0}"></label>` +
+      (i > 0 ? `<label>${t("wpDur")} <input type="range" data-r="dur" min="0.2" max="10" step="0.1" value="${Math.min(10, wp.dur)}"><input type="number" data-k="dur" min="0.2" max="60" step="0.1" value="${wp.dur}"></label>` : "") +
+      `<label>${t("wpHold")} <input type="range" data-r="hold" min="0" max="10" step="0.1" value="${Math.min(10, wp.hold)}"><input type="number" data-k="hold" min="0" max="30" step="0.1" value="${wp.hold}"></label>` +
+      (i > 0 ? `<select data-k="ease"><option value="smooth">${t("wpEaseSmooth")}</option><option value="linear">${t("wpEaseLinear")}</option><option value="custom">${t("wpEaseCustom")}</option></select>` : "") +
+      (i > 0 ? `<button class="wpbtn" data-a="curve" title="${t("wpCurve")}">&#8767;</button>` : "") +
+      `<label class="wpchk" title="${t("wpFloatTip")}"><input type="checkbox" data-k="floatOn"${wp.floatOn ? " checked" : ""}> ${t("wpFloat")}</label>` +
+      (i > 0 ? `<button class="wpbtn" data-a="via" title="${wp.via ? t("wpViaClear") : t("wpViaSet")}">${wp.via ? "\u222a\u2715" : "\u222a"}</button>` : "") +
+      `<button class="wpbtn" data-a="center" title="${t("wpCenter")}">\u2302</button>` +
+      `<button class="wpbtn" data-a="play" title="${t("wpPlayFrom")}">\u25b6</button>` +
+      `<button class="wpbtn" data-a="goto" title="${t("wpGoto")}">\u2316</button>` +
+      `<button class="wpbtn" data-a="up" title="\u2191">\u2191</button>` +
+      `<button class="wpbtn" data-a="down" title="\u2193">\u2193</button>` +
+      `<button class="wpbtn" data-a="del" title="\u2715">\u2715</button>`;
+    const sel = row.querySelector('select[data-k="ease"]');
+    if (sel) sel.value = wp.ease || "smooth";
+    row.querySelectorAll("input[data-k], select[data-k]").forEach((el) => {
+      el.addEventListener("change", () => {
+        const k = el.dataset.k;
+        wp[k] = k === "ease" ? el.value
+          : el.type === "checkbox" ? el.checked : parseFloat(el.value);
+        if (k === "ease" && el.value === "custom") openEaseEditor(i);
+        const rng = row.querySelector(`input[data-r="${k}"]`);
+        if (rng) rng.value = String(Math.min(10, wp[k]));
+        updateScenarioUi();
+      });
+    });
+    row.querySelectorAll("input[data-r]").forEach((el) => {
+      el.addEventListener("input", () => {
+        const k = el.dataset.r;
+        wp[k] = parseFloat(el.value);
+        const num = row.querySelector(`input[data-k="${k}"]`);
+        if (num) num.value = el.value;
+        updateScenarioUi();
+      });
+    });
+    row.querySelectorAll("button[data-a]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const a = btn.dataset.a;
+        if (a === "curve") {
+          openEaseEditor(i);
+          return;
+        }
+        if (a === "via") {
+          // Bogen setzen: aktueller Bildmittelpunkt der Einrichtung wird der
+          // Zwischenpunkt der Etappe; erneuter Klick entfernt den Bogen
+          wp.via = wp.via ? null : { x: state.scenView.x, y: state.scenView.y };
+          rebuildWaypointList();
+          return;
+        }
+        if (a === "center") {
+          wp.x = 0; wp.y = 0; wp.zoom = 1; wp.angle = 0;
+          rebuildWaypointList();
+          selectWaypoint(i);
+          updateScenarioUi();
+          return;
+        }
+        if (a === "play") {
+          if (!state.scenarioOn) {
+            state.scenarioOn = true;
+            $("ctlScenOn").checked = true;
+            updateScenarioUi();
+          }
+          setScenEdit(false);
+          const tStart = Math.min(state.duration - 0.01, scenarioArrival(i));
+          state.pausedAt = tStart;
+          state.t0 = performance.now() - tStart * 1000;
+          if (!state.playing) $("btnPlay").click();
+          return;
+        }
+        if (a === "goto") {
+          if (!state.scenarioOn) {
+            state.scenarioOn = true;
+            $("ctlScenOn").checked = true;
+            updateScenarioUi();
+          }
+          // Erst den Bearbeitungsmodus einschalten: setScenEdit setzt beim
+          // Einschalten selbst eine Ansicht (letzter Wegpunkt). Danach die
+          // gewuenschte Ansicht setzen, sonst landet der erste Klick woanders.
+          setScenEdit(true);
+          state.scenView = { x: wp.x, y: wp.y, zoom: wp.zoom, angle: wp.angle || 0 };
+          scenClampView();
+          selectWaypoint(i);
+          startWpEdit(i);
+          return;
+        }
+        if (a === "del") state.waypoints.splice(i, 1);
+        wpSel = -1;
+        $("easeEditor").hidden = true; easeEditIdx = -1;
+        if (a === "up" && i > 0) [state.waypoints[i - 1], state.waypoints[i]] = [state.waypoints[i], state.waypoints[i - 1]];
+        if (a === "down" && i < state.waypoints.length - 1) [state.waypoints[i + 1], state.waypoints[i]] = [state.waypoints[i], state.waypoints[i + 1]];
+        rebuildWaypointList();
+        updateScenarioUi();
+      });
+    });
+    const cv = row.querySelector(".wpthumb");
+    if (cv) drawWpThumb(cv, wp);
+    list.appendChild(row);
+  });
+}
+
+// Kurven-Editor fuer eigenes Easing je Etappe (Bezier wie in Schnittprogrammen)
+let easeEditIdx = -1;
+
+function easeEditorLayout() {
+  const cv = $("easeCanvas");
+  const P = 24; // Innenabstand
+  return { cv, g: cv.getContext("2d"), P, w: cv.width - P * 2, h: cv.height - P * 2 };
+}
+
+function drawEaseEditor() {
+  const wp = state.waypoints[easeEditIdx];
+  if (!wp) return;
+  const { cv, g, P, w, h } = easeEditorLayout();
+  const c = wp.curve || [0.42, 0, 0.58, 1];
+  const X = (x) => P + x * w;
+  const Y = (y) => P + (1 - y) * h;
+  g.clearRect(0, 0, cv.width, cv.height);
+  // Raster
+  g.strokeStyle = "#1d2331"; g.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    g.beginPath(); g.moveTo(X(i / 4), Y(0)); g.lineTo(X(i / 4), Y(1)); g.stroke();
+    g.beginPath(); g.moveTo(X(0), Y(i / 4)); g.lineTo(X(1), Y(i / 4)); g.stroke();
+  }
+  // Diagonale (linear) als Referenz
+  g.strokeStyle = "#2a3145";
+  g.beginPath(); g.moveTo(X(0), Y(0)); g.lineTo(X(1), Y(1)); g.stroke();
+  // Griff-Linien
+  g.strokeStyle = "#4a5570";
+  g.beginPath(); g.moveTo(X(0), Y(0)); g.lineTo(X(c[0]), Y(c[1])); g.stroke();
+  g.beginPath(); g.moveTo(X(1), Y(1)); g.lineTo(X(c[2]), Y(c[3])); g.stroke();
+  // Kurve
+  g.strokeStyle = "#8fb0ff"; g.lineWidth = 2;
+  g.beginPath();
+  for (let i = 0; i <= 60; i++) {
+    const k = i / 60;
+    const y = bezierEase(c[0], c[1], c[2], c[3], k);
+    if (i === 0) g.moveTo(X(k), Y(y)); else g.lineTo(X(k), Y(y));
+  }
+  g.stroke();
+  // Griffe
+  for (const [hx, hy] of [[c[0], c[1]], [c[2], c[3]]]) {
+    g.fillStyle = "#eef2ff";
+    g.beginPath(); g.arc(X(hx), Y(hy), 6, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = "#8fb0ff"; g.lineWidth = 1.5;
+    g.beginPath(); g.arc(X(hx), Y(hy), 6, 0, Math.PI * 2); g.stroke();
+  }
+}
+
+function openEaseEditor(i) {
+  easeEditIdx = i;
+  const wp = state.waypoints[i];
+  if (!wp.curve) wp.curve = wp.ease === "linear" ? [0.25, 0.25, 0.75, 0.75] : [0.42, 0, 0.58, 1];
+  wp.ease = "custom";
+  $("easeEditor").hidden = false;
+  $("easeEditWp").textContent = String(i + 1);
+  rebuildWaypointList();
+  drawEaseEditor();
+}
+
+let easeDrag = -1;
+$("easeCanvas").addEventListener("pointerdown", (e) => {
+  const wp = state.waypoints[easeEditIdx];
+  if (!wp) return;
+  const { cv, P, w, h } = easeEditorLayout();
+  const r = cv.getBoundingClientRect();
+  const sx = cv.width / r.width, sy = cv.height / r.height;
+  const px = (e.clientX - r.left) * sx, py = (e.clientY - r.top) * sy;
+  const c = wp.curve;
+  const d = (hx, hy) => Math.hypot(px - (P + hx * w), py - (P + (1 - hy) * h));
+  easeDrag = d(c[0], c[1]) < d(c[2], c[3]) ? 0 : 2;
+  if (Math.min(d(c[0], c[1]), d(c[2], c[3])) > 30) { easeDrag = -1; return; }
+  $("easeCanvas").setPointerCapture(e.pointerId);
+});
+$("easeCanvas").addEventListener("pointermove", (e) => {
+  if (easeDrag < 0) return;
+  const wp = state.waypoints[easeEditIdx];
+  if (!wp) return;
+  const { cv, P, w, h } = easeEditorLayout();
+  const r = cv.getBoundingClientRect();
+  const sx = cv.width / r.width, sy = cv.height / r.height;
+  const px = (e.clientX - r.left) * sx, py = (e.clientY - r.top) * sy;
+  wp.curve[easeDrag] = Math.min(1, Math.max(0, (px - P) / w));
+  wp.curve[easeDrag + 1] = Math.min(1.4, Math.max(-0.4, 1 - (py - P) / h));
+  drawEaseEditor();
+});
+for (const evName of ["pointerup", "pointercancel"]) {
+  $("easeCanvas").addEventListener(evName, () => { easeDrag = -1; });
+}
+for (const btn of document.querySelectorAll("#easePresets button")) {
+  btn.addEventListener("click", () => {
+    const wp = state.waypoints[easeEditIdx];
+    if (!wp) return;
+    wp.curve = btn.dataset.c.split(",").map(Number);
+    drawEaseEditor();
+  });
+}
+$("btnEaseClose").addEventListener("click", () => {
+  $("easeEditor").hidden = true;
+  easeEditIdx = -1;
+});
+
+// Sprachwechsel: dynamisch gebaute Wegpunkt-Zeilen und Status neu uebersetzen
+I18N.onChange.push(() => {
+  rebuildWaypointList();
+  updateScenarioUi();
+  buildSubTabs();
+});
+
+$("wpDurNextR").addEventListener("input", () => {
+  $("wpDurNext").value = $("wpDurNextR").value;
+});
+$("wpDurNext").addEventListener("change", () => {
+  $("wpDurNextR").value = String(Math.min(10, parseFloat($("wpDurNext").value) || 5));
+});
+
+$("btnWpAdd").addEventListener("click", () => {
+  if (!state.scenarioOn) {
+    state.scenarioOn = true;
+    $("ctlScenOn").checked = true;
+  }
+  if (!state.scenEdit) setScenEdit(true);
+  const v = state.scenView;
+  const durNext = Math.min(60, Math.max(0.2, parseFloat($("wpDurNext").value) || 5));
+  state.waypoints.push({
+    x: v.x, y: v.y, zoom: +v.zoom.toFixed(3), angle: +v.angle.toFixed(1),
+    dur: durNext, hold: 0.5, ease: "smooth",
+  });
+  rebuildWaypointList();
+  updateScenarioUi();
+});
+
+// Flugplan-Einrichtung: Steuerkreuz im Bild (Pan/Zoom/Rotation), gedrueckt
+// halten wiederholt. Der eingerichtete Blick wird per Wegpunkt gespeichert.
+function scenClampView() {
+  const v = state.scenView;
+  v.zoom = Math.min(8, Math.max(1, v.zoom));
+  const imgAspect = state.starless
+    ? state.starless.width / state.starless.height : 16 / 9;
+  const cover = coverBase(state.aspect, imgAspect);
+  const sc = cover * v.zoom;
+  const freeX = Math.max(0, imgAspect / 2 - (state.aspect / 2) / sc) * 0.98;
+  const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.98;
+  v.x = Math.min(freeX, Math.max(-freeX, v.x));
+  v.y = Math.min(freeY, Math.max(-freeY, v.y));
+}
+
+function scenPadStep(action) {
+  const v = state.scenView;
+  const pan = 0.02 / v.zoom;
+  const a = (state.orientation + v.angle) * Math.PI / 180;
+  const c = Math.cos(a), s = Math.sin(a);
+  // Bildschirm-Richtung in die (gedrehte) Bildebene uebersetzen
+  const move = (dx, dy) => { v.x += pan * (dx * c + dy * s); v.y += pan * (-dx * s + dy * c); };
+  switch (action) {
+    case "up": move(0, 1); break;
+    case "down": move(0, -1); break;
+    case "left": move(-1, 0); break;
+    case "right": move(1, 0); break;
+    case "zin": v.zoom *= 1.03; break;
+    case "zout": v.zoom /= 1.03; break;
+    case "rotl": v.angle -= 1; break;
+    case "rotr": v.angle += 1; break;
+  }
+  scenClampView();
+}
+
+// ---------------------------------------------------------------------------
+// Wegpunkt im Bild bearbeiten: nach "Ansteuern" merkt sich AstroFly, welcher
+// Wegpunkt geladen ist. Sobald der Blick davon abweicht (Maus, Steuerkreuz,
+// Marker), erscheint der Uebernehmen-Knopf im Bild - damit laesst sich ein
+// Wegpunkt neu setzen, ohne Zahlen in die Liste zu tippen.
+// ---------------------------------------------------------------------------
+// Der Zustand haengt am state-Objekt, damit fruehe Aufrufe (Tab-Wechsel beim
+// Start) nicht in die zeitliche Totzone einer let-Variablen laufen
+state.wpEditIdx = -1;
+state.wpEditBase = null;
+
+function wpViewDiffers(a, b) {
+  if (!a || !b) return false;
+  return Math.abs(a.x - b.x) > 0.002 || Math.abs(a.y - b.y) > 0.002 ||
+    Math.abs(a.zoom - b.zoom) > 0.005 || Math.abs((a.angle || 0) - (b.angle || 0)) > 0.2;
+}
+
+function startWpEdit(i) {
+  state.wpEditIdx = i;
+  const wp = state.waypoints[i];
+  state.wpEditBase = wp ? { x: wp.x, y: wp.y, zoom: wp.zoom, angle: wp.angle || 0 } : null;
+  updateWpApply();
+}
+
+function stopWpEdit() {
+  state.wpEditIdx = -1;
+  state.wpEditBase = null;
+  updateWpApply();
+}
+
+function updateWpApply() {
+  const btn = $("wpApply");
+  if (!btn) return;
+  const wp = state.wpEditIdx >= 0 ? state.waypoints[state.wpEditIdx] : null;
+  const show = !!wp && state.scenEdit && !state.playing &&
+    wpViewDiffers(state.scenView, state.wpEditBase);
+  btn.hidden = !show;
+  if (show) btn.textContent = t("wpApplyBtn", state.wpEditIdx + 1);
+}
+
+$("wpApply").addEventListener("click", () => {
+  const wp = state.waypoints[state.wpEditIdx];
+  if (!wp) return;
+  const v = state.scenView;
+  wp.x = v.x; wp.y = v.y; wp.zoom = v.zoom; wp.angle = v.angle || 0;
+  state.wpEditBase = { x: v.x, y: v.y, zoom: v.zoom, angle: v.angle || 0 };
+  selectWaypoint(state.wpEditIdx);
+  rebuildWaypointList();
+  updateScenarioUi();
+  updateWpApply();
+});
+
+function setScenEdit(on) {
+  on = on && state.scenarioOn; // Einrichtung nur, wenn der Plan aktiviert ist
+  if (on && !state.scenEdit) {
+    const last = state.waypoints[state.waypoints.length - 1];
+    state.scenView = last
+      ? { x: last.x, y: last.y, zoom: last.zoom, angle: last.angle || 0 }
+      : { x: 0, y: 0, zoom: state.zoomBase, angle: 0 };
+    scenClampView();
+  }
+  state.scenEdit = on;
+  if (on && state.playing) {
+    state.pausedAt = currentTime();
+    state.playing = false;
+    $("btnPlay").textContent = "\u25b6";
+  }
+  $("scenPad").hidden = !on || !state.starless;
+  if (!on) stopWpEdit(); else updateWpApply();
+}
+
+for (const btn of document.querySelectorAll("#scenPad button")) {
+  const action = btn.dataset.p;
+  if (action === "set") {
+    btn.addEventListener("click", () => $("btnWpAdd").click());
+    continue;
+  }
+  let rep = null;
+  const start = (e) => {
+    e.preventDefault();
+    scenPadStep(action);
+    clearInterval(rep);
+    rep = setInterval(() => scenPadStep(action), 60);
+  };
+  const stop = () => { clearInterval(rep); rep = null; };
+  btn.addEventListener("pointerdown", start);
+  for (const ev of ["pointerup", "pointerleave", "pointercancel"]) btn.addEventListener(ev, stop);
+}
+
+// Maussteuerung in der Einrichtung: Mausrad zoomt, Links-Ziehen greift das
+// Bild (Kamera folgt der Maus), Rechts-Ziehen dreht die Kamera
+let scenDrag = null;
+let scenDragDist = 0;
+canvas.addEventListener("wheel", (e) => {
+  if (!state.scenEdit || !state.starless) return;
+  e.preventDefault();
+  state.scenView.zoom *= Math.exp(-e.deltaY * 0.0013);
+  scenClampView();
+}, { passive: false });
+canvas.addEventListener("pointerdown", (e) => {
+  if (!state.scenEdit || !state.starless) return;
+  if (e.button !== 0 && e.button !== 1 && e.button !== 2) return;
+  e.preventDefault();
+  scenDrag = { b: e.button, x: e.clientX, y: e.clientY };
+  scenDragDist = 0;
+  // Linksklick auf einen Wegpunkt-Marker: den Punkt verschieben statt pannen
+  if (e.button === 0 && state.waypoints.length) {
+    const rect = canvas.getBoundingClientRect();
+    const cam = camAt(0);
+    // Bei ueberlappenden Markern gewinnt der OBERSTE (hoechster Index wird
+    // zuletzt gezeichnet) - nicht der naechstgelegene darunter
+    let best = -1;
+    state.waypoints.forEach((wp, i) => {
+      const S = wpToScreen(wp.x, wp.y, cam, canvas.width, canvas.height);
+      const sx = (S.x / canvas.width) * rect.width;
+      const sy = (S.y / canvas.height) * rect.height;
+      const d = Math.hypot(e.clientX - rect.left - sx, e.clientY - rect.top - sy);
+      if (d < 18) best = i;
+    });
+    if (best >= 0) {
+      scenDrag.wp = best;
+      selectWaypoint(best);
+    }
+  }
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener("pointermove", (e) => {
+  if (!scenDrag || !state.scenEdit) return;
+  const dx = e.clientX - scenDrag.x, dy = e.clientY - scenDrag.y;
+  scenDrag.x = e.clientX; scenDrag.y = e.clientY;
+  scenDragDist += Math.abs(dx) + Math.abs(dy);
+  // Wegpunkt-Marker ziehen: Zeigerposition -> Bildebene (gleiche
+  // tiefenbewusste Fixpunkt-Iteration wie das Klick-Ziel)
+  if (scenDrag.wp !== undefined) {
+    const wp = state.waypoints[scenDrag.wp];
+    const rect = canvas.getBoundingClientRect();
+    const fx = (e.clientX - rect.left) / rect.width;
+    const fy = (e.clientY - rect.top) / rect.height;
+    const cam = camAt(0);
+    const px = (fx - 0.5) * state.aspect;
+    const py = (0.5 - fy);
+    const c = Math.cos(cam.angle), s = Math.sin(cam.angle);
+    const rx = c * px + s * py;
+    const ry = -s * px + c * py;
+    const imgAspect = state.starless.width / state.starless.height;
+    const cover = coverBase(state.aspect, imgAspect);
+    const parallax = state.parallax / 100;
+    const depthRange = 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
+    let qx = cam.cx + rx / (cover * cam.zoom);
+    let qy = cam.cy + ry / (cover * cam.zoom);
+    for (let i = 0; i < 3; i++) {
+      const d = depthAtPlane(qx, qy, imgAspect);
+      const exD = 1 + parallax * (d - 0.45) * depthRange;
+      const sc = cover * Math.pow(cam.zoom, exD);
+      qx = cam.cx + rx / sc;
+      qy = cam.cy + ry / sc;
+    }
+    wp.x = Math.min(imgAspect * 0.475, Math.max(-imgAspect * 0.475, qx));
+    wp.y = Math.min(0.475, Math.max(-0.475, qy));
+    return;
+  }
+  const v = state.scenView;
+  if (scenDrag.b === 1 || scenDrag.b === 2) {
+    v.angle += dx * 0.25;
+    return;
+  }
+  const rect = canvas.getBoundingClientRect();
+  const imgAspect = state.starless.width / state.starless.height;
+  const cover = coverBase(state.aspect, imgAspect);
+  const k = 1 / (rect.height * cover * v.zoom);
+  const a = (state.orientation + v.angle) * Math.PI / 180;
+  const c = Math.cos(a), s = Math.sin(a);
+  const mx = -dx * k, my = dy * k;
+  v.x += mx * c + my * s;
+  v.y += -mx * s + my * c;
+  scenClampView();
+});
+for (const evName of ["pointerup", "pointercancel"]) {
+  canvas.addEventListener(evName, () => {
+    // Nach dem Verschieben eines Markers die Zeilen-Anzeige auffrischen
+    if (scenDrag && scenDrag.wp !== undefined) rebuildWaypointList();
+    scenDrag = null;
+  });
+}
+canvas.addEventListener("contextmenu", (e) => {
+  if (state.scenEdit) e.preventDefault();
+});
+
+$("btnScenReset").addEventListener("click", () => {
+  if (!state.scenarioOn) return;
+  if (!state.scenEdit) setScenEdit(true);
+  state.scenView = { x: 0, y: 0, zoom: 1, angle: 0 };
+});
+
+$("selMoonObj").addEventListener("change", () => {
+  state.moonObj = $("selMoonObj").value;
+});
+
+$("ctlScenOn").addEventListener("change", () => {
+  state.scenarioOn = $("ctlScenOn").checked;
+  setScenEdit(state.scenarioOn && state.uiMode === "pro" && state.activeTab === "szenario");
+  updateScenarioUi();
+});
+
+// Mond-Modus: Scheibe erkennen und Kugel-Tiefe aktivieren (Prototyp)
+$("ctlRealStars").addEventListener("change", () => {
+  state.realStars = $("ctlRealStars").checked;
+});
+
+$("ctlMoonMode").addEventListener("change", () => {
+  const on = $("ctlMoonMode").checked;
+  const status = $("moonStatus");
+  $("moonObjRow").hidden = !on;
+  if (on) {
+    if (!state.starless) {
+      $("ctlMoonMode").checked = false;
+      status.textContent = t("moonNoImage");
+      return;
+    }
+    state.moonDisk = detectMoonDisk();
+    if (!state.moonDisk) {
+      $("ctlMoonMode").checked = false;
+      state.moonMode = false;
+      status.textContent = t("moonNotFound");
+      buildDepthMap();
+      return;
+    }
+    state.moonMode = true;
+    status.textContent = t("moonFound", Math.round(state.moonDisk.r * 200));
+  } else {
+    state.moonMode = false;
+    status.textContent = "";
+  }
+  buildDepthMap();
+});
+
 $("ctlFlipH").addEventListener("change", () => {
   state.flipH = $("ctlFlipH").checked;
   applyImageFlip(true, false);
@@ -3792,6 +6378,11 @@ $("ctlFlipOnly").addEventListener("change", () => {
   state.flipOnlyStarless = $("ctlFlipOnly").checked;
   if (state.flipH || state.flipV) {
     flipMask(state.flipH, state.flipV);
+    if (state.wcs && state.gaiaCatalog) {
+      try { matchGaia(state.gaiaCatalog); } catch { state.wcsFit = null; }
+    } else if (state.wcsFit) {
+      state.wcsFit = null;
+    }
     reprojectLabels();
     uploadStars();
     updateGaiaStatus();
@@ -3907,6 +6498,7 @@ function saveBlob(blob, filename) {
 
 function beginExport(w, h) {
   state.exporting = true;
+  $("btnRenderFoot").disabled = true;
   canvas.width = w;
   canvas.height = h;
   $("btnExport").disabled = true;
@@ -3916,6 +6508,7 @@ function beginExport(w, h) {
 
 function endExport(message) {
   state.exporting = false;
+  $("btnRenderFoot").disabled = false;
   state.offlineExport = false;
   $("btnExport").disabled = false;
   $("exportProgressWrap").hidden = true;

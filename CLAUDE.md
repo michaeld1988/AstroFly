@@ -13,7 +13,7 @@ kein Build-Schritt, alles läuft lokal im Browser.
 - Claude ist der alleinige Entwickler; Michael testet, gibt Feedback und
   entscheidet über Releases.
 
-## Kern-Features (Stand: August 2026)
+## Kern-Features (Stand: 22. August 2026, live v2026-08-22-1)
 
 - 3D-Parallaxe aus automatischer Tiefenkarte; Zoom- und Lateral-Flugmodus,
   Loop-Modus, Zoomziel per Klick (tiefenbewusst)
@@ -27,8 +27,28 @@ kein Build-Schritt, alles läuft lokal im Browser.
   dazu globaler Feather und eine einblendbare Erkennungsmaske; Shader mit
   flachem Kern + Kosinus-Auslauf und Monotonie-Clamp (artefaktfrei)
 - Easy-Modus (8 Presets + eigene Preset-Karten + Effektstärkeregler) /
-  Pro-Modus (7 Tabs: Bilder · Kamera · Sterne · Look · Presets ·
-  Wissenschaft · Export)
+  Pro-Modus mit **sechs Gruppen in einer senkrechten Leiste** (`#proRail`:
+  Projekte · Bild · Kamera · Look · Daten · Export) und Untergruppen
+  (`#subTabs`), z. B. Kamera → Flug/Flugplan/Galaxie. Steuerung über
+  `TAB_GROUPS`, `gotoTab(tab)`, `state.activeGroup`/`state.activeTab`
+- **Projekte** (eigene Gruppe): Komplett-Speicherung in IndexedDB inklusive
+  Bildern, WCS, Gaia-Daten und Flugplan – im Gegensatz zu eigenen Presets,
+  die davon nichts speichern
+- **Flugplan** mit Zeitachse unter der Vorschau (`#timeline`, Wegpunkte als
+  Rauten, Etappendauer per Ziehen), Miniaturbild je Wegpunkt,
+  Wegpunkt-Bearbeitung direkt im Bild mit Übernehmen-Knopf (`#wpApply`),
+  zoom-kompensierte Wegführung (Schwenk mit gleichzeitigem Zoom läuft auf
+  dem Schirm gleichmäßig)
+- **Bedienkomfort:** Undo/Redo für alle Einstellungen (Strg+Z / Strg+Umschalt+Z,
+  Verlauf mit 60 Schritten), Shift hält beim Ziehen jeden Regler auf ein
+  Zehntel der Schrittweite, Reglerwerte antippen und eintippen,
+  Abweichungspunkte plus Gruppen-Reset, Statusband über der Vorschau
+  (`STATUS_CHIPS`) mit Sprung zur zuständigen Einstellung, feste
+  Render-Fußleiste im Panel, mobil als hochziehbares Bedienblatt,
+  geführter Einstieg beim ersten Start (`TOUR_STEPS`, 5 Schritte)
+- **Stil-Code:** Einstellungen als kurzer Textblock kopieren und einfügen
+  (`buildStyleCode`/`parseStyleCode`/`applyStyleCode`) – so tauscht Michael
+  fertige Looks aus, ohne Screenshots zu vergleichen
 - **Eigene Presets:** benennbar, Gruppen wählbar (Kamera/Sterne/Look/Format),
   localStorage `astrofly-user-presets`; speichert NIE Gaia-Daten, FITS-Header
   oder Bilddaten (explizite Vorgabe von Michael)
@@ -45,7 +65,10 @@ kein Build-Schritt, alles läuft lokal im Browser.
   Nebel-Okklusion
 - **QoL:** Doppelklick setzt jeden Slider auf Standard zurück (wie
   Lightroom), Zoom ohne seitlichen Drift bei verschobenem Ausschnitt,
-  JPEG-Warnhinweis bei der Bildauswahl
+  JPEG-Warnhinweis bei der Bildauswahl; Klick in die Vorschau setzt den
+  Fokuspunkt bzw. das Galaxie-Zentrum und zeigt dort einen Linien-Marker
+  (`#i-mtarget` blau, `#i-mspin` violett), Doppelklick setzt das Ziel
+  zurück in die Bildmitte
 - Export: MP4 (WebCodecs) bis 4K, alle gängigen Seitenverhältnisse,
   9:16 mit Social-Media-Schutzzone für Overlays
 
@@ -64,8 +87,13 @@ kein Build-Schritt, alles läuft lokal im Browser.
    die Version hochzählen (Cache-Busting).
 5. **Tests:** Playwright-Headless-Tests (Chromium mit SwiftShader) gegen
    einen lokalen `python3 -m http.server`. Achtung: Der Server serviert die
-   Arbeitskopie – vor Testläufen Branch prüfen. Für SIMBAD-Änderungen
+   Arbeitskopie – vor Testläufen Branch prüfen. Jeder Test muss vorab
+   `localStorage.setItem("astrofly-tour-seen", "1")` setzen, sonst legt sich
+   der geführte Einstieg über die Bedienelemente. Für SIMBAD-Änderungen
    zusätzlich live gegen den echten TAP-Server testen (Mocks reichen nicht).
+6. **Monitoring:** ein täglicher Check-in um 07:00 UTC berichtet neue Issues
+   und offene PRs. An Issues nichts fixen oder kommentieren, nur berichten –
+   außer Michael bittet darum.
 
 ## Code-Landkarte
 
@@ -74,8 +102,11 @@ kein Build-Schritt, alles läuft lokal im Browser.
 - `objectinfo.js` – SIMBAD-Abfrage, kuratierte Fakten (`OBJECT_FACTS`),
   Regionen (`OBJECT_REGIONS`), Größen-Fallbacks (`OBJ_ARCMIN`)
 - `i18n.js` – alle UI-Texte EN/DE (`data-i18n`-Attribute)
-- `index.html` / `style.css` – flache Tab-Sektionen, Instrumenten-Look
-  (monochrom, Akzent #8fb0ff)
+- `index.html` / `style.css` – Gruppenleiste `#proRail` + Untergruppen
+  `#subTabs`, Bühne mit `#stageInner` (Vorschau, Transport, Steuerkreuz),
+  Statusband `#stageChips`, Zeitachse `#timeline`, Fußleiste `#panelFoot`,
+  Symbolsammlung als SVG-Sprite (`#i-*`), Instrumenten-Look (monochrom,
+  Akzent #8fb0ff, zweiter Akzent #b07aff)
 - `beta/` – vollständige Kopie der App für den Beta-Kanal
 - `demo/` – Orion-Demobilder + `orion.wcs` (Plate-Solve-Lösung, wird vom
   Demo-Button automatisch mitgeladen); `vendor/` – UTIF, mp4-muxer u. a.
