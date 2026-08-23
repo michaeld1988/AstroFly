@@ -488,6 +488,7 @@ out vec2 vDir;    // Streifen-Richtung in Pixeln (normiert)
 out float vLen;   // Streifen-Länge in px
 out float vBase;  // Stern-Durchmesser in px
 out float vSize;  // gl_PointSize (für gl_PointCoord -> px)
+out float vGlow;  // Glanzhof der hellsten Sterne (0..1)
 out vec3 vAtlasUv;   // Atlas: Zentrum-UV + halbe Groesse in UV (x<0 = prozedural)
 out float vPatchHalf; // halbe Patch-Groesse auf dem Bildschirm in px
 
@@ -674,6 +675,10 @@ void main() {
       len = 0.0;
     }
   }
+  // Leitsterne bekommen einen weiten, weichen Hof. Dafuer waechst nur das
+  // Sprite, nicht der Kern - sonst werden helle Sterne zu fetten Klumpen
+  vGlow = smoothstep(0.86, 1.0, aBright);
+  if (vGlow > 0.0 && vAtlasUv.x < 0.0) size = min(max(size, base * (1.0 + vGlow * 2.2)), uMaxPoint);
   gl_PointSize = size;
   vDir = dirPx;
   vLen = len;
@@ -710,6 +715,7 @@ in vec2 vDir;
 in float vLen;
 in float vBase;
 in float vSize;
+in float vGlow;
 in vec3 vAtlasUv;
 in float vPatchHalf;
 uniform sampler2D uAtlas;   // echte Sternabbilder (Ausschnitte der Maske)
@@ -750,10 +756,15 @@ void main() {
   float da = max(abs(along) - vLen * 0.5, 0.0);
   vec2 q = vec2(da, across) / (vBase * 0.5);
   float r2 = dot(q, q); // 0 Mittellinie .. 1 Rand
-  if (r2 > 1.0) discard;
-  float core = exp(-r2 * 9.0);
-  float halo = exp(-r2 * 2.5) * 0.35;
-  float a = (core + halo) * vAlpha;
+  // Weiter Hof der Leitsterne: reicht bis zum Sprite-Rand und laeuft dort
+  // weich aus; zusammen mit dem Bloom wirkt ein heller Stern dadurch so
+  // dominant wie im Original, ohne dass sein Kern aufgeblaeht wird
+  float rOut = length(d) / max(vSize * 0.5, 1.0);
+  float wide = vGlow > 0.0 ? exp(-rOut * rOut * 5.0) * vGlow * 0.5 : 0.0;
+  if (r2 > 1.0 && wide < 0.004) discard;
+  float core = r2 <= 1.0 ? exp(-r2 * 9.0) : 0.0;
+  float halo = r2 <= 1.0 ? exp(-r2 * 2.5) * (0.35 + vGlow * 0.3) : 0.0;
+  float a = (core + halo + wide) * vAlpha;
   // Verlauf entlang des Schweifs: am Kopf (Sternposition, in Flugrichtung
   // vorn) volle Helligkeit, zum Ende hin weich auslaufend
   if (vLen > 0.5) {
@@ -1518,7 +1529,10 @@ function buildStarBuffer() {
       if (v > peak) peak = v;
       const j = idx * 4;
       sr += data[j] * v; sg += data[j + 1] * v; sb += data[j + 2] * v;
-      if (area > 4000) break; // Ausreißer (Nebelreste in der Maske) begrenzen
+      // Ausreißer (Nebelreste in der Maske) begrenzen. Grosszuegig genug, dass
+      // ein sehr heller Stern samt Halo vollstaendig eingesammelt wird - sonst
+      // wird sein Schwerpunkt aus dem abgebrochenen Teil gemittelt
+      if (area > 12000) break;
       if (x > 0     && !visited[idx - 1] && lum[idx - 1] >= THRESH && sp < stack.length) { visited[idx - 1] = 1; stack[sp++] = idx - 1; }
       if (x < w - 1 && !visited[idx + 1] && lum[idx + 1] >= THRESH && sp < stack.length) { visited[idx + 1] = 1; stack[sp++] = idx + 1; }
       if (y > 0     && !visited[idx - w] && lum[idx - w] >= THRESH && sp < stack.length) { visited[idx - w] = 1; stack[sp++] = idx - w; }
@@ -1541,11 +1555,21 @@ function buildStarBuffer() {
 
   const FLOATS = 7;
   const buf = new Float32Array(list.length * FLOATS);
+  // Bezugswert fuer die Helligkeit: der hellste Stern des Bildes (die Liste
+  // ist nach Fluss sortiert). Ein Sternfeld umspannt mehrere Groessenordnungen
+  // - die alte absolute Grenze (Fluss 20000) machte schon mittlere Sterne
+  // "maximal hell", ein Stern wie Sadr war dann nicht mehr davon zu
+  // unterscheiden
+  const fluxMax = Math.max(1, list.length ? list[0].flux : 1);
   let o = 0;
   for (const st of list) {
     const u = st.x / w, v = st.y / h;
-    const bright = Math.min(1, st.flux / 20000);
-    const radiusPx = Math.max(1.1, Math.sqrt(st.area / Math.PI) * 0.9 + bright * 2.5);
+    const rel = Math.min(1, st.flux / fluxMax);
+    const bright = Math.log10(1 + 999 * rel) / 3;
+    // Radius aus der Fleckgroesse plus Zuschlag fuer die hellsten Sterne,
+    // damit die Leitsterne eines Feldes auch als solche wirken
+    const radiusPx = Math.max(1.1, Math.sqrt(st.area / Math.PI) * 0.9 +
+      Math.pow(bright, 3) * 9);
     const size = radiusPx / h; // Radius in Ebenen-Einheiten
 
     const norm = Math.max(st.r, st.g, st.b, 1);
@@ -4823,6 +4847,12 @@ $("btnObjects").addEventListener("click", async () => {
     // Bonus - scheitert nur diese Abfrage, fehlt lediglich die Stern-Ebene
     let starObjs = [];
     try { starObjs = await querySimbadStars(c.ra, c.dec, radius); } catch { /* optional */ }
+    // Objekte, die SIMBAD als Stern fuehrt, aber unter einem Nebelnamen
+    // bekannt sind (NGC 6888 = WR 136), bekommen den Nebelnamen - der
+    // Stern-Eintrag desselben Objekts entfaellt, sonst stehen beide Namen
+    // uebereinander an derselben Stelle
+    const nebMains = new Set(objs.map((o) => o.main).filter(Boolean));
+    if (nebMains.size) starObjs = starObjs.filter((o) => !nebMains.has(o.main));
     const imgAspect = img.width / img.height;
     const degPerPx = Math.sqrt(Math.abs(wcs.cd[0] * wcs.cd[3] - wcs.cd[1] * wcs.cd[2]));
     const items = [];
