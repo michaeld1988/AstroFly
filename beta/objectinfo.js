@@ -218,6 +218,11 @@ const OBJ_ARCMIN = {
   M43: 20, NGC1977: 20, NGC1980: 14, NGC1981: 25, NGC1999: 2,
   // Sharpless-Nebel (SIMBAD ohne galdim)
   "SH2-132": 70, "SH2-101": 20, "SH2-155": 50, "SH2-129": 140, "SH2-240": 180,
+  // Cygnus-Feld: SIMBAD fuehrt hier durchweg keine Winkelgroessen. NGC 6888
+  // ist dort sogar nur ein Alias des Zentralsterns (WR 136) - ohne diesen
+  // Eintrag faellt der Crescent-Nebel komplett aus der Auswahl
+  NGC6888: 18, "SH2-108": 90, IC1318: 100, "SH2-105": 18, "SH2-106": 3,
+  "SH2-109": 40, "SH2-104": 7, NGC6914: 6, NGC6910: 10, IC4996: 3.4, M29: 12.7,
 };
 
 /**
@@ -230,34 +235,76 @@ const OBJ_ARCMIN = {
  * (daher der Spalten-Alias), und galdim darf NULL sein - die Größe wird
  * dann aus OBJ_ARCMIN ergänzt.
  */
-async function querySimbad(ra, dec, radiusDeg) {
-  const adql = `SELECT TOP 120 b.main_id, b.ra, b.dec, b.otype_txt, b.galdim_majaxis AS majaxis, i.id ` +
+// Ausgedehnte Objekte (Nebel, Haufen, Galaxien). Der Typ-Filter haelt die
+// Einzelsterne aus dem Ergebnis: in dichten Milchstrassenfeldern tragen
+// tausende Haufenmitglieder Namen wie "NGC 6910 12" und fuellten bisher das
+// gesamte Zeilenlimit, so dass die eigentlichen Nebel nie ankamen.
+const EXT_OTYPES = "'HII','SNR','PN','RNe','DNe','GNe','ISM','Cld','MoC','sh'," +
+  "'OpC','GlC','Cl*','As*','G','GiG','GiC','IG','AGN','Sy1','Sy2','LIN'," +
+  "'SBG','EmG','rG','bub','SFR','out','HH','Y*O','C?*','PoC','MGr'";
+
+// Nebel, die in SIMBAD keinen eigenen Eintrag haben, sondern als Alias ihres
+// Zentralsterns gefuehrt werden (typisch fuer Wolf-Rayet-Ringnebel)
+const STAR_NAMED_NEBULAE = ["NGC 6888", "NGC 2359", "NGC 3199", "SH 2-308"];
+
+/** Ein Alias zaehlt nur als Katalogobjekt, wenn nach der Nummer nichts
+ *  Weiteres folgt: "NGC 6914b" ja, "IC 4996   10" (Haufenmitglied) nein. */
+function isCatalogAlias(alias) {
+  return /^(M|NGC|IC)\s+\d+[a-zA-Z]?$/.test(alias) ||
+         /^SH\s+2-\d+[a-zA-Z]?$/.test(alias);
+}
+
+function simbadConeUrl(fields, ra, dec, radiusDeg, extra, top) {
+  const adql = `SELECT TOP ${top} ${fields} ` +
     `FROM basic AS b JOIN ident AS i ON i.oidref = b.oid ` +
     `WHERE 1=CONTAINS(POINT('ICRS',b.ra,b.dec),` +
     `CIRCLE('ICRS',${ra.toFixed(6)},${dec.toFixed(6)},${radiusDeg.toFixed(4)})) ` +
-    `AND (i.id LIKE 'M %' OR i.id LIKE 'NGC %' OR i.id LIKE 'IC %' ` +
-    `OR i.id LIKE 'SH 2-%' OR i.id LIKE 'SH  2-%') ` +
-    `ORDER BY majaxis DESC`;
-  const url = "https://simbad.cds.unistra.fr/simbad/sim-tap/sync?REQUEST=doQuery&LANG=ADQL&FORMAT=csv&QUERY=" +
+    extra + ` ORDER BY majaxis DESC`;
+  return "https://simbad.cds.unistra.fr/simbad/sim-tap/sync?REQUEST=doQuery&LANG=ADQL&FORMAT=csv&QUERY=" +
     encodeURIComponent(adql);
-  const lines = (await fetchTapCsv(url)).trim().split("\n");
+}
+
+async function querySimbad(ra, dec, radiusDeg) {
+  const fields = "b.main_id, b.ra, b.dec, b.otype_txt, b.galdim_majaxis AS majaxis, i.id";
+  const catFilter = `AND (i.id LIKE 'M %' OR i.id LIKE 'NGC %' OR i.id LIKE 'IC %' ` +
+    `OR i.id LIKE 'SH 2-%' OR i.id LIKE 'SH  2-%')`;
+  // Zwei Runden: die breite Abfrage wie bisher (faengt auch Objekte mit
+  // ungewoehnlichem Typ) und eine auf ausgedehnte Objekte beschraenkte,
+  // damit Nebel nicht hinter Sternen aus dem Zeilenlimit fallen
+  // Dritte Runde fuer Nebel, die SIMBAD unter ihrem Zentralstern fuehrt:
+  // "NGC 6888" ist dort ein Alias des Wolf-Rayet-Sterns WR 136 und faellt
+  // sonst zwischen den tausenden Sternen des Feldes durch
+  const namedFilter = "AND (" + STAR_NAMED_NEBULAE
+    .map((n) => `i.id LIKE '${n.replace(/\s+/g, "%")}'`).join(" OR ") + ")";
+  const urls = [
+    simbadConeUrl(fields, ra, dec, radiusDeg, catFilter, 120),
+    simbadConeUrl(fields, ra, dec, radiusDeg,
+      `AND b.otype_txt IN (${EXT_OTYPES}) ` + catFilter, 80),
+    simbadConeUrl(fields, ra, dec, radiusDeg, namedFilter, 20),
+  ];
+  const parts = await Promise.all(urls.map((u) =>
+    fetchTapCsv(u).then((r) => r, () => "")));
   const CAT_RANK = { M: 0, NGC: 1, IC: 2, "SH2-": 3 };
   const byMain = new Map(); // main_id -> Objekt mit bestem Katalog-Alias
-  for (let i = 1; i < lines.length; i++) {
-    const f = csvFields(lines[i]);
-    if (f.length < 6) continue;
-    const mainId = f[0].trim(), alias = f[5].trim();
-    const oRa = +f[1], oDec = +f[2], size = +f[4];
-    const otype = f[3].replace(/"/g, "");
-    if (!isFinite(oRa) || !isFinite(oDec)) continue;
-    const m = normObjId(alias).match(/^(M|NGC|IC|SH2-)\d/);
-    if (!m) continue;
-    const rank = CAT_RANK[m[1]];
-    const prev = byMain.get(mainId);
-    if (prev && prev.rank <= rank) continue;
-    const fallback = OBJ_ARCMIN[normObjId(alias)] || 0;
-    byMain.set(mainId, { id: alias, rank, ra: oRa, dec: oDec, otype,
-      sizeArcmin: size > 0 ? size : fallback });
+  for (const part of parts) {
+    const lines = part.trim().split("\n");
+    for (let i = 1; i < lines.length; i++) {
+      const f = csvFields(lines[i]);
+      if (f.length < 6) continue;
+      const mainId = f[0].trim(), alias = f[5].trim();
+      const oRa = +f[1], oDec = +f[2], size = +f[4];
+      const otype = f[3].replace(/"/g, "");
+      if (!isFinite(oRa) || !isFinite(oDec)) continue;
+      if (!isCatalogAlias(alias)) continue;
+      const m = normObjId(alias).match(/^(M|NGC|IC|SH2-)\d/);
+      if (!m) continue;
+      const rank = CAT_RANK[m[1]];
+      const prev = byMain.get(mainId);
+      if (prev && prev.rank <= rank) continue;
+      const fallback = OBJ_ARCMIN[normObjId(alias)] || 0;
+      byMain.set(mainId, { id: alias, rank, main: mainId, ra: oRa, dec: oDec,
+        otype, sizeArcmin: size > 0 ? size : fallback });
+    }
   }
   const out = [...byMain.values()];
   out.sort((a, b) => b.sizeArcmin - a.sizeArcmin);
@@ -294,7 +341,7 @@ async function querySimbadStars(ra, dec, radiusDeg) {
     if (!/\*/.test(otype) || otype === "Cl*" || otype === "As*") continue;
     const prev = byMain.get(mainId);
     if (prev && prev.id.length <= alias.length) continue;
-    byMain.set(mainId, { id: alias, ra: oRa, dec: oDec, otype, star: true });
+    byMain.set(mainId, { id: alias, main: mainId, ra: oRa, dec: oDec, otype, star: true });
   }
   return [...byMain.values()];
 }
