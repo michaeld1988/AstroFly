@@ -4299,7 +4299,7 @@ const STATUS_CHIPS = [
   },
   {
     // Standard ist an - gemeldet wird deshalb nur der Ausnahmefall
-    tab: "sterne",
+    tab: "bilder",
     on: () => !state.realStars && state.maskStarCount > 0,
     label: () => t("chipRealStarsOff"),
   },
