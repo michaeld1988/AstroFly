@@ -1540,6 +1540,73 @@ function refreshStarCullOut() {
 }
 
 /**
+ * Trennt eine Zusammenhangskomponente mit mehreren Helligkeitsgipfeln in
+ * einzelne Sterne (vereinfachtes Deblending wie in SExtractor): lokale
+ * Maxima suchen, nahe/unechte Gipfel verwerfen (Talprobe auf halbem Weg),
+ * dann jedes Pixel dem naechsten Gipfel zuschlagen. Liefert null, wenn der
+ * Fleck ein einzelner Stern ist.
+ */
+function deblendStar(pix, lum, data, w, peak) {
+  const need = Math.max(60, peak * 0.22); // Gipfel muessen deutlich hell sein
+  const maxima = [];
+  for (const idx of pix) {
+    const v = lum[idx];
+    if (v < need) continue;
+    const x = idx % w;
+    // 8er-Nachbarschaft: nur echte lokale Maxima (Plateaus zaehlen einmal,
+    // deshalb ">" nach rechts/unten und ">=" nach links/oben)
+    const L = x > 0, R = x < w - 1;
+    if (L && lum[idx - 1] > v) continue;
+    if (R && lum[idx + 1] > v) continue;
+    if (lum[idx - w] > v) continue;
+    if (lum[idx + w] > v) continue;
+    if (L && lum[idx - w - 1] > v) continue;
+    if (R && lum[idx - w + 1] > v) continue;
+    if (L && lum[idx + w - 1] > v) continue;
+    if (R && lum[idx + w + 1] > v) continue;
+    maxima.push({ idx, x, y: (idx / w) | 0, v });
+  }
+  if (maxima.length < 2) return null;
+  maxima.sort((a, b) => b.v - a.v);
+  // Gipfel ausduennen: Mindestabstand + Talprobe (liegt auf halbem Weg kaum
+  // ein Einschnitt, ist es derselbe Stern - z. B. ein Plateau im Kern)
+  const kept = [];
+  for (const m of maxima) {
+    if (kept.length >= 6) break;
+    let ok = true;
+    for (const k of kept) {
+      const d = Math.hypot(m.x - k.x, m.y - k.y);
+      if (d < 3) { ok = false; break; }
+      const mi = ((m.y + k.y) >> 1) * w + ((m.x + k.x) >> 1);
+      if (lum[mi] > 0.75 * Math.min(m.v, k.v)) { ok = false; break; }
+    }
+    if (ok) kept.push(m);
+  }
+  if (kept.length < 2) return null;
+  // Pixel dem naechsten Gipfel zuschlagen und Teil-Sterne aufsummieren
+  const acc = kept.map(() => ({ flux: 0, cx: 0, cy: 0, area: 0, peak: 0, sr: 0, sg: 0, sb: 0 }));
+  for (const idx of pix) {
+    const v = lum[idx];
+    const x = idx % w, y = (idx / w) | 0;
+    let bi = 0, bd = Infinity;
+    for (let k = 0; k < kept.length; k++) {
+      const dx = x - kept[k].x, dy = y - kept[k].y;
+      const d = dx * dx + dy * dy;
+      if (d < bd) { bd = d; bi = k; }
+    }
+    const a = acc[bi], j = idx * 4;
+    a.flux += v; a.cx += x * v; a.cy += y * v; a.area++;
+    if (v > a.peak) a.peak = v;
+    a.sr += data[j] * v; a.sg += data[j + 1] * v; a.sb += data[j + 2] * v;
+  }
+  return acc.filter((a) => a.flux > 0).map((a) => ({
+    x: a.cx / a.flux, y: a.cy / a.flux,
+    flux: a.flux, area: a.area, peak: a.peak,
+    r: a.sr / a.flux, g: a.sg / a.flux, b: a.sb / a.flux,
+  }));
+}
+
+/**
  * Findet Sterne in der Maske über Zusammenhangskomponenten und baut den
  * GPU-Puffer: pro Stern [x, y, helligkeit, größe, r, g, b] in Ebenen-Einheiten.
  * Die Tiefen-Ebene wird erst im Vertexshader aus Seed/Streuung/Abstand bestimmt.
@@ -1572,11 +1639,13 @@ function buildStarBuffer() {
     visited[i] = 1;
     let flux = 0, cx = 0, cy = 0, area = 0, peak = 0;
     let sr = 0, sg = 0, sb = 0;
+    const pix = [];
     while (sp > 0) {
       const idx = stack[--sp];
       const v = lum[idx];
       const x = idx % w, y = (idx / w) | 0;
       flux += v; cx += x * v; cy += y * v; area++;
+      pix.push(idx);
       if (v > peak) peak = v;
       const j = idx * 4;
       sr += data[j] * v; sg += data[j + 1] * v; sb += data[j + 2] * v;
@@ -1590,11 +1659,19 @@ function buildStarBuffer() {
       if (y < h - 1 && !visited[idx + w] && lum[idx + w] >= THRESH && sp < stack.length) { visited[idx + w] = 1; stack[sp++] = idx + w; }
     }
     if (flux <= 0) continue;
-    found.push({
-      x: cx / flux, y: cy / flux,
-      flux, area, peak,
-      r: sr / flux, g: sg / flux, b: sb / flux,
-    });
+    // Verschmolzene Sterne trennen: dicht beieinander stehende Sterne bilden
+    // EINE Zusammenhangskomponente und wurden bisher als ein grosser Klumpen
+    // gerendert. Mehrere getrennte Helligkeitsgipfel im Fleck -> aufteilen.
+    const parts = area >= 14 ? deblendStar(pix, lum, data, w, peak) : null;
+    if (parts) {
+      for (const p of parts) found.push(p);
+    } else {
+      found.push({
+        x: cx / flux, y: cy / flux,
+        flux, area, peak,
+        r: sr / flux, g: sg / flux, b: sb / flux,
+      });
+    }
   }
 
   found.sort((p, q) => q.flux - p.flux);
