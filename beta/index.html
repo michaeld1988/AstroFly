@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-16-59">
+<link rel="stylesheet" href="style.css?v=2026-08-16-60">
 </head>
 <body>
 
@@ -193,6 +193,13 @@
       spikes, halos and exact colors included - instead of an idealized glow sprite. Faint
       stars stay procedural (they are only a few pixels anyway). During strong motion
       streaks a star falls back to the procedural sprite.</p>
+      <label class="slider">
+        <span><span data-i18n="starCull">Hide smallest stars</span> <output id="outStarCull">0</output></span>
+        <input type="range" id="ctlStarCull" min="0" max="100" step="1" value="0">
+      </label>
+      <p class="tip" id="starCullInfo" data-i18n="starCullHint">Wide-field images often carry
+      thousands of tiny stars that make the animation feel restless. Drag right to remove the
+      smallest stars first - the counter shows how many stay visible.</p>
       <details class="adv">
         <summary data-i18n="advStretch">Mask stretch</summary>
         <label class="check">
@@ -1010,8 +1017,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-59"></script>
-<script src="objectinfo.js?v=2026-08-16-59"></script>
-<script src="app.js?v=2026-08-16-59"></script>
+<script src="i18n.js?v=2026-08-16-60"></script>
+<script src="objectinfo.js?v=2026-08-16-60"></script>
+<script src="app.js?v=2026-08-16-60"></script>
 </body>
 </html>

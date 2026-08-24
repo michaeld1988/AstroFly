@@ -94,6 +94,7 @@ const state = {
   moonObj: "moon",       // Auswahl im Bilder-Tab: moon | planet (gleiche Kugel-Logik)
   starDetails: true,     // Sternphysik (Größe/Alter) in Labels anzeigen
   realStars: true,       // hellste Sterne mit ihrem echten Pixel-Abbild rendern
+  starCull: 0,           // kleinste Sterne ausblenden (0 = alle, 100 = nur die groessten)
   flipH: false,          // Bild horizontal gespiegelt (Starless + Maske)
   flipV: false,          // Bild vertikal gespiegelt
   flipOnlyStarless: false, // Spiegeln wirkt nur aufs Starless (Maske/Koordinaten bleiben)
@@ -442,6 +443,7 @@ uniform float uTwSpeed;   // Funkel-Tempo (1 = normal)
 uniform float uWarp;      // 0..1: Sterne rasen zusätzlich an der Kamera vorbei
 uniform float uDepthRange;
 uniform float uStarSize;   // Größen-Multiplikator
+uniform float uCullBright;  // Sterne unterhalb dieser Helligkeit ausblenden
 uniform float uStarBright; // Helligkeits-Multiplikator
 uniform float uStarSat;    // Sättigung (0 = weiß, 1 = original, 2 = kräftig)
 uniform vec2 uCenter;
@@ -520,6 +522,15 @@ void main() {
   // Reproduzierbare Zufalls-Tiefe pro Stern; "Neu mischen" ändert den Seed
   float h = fract(sin(aPos.x * 127.1 + aPos.y * 311.7 + uSeed * 17.0) * 43758.5453);
   // Optional in diskrete Ebenen einrasten (gleichmäßig verteilt)
+  if (aBright < uCullBright) {
+    // Ausgeblendeter Stern: aus dem Clip-Volumen schieben und alle
+    // Varyings neutral setzen (undefinierte Varyings sind UB)
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 1.0;
+    vAlpha = 0.0; vColor = vec3(0.0); vDir = vec2(1.0, 0.0);
+    vLen = 0.0; vBase = 1.0; vSize = 1.0; vGlow = 0.0;
+    vAtlasUv = vec3(-1.0); vPatchHalf = 0.0;
+    return;
+  }
   float brightShift = aBright * 0.12;
   if (uLayers > 0.5) {
     h = (floor(h * uLayers) + 0.5) / uLayers;
@@ -1493,12 +1504,52 @@ function buildStarAtlas(list, srcCanvas, srcData) {
 }
 
 /**
+ * Perzentil-Schwelle des "Kleinste Sterne ausblenden"-Reglers: Regler 0..100
+ * -> Anteil der auszublendenden (kleinsten) Sterne. Die Kurve ist unten
+ * flach, damit sich der Anfang fein dosieren laesst; am rechten Anschlag
+ * bleiben nur die hellsten ~1,5 %.
+ */
+function starCullFrac() {
+  const P = state.starCull / 100;
+  return P <= 0 ? 0 : Math.min(0.985, Math.pow(P, 1.35) * 0.985);
+}
+function starCullThreshold() {
+  const b = state.maskBrightSorted;
+  if (!b || !b.length) return 0;
+  const frac = starCullFrac();
+  if (frac <= 0) return 0;
+  const idx = Math.min(b.length - 1, Math.floor(b.length * frac));
+  // knapp ueber dem Perzentilwert, damit "aBright < Schwelle" ihn erfasst
+  return b[idx] + 1e-6;
+}
+function refreshStarCullOut() {
+  const out = $("outStarCull");
+  if (!out) return;
+  const n = state.maskStarCount || 0;
+  if (!n) { out.textContent = "\u2013"; return; }
+  const t = starCullThreshold();
+  let hidden = 0;
+  if (t > 0) {
+    const b = state.maskBrightSorted;
+    // erste Position >= Schwelle (binaere Suche)
+    let lo = 0, hi = b.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (b[m] < t) lo = m + 1; else hi = m; }
+    hidden = lo;
+  }
+  out.textContent = (n - hidden).toLocaleString() + " / " + n.toLocaleString();
+}
+
+/**
  * Findet Sterne in der Maske über Zusammenhangskomponenten und baut den
  * GPU-Puffer: pro Stern [x, y, helligkeit, größe, r, g, b] in Ebenen-Einheiten.
  * Die Tiefen-Ebene wird erst im Vertexshader aus Seed/Streuung/Abstand bestimmt.
  */
 function buildStarBuffer() {
-  if (!state.stars) { state.maskStarFloats = null; state.maskStarCount = 0; uploadStars(); return; }
+  if (!state.stars) {
+    state.maskStarFloats = null; state.maskStarCount = 0;
+    state.maskBrightSorted = null; refreshStarCullOut();
+    uploadStars(); return;
+  }
   const src = downscale(state.stars, 3000);
   const w = src.width, h = src.height;
   const data = src.getContext("2d").getImageData(0, 0, w, h).data;
@@ -1584,6 +1635,15 @@ function buildStarBuffer() {
 
   state.maskStarCount = list.length;
   state.maskStarFloats = buf;
+  // Aufsteigend sortierte Helligkeiten fuer den "Kleinste Sterne
+  // ausblenden"-Regler: Perzentil-Schwelle und Anzahl-Anzeige
+  {
+    const b = new Float32Array(list.length);
+    for (let i = 0; i < list.length; i++) b[i] = buf[i * FLOATS + 2];
+    b.sort();
+    state.maskBrightSorted = b;
+  }
+  refreshStarCullOut();
   // Echte Sternabbilder: Atlas aus demselben Arbeits-Canvas wie die Erkennung
   state.starAtlas = buildStarAtlas(list, src, data);
   if (texStarAtlas) gl.deleteTexture(texStarAtlas);
@@ -3195,6 +3255,7 @@ function render(forcedT) {
     u1f(starProg, "uDepthRange", depthRange);
     u1f(starProg, "uStarSize", state.starSize / 100);
     u1f(starProg, "uStarBright", state.starBright / 100);
+    u1f(starProg, "uCullBright", starCullThreshold());
     u1f(starProg, "uStarSat", state.starSat / 100);
     u2f(starProg, "uCenter", cam.cx, cam.cy);
     u2f(starProg, "uTilt", starTiltX, starTiltY);
@@ -3526,6 +3587,11 @@ bindSlider("ctlStarDist", "outStarDist", "starDist", asInt);
 bindSlider("ctlTwinkle", "outTwinkle", "twinkle", asInt);
 bindSlider("ctlTwinkleSpeed", "outTwinkleSpeed", "twinkleSpeed", asPct);
 bindSlider("ctlStarSize", "outStarSize", "starSize", asPct);
+$("ctlStarCull").addEventListener("input", () => {
+  state.starCull = parseFloat($("ctlStarCull").value);
+  refreshStarCullOut();
+});
+refreshStarCullOut();
 bindSlider("ctlStarBright", "outStarBright", "starBright", asPct);
 bindSlider("ctlStarSat", "outStarSat", "starSat", asPct);
 bindSlider("ctlLayers", "outLayers", "starLayers", (v) => v === 0 ? "∞" : String(v));
@@ -3663,7 +3729,7 @@ const SIMPLE_DEFAULTS = {
   ctlSpinTilt: 0, ctlSpinMaskAmt: 0,
   ctlSpread: 70, ctlStarDist: 55, ctlLayers: 0, ctlStarPar: 100,
   ctlTwinkle: 25, ctlTwinkleSpeed: 100, ctlStarSize: 100, ctlStarBright: 100,
-  ctlStarSat: 100, ctlGenStars: 0,
+  ctlStarSat: 100, ctlGenStars: 0, ctlStarCull: 0,
 };
 
 // 8 Objekt-Presets: 3 Nebel, 3 Galaxien, 2 Sternhaufen. "look" wählt den
@@ -4326,6 +4392,12 @@ const STATUS_CHIPS = [
     tab: "bilder",
     on: () => !state.realStars && state.maskStarCount > 0,
     label: () => t("chipRealStarsOff"),
+  },
+  {
+    tab: "bilder",
+    on: () => state.starCull > 0 && state.maskStarCount > 0,
+    label: () => t("chipStarCull", state.starCull),
+    off: () => setCtl("ctlStarCull", 0),
   },
   {
     tab: "objekte",
@@ -5254,7 +5326,7 @@ const USER_PRESET_GROUPS = {
     "ctlSpinMaskAmt", "ctlSpinStars"],
   stars: ["ctlSpread", "ctlStarDist", "ctlLayers", "ctlStarPar", "ctlTwinkle",
     "ctlTwinkleSpeed", "ctlStarSize", "ctlStarBright", "ctlStarSat",
-    "ctlGenStars", "ctlOcclude"],
+    "ctlGenStars", "ctlOcclude", "ctlStarCull"],
   look: ["ctlBloom", "ctlMblur", "ctlMblurStars", "ctlWarp", "ctlVignette",
     "ctlExposure", "ctlContrast", "ctlSaturation", "ctlClarity",
     "ctlStructure", "ctlSharpen", "ctlH2Det", "ctlH2Width", "ctlH2Sat",
