@@ -97,7 +97,7 @@ const state = {
   flipH: false,          // Bild horizontal gespiegelt (Starless + Maske)
   flipV: false,          // Bild vertikal gespiegelt
   flipOnlyStarless: false, // Spiegeln wirkt nur aufs Starless (Maske/Koordinaten bleiben)
-  anchorStars: 100,      // Sterne im Nebel verankern: immer an (physikalisch korrekt)
+  anchorStars: 100,      // % Sterne im Nebel verankern (100 = physikalisch korrekt)
   objInfo: null,         // erkanntes Hauptobjekt { id, facts, otype }
   labels: null,          // Feld-Beschriftungen [{ id, x, y, sizePlane, otype, on }]
   showInfo: true,        // Infokarte ins Video einblenden
@@ -3504,6 +3504,7 @@ bindSlider("ctlTwinkleSpeed", "outTwinkleSpeed", "twinkleSpeed", asPct);
 bindSlider("ctlStarSize", "outStarSize", "starSize", asPct);
 bindSlider("ctlStarBright", "outStarBright", "starBright", asPct);
 bindSlider("ctlStarSat", "outStarSat", "starSat", asPct);
+bindSlider("ctlAnchor", "outAnchor", "anchorStars", asPct);
 bindSlider("ctlLayers", "outLayers", "starLayers", (v) => v === 0 ? "∞" : String(v));
 bindSlider("ctlStarPar", "outStarPar", "starPar", asPct);
 bindSlider("ctlSwayDir", "outSwayDir", "swayDir", (v) => v + "°");
@@ -5224,7 +5225,7 @@ const USER_PRESET_GROUPS = {
     "ctlSpinMaskAmt", "ctlSpinStars"],
   stars: ["ctlSpread", "ctlStarDist", "ctlLayers", "ctlStarPar", "ctlTwinkle",
     "ctlTwinkleSpeed", "ctlStarSize", "ctlStarBright", "ctlStarSat",
-    "ctlGenStars", "ctlOcclude"],
+    "ctlGenStars", "ctlOcclude", "ctlAnchor"],
   look: ["ctlBloom", "ctlMblur", "ctlMblurStars", "ctlWarp", "ctlVignette",
     "ctlExposure", "ctlContrast", "ctlSaturation", "ctlClarity",
     "ctlStructure", "ctlSharpen", "ctlH2Det", "ctlH2Width", "ctlH2Sat",
