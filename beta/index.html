@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-16-61">
+<link rel="stylesheet" href="style.css?v=2026-08-16-62">
 </head>
 <body>
 
@@ -850,11 +850,15 @@
       distant object: it barely reacts to the flight while all stars pass in front – the most
       scientifically accurate 3D behavior. The depth-map parallax inside the image is disabled
       while active.</p>
-      <p class="tip autonote"><b data-i18n="autoOn">Always on</b>
-      <span data-i18n="anchorStarsHint">Stars sitting on dense nebula regions automatically
-      adopt the nebula's depth and motion – they stay inside the nebula during the 3D flight
-      instead of drifting in front of it (like the Wolf-Rayet stars in the Lion Nebula). After
-      a Gaia match, stars clearly in front of or behind the nebula stay free.</span></p>
+      <label class="slider">
+        <span><span data-i18n="anchorStars">Anchor stars in the nebula</span> <button class="qm" data-help="hintAnchor">?</button> <output id="outAnchor">100 %</output></span>
+        <input type="range" id="ctlAnchor" min="0" max="100" step="1" value="100">
+      </label>
+      <p class="tip hint2" id="hintAnchor" hidden data-i18n="anchorStarsHint">Stars sitting on
+      dense nebula regions automatically adopt the nebula's depth and motion – they stay inside
+      the nebula during the 3D flight instead of drifting in front of it (like the Wolf-Rayet
+      stars in the Lion Nebula). After a Gaia match, stars clearly in front of or behind the
+      nebula stay free.</p>
 
     </section>
 
@@ -1017,8 +1021,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-61"></script>
-<script src="objectinfo.js?v=2026-08-16-61"></script>
-<script src="app.js?v=2026-08-16-61"></script>
+<script src="i18n.js?v=2026-08-16-62"></script>
+<script src="objectinfo.js?v=2026-08-16-62"></script>
+<script src="app.js?v=2026-08-16-62"></script>
 </body>
 </html>
