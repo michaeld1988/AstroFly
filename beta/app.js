@@ -94,6 +94,7 @@ const state = {
   moonObj: "moon",       // Auswahl im Bilder-Tab: moon | planet (gleiche Kugel-Logik)
   starDetails: true,     // Sternphysik (Größe/Alter) in Labels anzeigen
   realStars: true,       // hellste Sterne mit ihrem echten Pixel-Abbild rendern
+  starImage: false,      // Kino-Modus: Sternmaske als Bildebene (fotografische Sterne)
   starCull: 0,           // kleinste Sterne ausblenden (0 = alle, 100 = nur die groessten)
   flipH: false,          // Bild horizontal gespiegelt (Starless + Maske)
   flipV: false,          // Bild vertikal gespiegelt
@@ -929,7 +930,81 @@ void main() {
   outColor = vec4(col * uFade, 1.0);
 }`;
 
+// --- Pass 1b (Kino-Modus): Sternmaske als Bild - Sterne behalten ihre
+// echte fotografische Abbildung (PSF, Spikes, Farben) statt als Partikel
+// neu gezeichnet zu werden. Die Ebene liegt auf einer festen Tiefe
+// (Abstand-zum-Nebel-Regler) und nutzt dieselbe Kameramathematik wie das
+// Starless, inklusive des staerkeren Parallaxe-Faktors der Sternebene.
+const starImgFS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D uColor;
+uniform vec2 uColorTexel;
+uniform float uBicubic;
+uniform float uViewAspect;
+uniform float uImgAspect;
+uniform float uZoom;
+uniform float uAngle;
+uniform float uCover;
+uniform vec2 uCenter;
+uniform vec2 uTilt;
+uniform float uEx;         // fertiger Tiefen-Exponent der Sternebene
+uniform float uBright;     // Helligkeits-Regler
+uniform float uSat;        // Saettigungs-Regler (1 = neutral)
+void main() {
+  vec2 p = vec2((vUv.x - 0.5) * uViewAspect, vUv.y - 0.5);
+  float c = cos(uAngle), s = sin(uAngle);
+  vec2 pr = mat2(c, -s, s, c) * p;
+  float scale = uCover * pow(uZoom, uEx);
+  vec2 q = uCenter + pr / scale + uTilt;
+  vec2 uv = vec2(q.x / uImgAspect, q.y) + 0.5;
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+    outColor = vec4(0.0, 0.0, 0.0, 1.0);
+    return;
+  }
+  vec3 col;
+  if (uBicubic > 0.5) {
+    vec2 pos = uv / uColorTexel - 0.5;
+    vec2 f = fract(pos);
+    vec2 base = (pos - f + 0.5) * uColorTexel;
+    vec2 f2 = f * f, f3 = f2 * f;
+    vec2 w0 = -0.5 * f3 + f2 - 0.5 * f;
+    vec2 w1 =  1.5 * f3 - 2.5 * f2 + 1.0;
+    vec2 w2 = -1.5 * f3 + 2.0 * f2 + 0.5 * f;
+    vec2 w3 =  0.5 * f3 - 0.5 * f2;
+    vec2 w12 = w1 + w2;
+    vec2 uv12 = base + (w2 / w12) * uColorTexel;
+    vec2 uv0 = base - uColorTexel;
+    vec2 uv3 = base + 2.0 * uColorTexel;
+    col =
+      texture(uColor, vec2(uv0.x,  uv0.y)).rgb  * (w0.x  * w0.y) +
+      texture(uColor, vec2(uv12.x, uv0.y)).rgb  * (w12.x * w0.y) +
+      texture(uColor, vec2(uv3.x,  uv0.y)).rgb  * (w3.x  * w0.y) +
+      texture(uColor, vec2(uv0.x,  uv12.y)).rgb * (w0.x  * w12.y) +
+      texture(uColor, vec2(uv12.x, uv12.y)).rgb * (w12.x * w12.y) +
+      texture(uColor, vec2(uv3.x,  uv12.y)).rgb * (w3.x  * w12.y) +
+      texture(uColor, vec2(uv0.x,  uv3.y)).rgb  * (w0.x  * w3.y) +
+      texture(uColor, vec2(uv12.x, uv3.y)).rgb  * (w12.x * w3.y) +
+      texture(uColor, vec2(uv3.x,  uv3.y)).rgb  * (w3.x  * w3.y);
+    col = max(col, 0.0);
+  } else {
+    col = texture(uColor, uv).rgb;
+  }
+  // Farb-Boost wie im Partikel-Shader: Anteile relativ zum staerksten Kanal
+  // spreizen - holt die zarten Sternfarben heraus, ohne aufzuhellen
+  if (uSat > 1.0) {
+    float mx = max(col.r, max(col.g, col.b)) + 1e-5;
+    col = pow(col / mx, vec3(1.0 + (uSat - 1.0) * 2.0)) * mx;
+  } else if (uSat < 1.0) {
+    float lum = dot(col, vec3(0.299, 0.587, 0.114));
+    col = mix(vec3(lum), col, uSat);
+  }
+  outColor = vec4(col * uBright, 1.0);
+}`;
+
 const bgProg = program(quadVS, bgFS);
+const starImgProg = program(quadVS, starImgFS);
 const starProg = program(starVS, starFS);
 const brightProg = program(quadVS, brightFS);
 const blurProg = program(quadVS, blurFS);
@@ -952,6 +1027,20 @@ let texColor = null;
 let texDepth = null;
 let texSpinMask = null;
 let texStarAtlas = null;
+let texStarsImg = null;   // Kino-Modus: Sternmaske als Bildtextur (bis 4096 px)
+
+// Kino-Modus: Sternmaske als Bild hochladen (nur bei Bedarf, wird bei
+// Maskenwechsel/Spiegelung verworfen)
+function ensureStarsImgTexture() {
+  if (texStarsImg || !state.stars) return;
+  const src = downscale(state.stars, 4096);
+  texStarsImg = makeTexture(src);
+  state.texStarsW = src.width;
+  state.texStarsH = src.height;
+}
+function dropStarsImgTexture() {
+  if (texStarsImg) { gl.deleteTexture(texStarsImg); texStarsImg = null; }
+}
 
 function makeTexture(source) {
   const t = gl.createTexture();
@@ -1712,6 +1801,7 @@ function buildStarBuffer() {
 
   state.maskStarCount = list.length;
   state.maskStarFloats = buf;
+  dropStarsImgTexture();
   // Aufsteigend sortierte Helligkeiten fuer den "Kleinste Sterne
   // ausblenden"-Regler: Perzentil-Schwelle und Anzahl-Anzeige
   {
@@ -3309,7 +3399,34 @@ function render(forcedT) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, fbStars.fb);
   gl.viewport(0, 0, fbStars.w, fbStars.h);
   gl.clear(gl.COLOR_BUFFER_BIT);
-  if (state.starCount > 0) {
+  if (state.starImage && state.stars) {
+    // Kino-Modus: die Sternmaske als Bildebene mit fester Tiefe - jeder
+    // Stern behaelt seine fotografische Abbildung. Exponent wie bei den
+    // Partikeln (staerkere Parallaxe der Sternebene), Tiefe aus dem
+    // Abstand-zum-Nebel-Regler
+    ensureStarsImgTexture();
+    const dS = Math.min(1, Math.max(0.02, state.starDist / 100));
+    const exS = Math.max(0.12, 1 + parallax * (dS - 0.45) * depthRange * 2.6 * (state.starPar / 100));
+    gl.useProgram(starImgProg);
+    gl.bindVertexArray(quadVao);
+    gl.activeTexture(gl.TEXTURE9);
+    gl.bindTexture(gl.TEXTURE_2D, texStarsImg || texBlack);
+    u1i(starImgProg, "uColor", 9);
+    gl.activeTexture(gl.TEXTURE0);
+    u2f(starImgProg, "uColorTexel", 1 / (state.texStarsW || 1), 1 / (state.texStarsH || 1));
+    u1f(starImgProg, "uBicubic", cam.zoom * Math.pow(cam.zoom, exS - 1) > 1.05 ? 1 : 0);
+    u1f(starImgProg, "uViewAspect", viewAspect);
+    u1f(starImgProg, "uImgAspect", imgAspect);
+    u1f(starImgProg, "uZoom", cam.zoom);
+    u1f(starImgProg, "uAngle", cam.angle);
+    u1f(starImgProg, "uCover", cover);
+    u2f(starImgProg, "uCenter", cam.cx, cam.cy);
+    u2f(starImgProg, "uTilt", starTiltX * (dS - 0.45), starTiltY * (dS - 0.45));
+    u1f(starImgProg, "uEx", exS);
+    u1f(starImgProg, "uBright", state.starBright / 100);
+    u1f(starImgProg, "uSat", state.starSat / 100);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  } else if (state.starCount > 0) {
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE);
     gl.useProgram(starProg);
@@ -3898,7 +4015,7 @@ for (const card of document.querySelectorAll(".pcard")) {
 // eingestellter Stil weitergeben und wieder einspielen, ohne jeden Wert
 // einzeln abzutippen.
 // ---------------------------------------------------------------------------
-const STYLE_CHECKS = ["ctlMblurStars", "ctlLoop", "ctlRealStars", "ctlSpinStars"];
+const STYLE_CHECKS = ["ctlMblurStars", "ctlLoop", "ctlRealStars", "ctlSpinStars", "ctlStarImg"];
 
 /**
  * Bezugswert eines Reglers fuer den Stil-Code: Kamera- und Sternregler messen
@@ -4473,7 +4590,13 @@ const STATUS_CHIPS = [
   },
   {
     tab: "bilder",
-    on: () => state.starCull > 0 && state.maskStarCount > 0,
+    on: () => state.starImage && !!state.stars,
+    label: () => t("chipStarImg"),
+    off: () => setCheck("ctlStarImg", false),
+  },
+  {
+    tab: "bilder",
+    on: () => state.starCull > 0 && state.maskStarCount > 0 && !state.starImage,
     label: () => t("chipStarCull", state.starCull),
     off: () => setCtl("ctlStarCull", 0),
   },
@@ -6513,6 +6636,11 @@ $("ctlScenOn").addEventListener("change", () => {
 });
 
 // Mond-Modus: Scheibe erkennen und Kugel-Tiefe aktivieren (Prototyp)
+$("ctlStarImg").addEventListener("change", () => {
+  state.starImage = $("ctlStarImg").checked;
+  if (state.starImage) ensureStarsImgTexture();
+  refreshStatusChips();
+});
 $("ctlRealStars").addEventListener("change", () => {
   state.realStars = $("ctlRealStars").checked;
 });
