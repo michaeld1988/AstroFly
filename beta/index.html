@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-16-65">
+<link rel="stylesheet" href="style.css?v=2026-08-16-66">
 </head>
 <body>
 
@@ -951,6 +951,15 @@
         </select>
         <button id="btnExport" class="primary" disabled data-i18n="exportBtn">Export video</button>
       </div>
+      <label class="check">
+        <input type="checkbox" id="ctlSuperSample" checked>
+        <span data-i18n="superSample">High quality export (2× supersampling, up to Full HD)</span>
+        <button class="qm" data-help="hintSuperSample">?</button>
+      </label>
+      <p class="tip hint2" id="hintSuperSample" hidden data-i18n="superSampleHint">The video is
+      rendered internally at twice the resolution and averaged down: star edges become perfectly
+      smooth and the smallest stars stop shimmering. Export takes about three times longer.
+      4K is always rendered at 1×.</p>
       <p class="tip" id="exportBrowserHint" hidden></p>
       <div id="exportStatus"></div>
       <div class="progress" id="exportProgressWrap" hidden><div id="exportProgress"></div></div>
@@ -1039,8 +1048,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-65"></script>
-<script src="objectinfo.js?v=2026-08-16-65"></script>
-<script src="app.js?v=2026-08-16-65"></script>
+<script src="i18n.js?v=2026-08-16-66"></script>
+<script src="objectinfo.js?v=2026-08-16-66"></script>
+<script src="app.js?v=2026-08-16-66"></script>
 </body>
 </html>
