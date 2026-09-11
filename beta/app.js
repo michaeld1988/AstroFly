@@ -117,6 +117,8 @@ const state = {
   warp: 0,               // 0..100
   vignette: 0,           // 0..100
   grain: 0,              // Filmkorn 0..100
+  superSample: true,     // Export intern in 2x Aufloesung rendern und runterrechnen
+  renderScale: 1,        // aktueller Supersampling-Faktor (nur waehrend des Exports > 1)
   exposure: 0,           // -100..100 (Blendenstufen ±2)
   contrast: 0,           // -100..100
   saturation: 0,         // -100..100
@@ -446,6 +448,7 @@ uniform float uWarp;      // 0..1: Sterne rasen zusätzlich an der Kamera vorbei
 uniform float uDepthRange;
 uniform float uStarSize;   // Größen-Multiplikator
 uniform float uCullBright;  // Sterne unterhalb dieser Helligkeit ausblenden
+uniform float uPxMin;       // stabile Mindestgroesse kleiner Sterne (in Render-Pixeln)
 uniform float uStarBright; // Helligkeits-Multiplikator
 uniform float uStarSat;    // Sättigung (0 = weiß, 1 = original, 2 = kräftig)
 uniform vec2 uCenter;
@@ -638,10 +641,10 @@ void main() {
   // im gleichen Mass gedimmt (Energieerhalt): gleiche wahrgenommene
   // Helligkeit, aber ueber mehrere Pixel verteilt und dadurch ruhig.
   float dimSmall = 1.0;
-  if (px < 2.6) {
-    dimSmall = base / 2.6;
+  if (px < uPxMin) {
+    dimSmall = base / uPxMin;
     dimSmall *= dimSmall;
-    base = 2.6;
+    base = uPxMin;
   }
 
   // Geschwindigkeits-Streifen: Position kurz danach mit demselben Tiefen-
@@ -696,7 +699,7 @@ void main() {
     // Halbbreite) flackerten beim Bewegen wie ein Stroboskop und tragen
     // ohnehin keine sichtbare PSF - sie fallen auf den stabilen
     // prozeduralen Sprite zurueck
-    if (patchHalf > 2.6) {
+    if (patchHalf > uPxMin) {
       vPatchHalf = min(patchHalf, uMaxPoint * 0.5 - 1.0);
       size = max(size, vPatchHalf * 2.0 + 2.0);
       vAtlasUv = vec3(aAtlas.x, aAtlas.y, aAtlas.z);
@@ -3346,6 +3349,10 @@ function render(forcedT) {
 
   const t = forcedT !== undefined ? forcedT : currentTime();
   const { loopT, cam, fade } = animParams(t);
+  // Supersampling: alle in Pixeln definierten Radien (Bloom, Klarheit,
+  // Struktur, Schaerfe, Korn) mitskalieren, damit der Export so aussieht
+  // wie die Vorschau
+  const ssc = state.renderScale || 1;
   const viewAspect = state.aspect;
   const imgAspect = state.starless.width / state.starless.height;
   const cover = coverBase(viewAspect, imgAspect);
@@ -3495,6 +3502,9 @@ function render(forcedT) {
     u1f(starProg, "uStarSize", state.starSize / 100);
     u1f(starProg, "uStarBright", state.starBright / 100);
     u1f(starProg, "uCullBright", starCullThreshold());
+    // Mindestgroesse in AUSGABE-Pixeln: beim Supersampling entsprechend
+    // groesser rendern, sonst holt das Herunterrechnen das Flackern zurueck
+    u1f(starProg, "uPxMin", 2.6 * ssc);
     u1f(starProg, "uStarSat", state.starSat / 100);
     u2f(starProg, "uCenter", cam.cx, cam.cy);
     u2f(starProg, "uTilt", starTiltX, starTiltY);
@@ -3576,12 +3586,12 @@ function render(forcedT) {
     u1i(blurProg, "uScene", 0);
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbBloomB.fb);
     gl.bindTexture(gl.TEXTURE_2D, fbBloomA.tex);
-    u2f(blurProg, "uDir", 1 / fbBloomA.w, 0);
+    u2f(blurProg, "uDir", ssc / fbBloomA.w, 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbBloomA.fb);
     gl.bindTexture(gl.TEXTURE_2D, fbBloomB.tex);
-    u2f(blurProg, "uDir", 0, 1 / fbBloomA.h);
+    u2f(blurProg, "uDir", 0, ssc / fbBloomA.h);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
@@ -3595,11 +3605,11 @@ function render(forcedT) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbSoftA.fb);
     gl.viewport(0, 0, fbSoftA.w, fbSoftA.h);
     gl.bindTexture(gl.TEXTURE_2D, fbScene.tex);
-    u2f(blurProg, "uDir", 2 / fbSoftA.w, 0);
+    u2f(blurProg, "uDir", 2 * ssc / fbSoftA.w, 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbSoftB.fb);
     gl.bindTexture(gl.TEXTURE_2D, fbSoftA.tex);
-    u2f(blurProg, "uDir", 0, 2 / fbSoftA.h);
+    u2f(blurProg, "uDir", 0, 2 * ssc / fbSoftA.h);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
@@ -3613,11 +3623,11 @@ function render(forcedT) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbMedA.fb);
     gl.viewport(0, 0, fbMedA.w, fbMedA.h);
     gl.bindTexture(gl.TEXTURE_2D, fbScene.tex);
-    u2f(blurProg, "uDir", 1 / fbMedA.w, 0);
+    u2f(blurProg, "uDir", ssc / fbMedA.w, 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbMedB.fb);
     gl.bindTexture(gl.TEXTURE_2D, fbMedA.tex);
-    u2f(blurProg, "uDir", 0, 1 / fbMedA.h);
+    u2f(blurProg, "uDir", 0, ssc / fbMedA.h);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
@@ -3661,7 +3671,8 @@ function render(forcedT) {
   u1f(compProg, "uChroma", warp * 0.5);
   u1f(compProg, "uVignette", state.vignette / 100);
   u1f(compProg, "uFade", fade);
-  u1f(compProg, "uGrain", (state.grain / 100) * 0.12);
+  // Korn: beim Herunterrechnen mitteln sich ssc*ssc Samples -> Amplitude anheben
+  u1f(compProg, "uGrain", (state.grain / 100) * 0.12 * ssc);
   // Frame-Index als Rausch-Seed: beim Export deterministisch pro Frame,
   // in der Vorschau aus der Zeit
   u1f(compProg, "uNoiseSeed", (Math.floor(t * 60) % 4096) + 1);
@@ -3671,7 +3682,7 @@ function render(forcedT) {
   u1f(compProg, "uClarity", clarity);
   u1f(compProg, "uStructure", structure);
   u1f(compProg, "uSharpen", (state.sharpen / 100) * 1.2);
-  u2f(compProg, "uTexel", 1 / fbScene.w, 1 / fbScene.h);
+  u2f(compProg, "uTexel", ssc / fbScene.w, ssc / fbScene.h);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
   // Objekt-Overlay (Infokarte + Labels) über der Vorschau
@@ -6687,6 +6698,9 @@ $("ctlScenOn").addEventListener("change", () => {
 });
 
 // Mond-Modus: Scheibe erkennen und Kugel-Tiefe aktivieren (Prototyp)
+$("ctlSuperSample").addEventListener("change", () => {
+  state.superSample = $("ctlSuperSample").checked;
+});
 $("ctlStarImg").addEventListener("change", () => {
   state.starImage = $("ctlStarImg").checked;
   if (state.starImage) ensureStarsImgTexture();
@@ -6855,11 +6869,13 @@ function saveBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(a.href), 30_000);
 }
 
-function beginExport(w, h) {
+function beginExport(w, h, scale) {
   state.exporting = true;
+  state.renderScale = scale || 1;
   $("btnRenderFoot").disabled = true;
-  canvas.width = w;
-  canvas.height = h;
+  // Supersampling: intern groesser rendern, der Export rechnet auf w x h herunter
+  canvas.width = Math.round(w * state.renderScale);
+  canvas.height = Math.round(h * state.renderScale);
   $("btnExport").disabled = true;
   $("exportProgressWrap").hidden = false;
   $("exportProgress").style.width = "0%";
@@ -6867,6 +6883,7 @@ function beginExport(w, h) {
 
 function endExport(message) {
   state.exporting = false;
+  state.renderScale = 1;
   $("btnRenderFoot").disabled = false;
   state.offlineExport = false;
   $("btnExport").disabled = false;
@@ -6937,7 +6954,11 @@ async function exportOffline(w, h, fps) {
   }
   if (!config) return false;
 
-  beginExport(w, h);
+  // Supersampling bis Full HD (kurze Kante <= 1080): 2x rendern, sauber
+  // herunterrechnen - glatte Sternkanten, kein Restflimmern kleiner Sterne.
+  // 4K hat bereits die vierfache Pixelzahl und bleibt bei 1x (Speicher)
+  const S = state.superSample && Math.min(w, h) <= 1080 ? 2 : 1;
+  beginExport(w, h, S);
   state.offlineExport = true;
   const status = $("exportStatus");
   status.textContent = t("renderingOffline", w, h, state.duration);
@@ -6960,23 +6981,30 @@ async function exportOffline(w, h, fps) {
   encoder.configure(config);
 
   const totalFrames = Math.round(state.duration * fps);
-  // Overlay (Infokarte/Labels) wird über einen 2D-Zwischenpuffer eingebrannt
+  // Overlay (Infokarte/Labels) wird über einen 2D-Zwischenpuffer eingebrannt;
+  // beim Supersampling rechnet derselbe Puffer auf die Zielgroesse herunter
   const burnOverlay = overlayActive();
+  const needComp = burnOverlay || S > 1;
   let compCanvas = null, compCtx = null;
-  if (burnOverlay) {
+  if (needComp) {
     compCanvas = document.createElement("canvas");
     compCanvas.width = w; compCanvas.height = h;
     compCtx = compCanvas.getContext("2d");
+    compCtx.imageSmoothingEnabled = true;
+    compCtx.imageSmoothingQuality = "high";
   }
   try {
     for (let i = 0; i < totalFrames; i++) {
       const t = i / fps;
       render(t);
       let src = canvas;
-      if (burnOverlay) {
+      if (needComp) {
+        // bei S = 2 ist das ein exaktes 2x2-Mittel je Zielpixel
         compCtx.drawImage(canvas, 0, 0, w, h);
-        const ap = animParams(t);
-        drawOverlayTo(compCtx, w, h, ap.loopT, ap.cam, ap.fade);
+        if (burnOverlay) {
+          const ap = animParams(t);
+          drawOverlayTo(compCtx, w, h, ap.loopT, ap.cam, ap.fade);
+        }
         src = compCanvas;
       }
       const vf = new VideoFrame(src, {
