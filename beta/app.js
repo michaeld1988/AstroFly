@@ -631,6 +631,17 @@ void main() {
 
   float px = aSize * 2.0 * scale * uPixelsY * uStarSize;
   float base = clamp(px, 1.2, 500.0);
+  // Winzige Sterne (unter ~2,6 px) flackerten beim Bewegen wie ein
+  // Stroboskop: je nach Subpixel-Lage trafen sie mal ein Pixelzentrum,
+  // mal keins. Deshalb bekommen sie eine stabile Mindestgroesse und werden
+  // im gleichen Mass gedimmt (Energieerhalt): gleiche wahrgenommene
+  // Helligkeit, aber ueber mehrere Pixel verteilt und dadurch ruhig.
+  float dimSmall = 1.0;
+  if (px < 2.6) {
+    dimSmall = base / 2.6;
+    dimSmall *= dimSmall;
+    base = 2.6;
+  }
 
   // Geschwindigkeits-Streifen: Position kurz danach mit demselben Tiefen-
   // Exponenten -> die Streifenlänge folgt der echten Geschwindigkeit dieses
@@ -680,7 +691,11 @@ void main() {
   if (uRealStars > 0.5 && aAtlas.x < -1.5) vAlpha = 0.0;
   if (uRealStars > 0.5 && aAtlas.x >= 0.0 && len < base * 0.5) {
     float patchHalf = aAtlas.w * scale * uPixelsY * uStarSize;
-    if (patchHalf > 1.5) {
+    // Nur ausreichend grosse Patches lohnen sich: winzige (unter ~2,6 px
+    // Halbbreite) flackerten beim Bewegen wie ein Stroboskop und tragen
+    // ohnehin keine sichtbare PSF - sie fallen auf den stabilen
+    // prozeduralen Sprite zurueck
+    if (patchHalf > 2.6) {
       vPatchHalf = min(patchHalf, uMaxPoint * 0.5 - 1.0);
       size = max(size, vPatchHalf * 2.0 + 2.0);
       vAtlasUv = vec3(aAtlas.x, aAtlas.y, aAtlas.z);
@@ -706,6 +721,9 @@ void main() {
   // ließ schwache Sterne bei mittleren Reglerwerten unter die
   // Sichtbarkeitsschwelle fallen - der Regler war nicht dosierbar.
   vAlpha *= 1.0 - occ;
+  // Kleine-Sterne-Dimmen nur fuer prozedurale Sprites - echte Sternabbilder
+  // bringen ihre Groesse aus dem Atlas-Patch mit
+  if (vAtlasUv.x < 0.0) vAlpha *= dimSmall;
   float lumS = dot(aColor, vec3(0.299, 0.587, 0.114));
   vec3 cS = aColor;
   if (uStarSat > 1.0) {
@@ -741,7 +759,6 @@ void main() {
   if (vAtlasUv.x >= 0.0 && vPatchHalf > 0.5) {
     vec2 d = (gl_PointCoord - 0.5) * vSize;
     float rn = length(d) / vPatchHalf;
-    if (rn > 1.0) discard;
     // Bildschirm-Offset in die (mitrotierte) Bildebene drehen: Spikes und
     // Halos bleiben dadurch am Bild verankert statt am Bildschirm
     float caF = cos(uAngleF), saF = sin(uAngleF);
@@ -749,7 +766,12 @@ void main() {
     vec2 di = vec2(caF * duUp.x + saF * duUp.y, -saF * duUp.x + caF * duUp.y);
     vec2 uv = vec2(vAtlasUv.x + di.x / vPatchHalf * vAtlasUv.z,
                    vAtlasUv.y + di.y / vPatchHalf * vAtlasUv.z);
+    // WICHTIG: erst sampeln, DANN verwerfen. Ein texture()-Aufruf hinter
+    // einem bedingten discard hat undefinierte Ableitungen - die Mip-Wahl
+    // wird dann treiberabhaengig falsch und kleine Sterne blitzen wie ein
+    // Stroboskop (vom Nutzer gemeldetes Flackern)
     vec3 c = texture(uAtlas, uv).rgb;
+    if (rn > 1.0) discard;
     float edge = 1.0 - smoothstep(0.78, 1.0, rn);
     // Helligkeit wirkt RADIAL wie eine kuerzere Belichtung: Der Kern bleibt
     // weiss, nur Saum/Spikes dunkeln ab (globales Dimmen machte die Kerne
