@@ -117,6 +117,7 @@ const state = {
   warp: 0,               // 0..100
   vignette: 0,           // 0..100
   grain: 0,              // Filmkorn 0..100
+  filmic: 0,             // filmische Tonwertkurve 0..100
   superSample: true,     // Export intern in 2x Aufloesung rendern und runterrechnen
   renderScale: 1,        // aktueller Supersampling-Faktor (nur waehrend des Exports > 1)
   exposure: 0,           // -100..100 (Blendenstufen ±2)
@@ -827,7 +828,9 @@ uniform sampler2D uStarsTex; // separate Sternebene (schwarz, wenn nicht getrenn
 void main() {
   vec3 sN = texture(uScene, vUv).rgb;
   vec3 sS = texture(uStarsTex, vUv).rgb;
-  vec3 c = 1.0 - (1.0 - clamp(sN, 0.0, 1.0)) * (1.0 - clamp(sS, 0.0, 1.0));
+  // additiv statt geclampt: im HDR-Puffer duerfen Sternkerne ueber Weiss
+  // liegen und speisen den Bloom entsprechend staerker
+  vec3 c = max(sN, 0.0) + max(sS, 0.0);
   float l = max(max(c.r, c.g), c.b);
   // Empfindlicher (niedrige Schwelle, weiches Knie): auch schwache Sterne
   // glimmen - die Gesamtstärke regelt der Composite entsprechend sanfter
@@ -840,7 +843,8 @@ precision highp float;
 in vec2 vUv;
 out vec4 outColor;
 uniform sampler2D uScene;
-uniform vec2 uDir; // 1 Texel in Blur-Richtung
+uniform vec2 uDir; // 1 Texel in Blur-Richtung (0,0 = reine Kopie)
+uniform float uGain; // Verstaerkung (Gewicht einer Bloom-Oktave)
 void main() {
   const float W[5] = float[](0.227027, 0.194594, 0.121622, 0.054054, 0.016216);
   vec3 acc = texture(uScene, vUv).rgb * W[0];
@@ -849,7 +853,7 @@ void main() {
     acc += texture(uScene, vUv + o).rgb * W[i];
     acc += texture(uScene, vUv - o).rgb * W[i];
   }
-  outColor = vec4(acc, 1.0);
+  outColor = vec4(acc * uGain, 1.0);
 }`;
 
 // --- Pass 3: Composite (Bewegungsunschärfe, Warp-Farbsäume, Vignette) ---
@@ -872,6 +876,7 @@ uniform float uChroma;    // Warp-Farbsäume
 uniform float uVignette;
 uniform float uFade;
 uniform float uGrain;      // Filmkorn-Staerke (0 = aus)
+uniform float uFilmic;     // filmische Kurve 0..1 (0 = wie bisher)
 uniform float uNoiseSeed;  // wechselt pro Frame: zeitlich variierendes Dither/Korn
 uniform float uExposure;   // Blendenstufen
 uniform float uContrast;   // 1 = neutral
@@ -942,12 +947,23 @@ void main() {
   // Sterne per Screen-Modus auf den Nebel legen (Astro-Standard wie in
   // Photoshop/PixInsight): 1-(1-a)*(1-b) statt Addition - weicher Uebergang,
   // helle Sternkerne auf hellem Nebel brennen nicht mehr aus
-  col = 1.0 - (1.0 - clamp(col, 0.0, 1.0)) * (1.0 - clamp(stars, 0.0, 1.0));
+  vec3 bloom = texture(uBloom, vUv).rgb * uBloomStrength;
+  float expo = exp2(uExposure);
+  // Bisheriger Weg (Standard): Screen-Mischung, bei Weiss gedeckelt
+  vec3 ldr = (1.0 - (1.0 - clamp(col, 0.0, 1.0)) * (1.0 - clamp(stars, 0.0, 1.0)) + bloom) * expo;
+  if (uFilmic > 0.0) {
+    // Filmischer Weg: echte HDR-Summe (Sternkerne duerfen ueber Weiss
+    // liegen), dann ACES-artige Kurve - Lichter rollen weich ab statt
+    // hart auszubrennen, Mitten bekommen Kino-Kontrast
+    vec3 x = max(max(col, 0.0) + max(stars, 0.0) + bloom, 0.0) * expo;
+    vec3 tm = (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);
+    col = mix(ldr, clamp(tm, 0.0, 1.0), uFilmic);
+  } else {
+    col = ldr;
+  }
 
-  col += texture(uBloom, vUv).rgb * uBloomStrength;
-
-  // Farbabstimmung: Belichtung -> Kontrast -> Sättigung
-  col = max(col, 0.0) * exp2(uExposure);
+  // Farbabstimmung: Kontrast -> Sättigung
+  col = max(col, 0.0);
   col = (col - 0.5) * uContrast + 0.5;
   float lum = dot(max(col, 0.0), vec3(0.2126, 0.7152, 0.0722));
   col = mix(vec3(lum), col, uSaturation);
@@ -1105,10 +1121,16 @@ function makeTexture(source) {
 
 // --- Framebuffer für die Post-Processing-Kette ---
 
+// HDR-Zwischenpuffer: Halbfloat-Framebuffer, damit Sternkerne und Bloom
+// ueber Weiss hinaus rechnen koennen (Grundlage fuer filmisches Tone-Mapping).
+// Ohne die Erweiterung faellt alles auf 8 Bit zurueck
+const HDR_OK = !!gl.getExtension("EXT_color_buffer_float");
+
 function makeFbo(w, h) {
   const tex = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  if (HDR_OK) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+  else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -1127,20 +1149,28 @@ gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, ne
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 
-let fbScene = null, fbStars = null, fbBloomA = null, fbBloomB = null, fbSoftA = null, fbSoftB = null,
+let fbScene = null, fbStars = null, fbSoftA = null, fbSoftB = null,
     fbMedA = null, fbMedB = null;
+// Bloom in vier Oktaven (1/2, 1/4, 1/8, 1/16): jede Stufe mit A/B-Paar fuer
+// den separablen Blur; die kleinen Stufen liefern den weiten, weichen Hof
+const BLOOM_LEVELS = 4;
+let fbBloom = [];
 
 function ensureFbos() {
   const w = canvas.width, h = canvas.height;
   if (fbScene && fbScene.w === w && fbScene.h === h) return;
-  for (const f of [fbScene, fbStars, fbBloomA, fbBloomB, fbSoftA, fbSoftB, fbMedA, fbMedB]) {
+  for (const f of [fbScene, fbStars, fbSoftA, fbSoftB, fbMedA, fbMedB]) {
     if (f) { gl.deleteFramebuffer(f.fb); gl.deleteTexture(f.tex); }
   }
+  for (const lv of fbBloom) for (const f of [lv.a, lv.b]) { gl.deleteFramebuffer(f.fb); gl.deleteTexture(f.tex); }
   fbScene = makeFbo(w, h);
   fbStars = makeFbo(w, h);
+  fbBloom = [];
+  for (let k = 0; k < BLOOM_LEVELS; k++) {
+    const dw = Math.max(1, w >> (k + 1)), dh = Math.max(1, h >> (k + 1));
+    fbBloom.push({ a: makeFbo(dw, dh), b: makeFbo(dw, dh), w: dw, h: dh });
+  }
   const bw = Math.max(1, w >> 2), bh = Math.max(1, h >> 2);
-  fbBloomA = makeFbo(bw, bh);
-  fbBloomB = makeFbo(bw, bh);
   fbSoftA = makeFbo(bw, bh);
   fbSoftB = makeFbo(bw, bh);
   const mw = Math.max(1, w >> 1), mh = Math.max(1, h >> 1);
@@ -3566,13 +3596,24 @@ function render(forcedT) {
   // ---- Pass 2: Bloom (Viertelauflösung) ----
   // Sanfter als früher: die niedrigere Bright-Pass-Schwelle bringt die
   // Empfindlichkeit, die Stärke bleibt zurückhaltend
+  // Vier Oktaven: Bright-Pass in halber Aufloesung, dann je Stufe halbieren
+  // und weichzeichnen, zum Schluss von unten nach oben gewichtet aufsummieren.
+  // Die Gewichte sind so normiert, dass die Gesamtstaerke der alten
+  // Einzelstufe entspricht - nur der Hof reicht jetzt weit und weich hinaus
+  // Gewichte: die zwei feinen Oktaven ergeben zusammen das bisherige Nahfeld
+  // (Normierung auf W0 + W1), die tiefen Oktaven werden bewusst angehoben -
+  // ihre Energie verteilt sich auf eine riesige Flaeche und waere sonst
+  // unsichtbar. Das ist der weite, weiche Hof heller Sterne
+  const BLOOM_W = [1.0, 0.85, 1.1, 1.4];
+  const bloomNorm = 1 / (BLOOM_W[0] + BLOOM_W[1]);
   const bloomStrength = (state.bloom / 100) * 0.7;
   if (bloomStrength > 0) {
     gl.bindVertexArray(quadVao);
     gl.activeTexture(gl.TEXTURE0);
 
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fbBloomA.fb);
-    gl.viewport(0, 0, fbBloomA.w, fbBloomA.h);
+    const L0 = fbBloom[0];
+    gl.bindFramebuffer(gl.FRAMEBUFFER, L0.a.fb);
+    gl.viewport(0, 0, L0.w, L0.h);
     gl.useProgram(brightProg);
     gl.bindTexture(gl.TEXTURE_2D, fbScene.tex);
     gl.activeTexture(gl.TEXTURE1);
@@ -3584,15 +3625,44 @@ function render(forcedT) {
 
     gl.useProgram(blurProg);
     u1i(blurProg, "uScene", 0);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fbBloomB.fb);
-    gl.bindTexture(gl.TEXTURE_2D, fbBloomA.tex);
-    u2f(blurProg, "uDir", ssc / fbBloomA.w, 0);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fbBloomA.fb);
-    gl.bindTexture(gl.TEXTURE_2D, fbBloomB.tex);
-    u2f(blurProg, "uDir", 0, ssc / fbBloomA.h);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    for (let k = 0; k < BLOOM_LEVELS; k++) {
+      const L = fbBloom[k];
+      gl.viewport(0, 0, L.w, L.h);
+      if (k > 0) {
+        // Halbieren: bilineares Kopieren der vorigen Stufe
+        gl.bindFramebuffer(gl.FRAMEBUFFER, L.a.fb);
+        gl.bindTexture(gl.TEXTURE_2D, fbBloom[k - 1].a.tex);
+        u2f(blurProg, "uDir", 0, 0);
+        u1f(blurProg, "uGain", 1);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
+      // tiefe Oktaven zweimal weichzeichnen: der Hof soll weit hinausreichen
+      const passes = k >= 2 ? 2 : 1;
+      for (let p = 0; p < passes; p++) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, L.b.fb);
+        gl.bindTexture(gl.TEXTURE_2D, L.a.tex);
+        u2f(blurProg, "uDir", ssc / L.w, 0);
+        u1f(blurProg, "uGain", 1);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, L.a.fb);
+        gl.bindTexture(gl.TEXTURE_2D, L.b.tex);
+        u2f(blurProg, "uDir", 0, ssc / L.h);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
+    }
+    // Aufsummieren von der kleinsten Stufe nach oben (additiv, gewichtet)
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);
+    u2f(blurProg, "uDir", 0, 0);
+    for (let k = BLOOM_LEVELS - 1; k >= 1; k--) {
+      const dst = fbBloom[k - 1];
+      gl.bindFramebuffer(gl.FRAMEBUFFER, dst.a.fb);
+      gl.viewport(0, 0, dst.w, dst.h);
+      gl.bindTexture(gl.TEXTURE_2D, fbBloom[k].a.tex);
+      u1f(blurProg, "uGain", BLOOM_W[k] / BLOOM_W[k - 1]);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+    gl.disable(gl.BLEND);
   }
 
   // ---- Pass 2b: weichgezeichnete Szene für "Klarheit" (Viertelauflösung) ----
@@ -3602,6 +3672,7 @@ function render(forcedT) {
     gl.activeTexture(gl.TEXTURE0);
     gl.useProgram(blurProg);
     u1i(blurProg, "uScene", 0);
+    u1f(blurProg, "uGain", 1);
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbSoftA.fb);
     gl.viewport(0, 0, fbSoftA.w, fbSoftA.h);
     gl.bindTexture(gl.TEXTURE_2D, fbScene.tex);
@@ -3620,6 +3691,7 @@ function render(forcedT) {
     gl.activeTexture(gl.TEXTURE0);
     gl.useProgram(blurProg);
     u1i(blurProg, "uScene", 0);
+    u1f(blurProg, "uGain", 1);
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbMedA.fb);
     gl.viewport(0, 0, fbMedA.w, fbMedA.h);
     gl.bindTexture(gl.TEXTURE_2D, fbScene.tex);
@@ -3649,7 +3721,7 @@ function render(forcedT) {
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, fbScene.tex);
   gl.activeTexture(gl.TEXTURE1);
-  gl.bindTexture(gl.TEXTURE_2D, fbBloomA.tex);
+  gl.bindTexture(gl.TEXTURE_2D, fbBloom[0].a.tex);
   gl.activeTexture(gl.TEXTURE2);
   gl.bindTexture(gl.TEXTURE_2D, clarity !== 0 ? fbSoftB.tex : fbScene.tex);
   gl.activeTexture(gl.TEXTURE3);
@@ -3663,7 +3735,8 @@ function render(forcedT) {
   u1i(compProg, "uStarsTex", 4);
   u1f(compProg, "uSplit", splitBlur ? 1 : 0);
   u1f(compProg, "uViewAspect", viewAspect);
-  u1f(compProg, "uBloomStrength", bloomStrength);
+  u1f(compProg, "uBloomStrength", bloomStrength * bloomNorm);
+  u1f(compProg, "uFilmic", state.filmic / 100);
   u1f(compProg, "uShutter", (state.mblur / 100) * 1.5);
   u1f(compProg, "uZoomRate", zoomRate);
   u1f(compProg, "uRotRate", rotRate);
@@ -3891,6 +3964,7 @@ bindSlider("ctlMblur", "outMblur", "mblur", asInt);
 bindSlider("ctlWarp", "outWarp", "warp", asInt);
 bindSlider("ctlVignette", "outVignette", "vignette", asInt);
 bindSlider("ctlGrain", "outGrain", "grain", asInt);
+bindSlider("ctlFilmic", "outFilmic", "filmic", asInt);
 bindSlider("ctlExposure", "outExposure", "exposure", asInt);
 bindSlider("ctlContrast", "outContrast", "contrast", asInt);
 bindSlider("ctlSaturation", "outSaturation", "saturation", asInt);
@@ -3943,23 +4017,23 @@ const PRESET_SLIDERS = {
   bloom: "ctlBloom", mblur: "ctlMblur", warp: "ctlWarp", vignette: "ctlVignette",
   exposure: "ctlExposure", contrast: "ctlContrast", saturation: "ctlSaturation",
   clarity: "ctlClarity", structure: "ctlStructure", sharpen: "ctlSharpen",
-  grain: "ctlGrain",
+  grain: "ctlGrain", filmic: "ctlFilmic",
 };
 
 const PRESETS = {
   // alles neutral / aus
-  neutral:   { bloom: 0,  mblur: 0,  warp: 0,  vignette: 0,  exposure: 0,   contrast: 0,  saturation: 0,    clarity: 0,   structure: 0,  sharpen: 0, grain: 0 },
+  neutral:   { bloom: 0,  mblur: 0,  warp: 0,  vignette: 0,  exposure: 0,   contrast: 0,  saturation: 0,    clarity: 0,   structure: 0,  sharpen: 0, grain: 0, filmic: 0 },
   // klassischer Kino-Look: sanfter Glow, Filmkorn-freier Kontrast, Vignette
-  kino:      { bloom: 35, mblur: 35, warp: 0,  vignette: 35, exposure: 5,   contrast: 18, saturation: 8,    clarity: 15,  structure: 10, sharpen: 10, grain: 12 },
+  kino:      { bloom: 35, mblur: 35, warp: 0,  vignette: 35, exposure: 5,   contrast: 18, saturation: 8,    clarity: 15,  structure: 10, sharpen: 10, grain: 12, filmic: 35 },
   // dunkel, entsättigt, hoher Kontrast – bedrohlich-episch
-  deepspace: { bloom: 25, mblur: 20, warp: 0,  vignette: 50, exposure: -12, contrast: 28, saturation: -18,  clarity: 25,  structure: 20, sharpen: 10, grain: 18 },
+  deepspace: { bloom: 25, mblur: 20, warp: 0,  vignette: 50, exposure: -12, contrast: 28, saturation: -18,  clarity: 25,  structure: 20, sharpen: 10, grain: 18, filmic: 30 },
   // träumerischer Orton-Glow, weiche Nebel, kräftige Farben
-  glow:      { bloom: 75, mblur: 30, warp: 0,  vignette: 25, exposure: 8,   contrast: -8, saturation: 15,   clarity: -35, structure: -10, sharpen: 0, grain: 0 },
+  glow:      { bloom: 75, mblur: 30, warp: 0,  vignette: 25, exposure: 8,   contrast: -8, saturation: 15,   clarity: -35, structure: -10, sharpen: 0, grain: 0, filmic: 20 },
   // dramatisches Schwarzweiß
-  mono:      { bloom: 30, mblur: 25, warp: 0,  vignette: 45, exposure: 0,   contrast: 30, saturation: -100, clarity: 35,  structure: 25, sharpen: 15, grain: 22 },
+  mono:      { bloom: 30, mblur: 25, warp: 0,  vignette: 45, exposure: 0,   contrast: 30, saturation: -100, clarity: 35,  structure: 25, sharpen: 15, grain: 22, filmic: 30 },
   // Hyperraum: Warp + Streifen nur auf den Sternen (mblurStars) - der Nebel
   // bleibt scharf, sonst brennt das Bild bei hellen Kernen komplett aus
-  hyper:     { bloom: 28, mblur: 50, warp: 45, vignette: 30, exposure: 5,   contrast: 12, saturation: 10,   clarity: 10,  structure: 5,  sharpen: 0, mblurStars: true, grain: 0 },
+  hyper:     { bloom: 28, mblur: 50, warp: 45, vignette: 30, exposure: 5,   contrast: 12, saturation: 10,   clarity: 10,  structure: 5,  sharpen: 0, mblurStars: true, grain: 0, filmic: 20 },
 };
 
 $("ctlPreset").addEventListener("change", () => {
@@ -5590,7 +5664,7 @@ const USER_PRESET_GROUPS = {
   stars: ["ctlSpread", "ctlStarDist", "ctlLayers", "ctlStarPar", "ctlTwinkle",
     "ctlTwinkleSpeed", "ctlStarSize", "ctlStarBright", "ctlStarSat",
     "ctlGenStars", "ctlOcclude", "ctlStarCull", "ctlAnchor"],
-  look: ["ctlBloom", "ctlMblur", "ctlMblurStars", "ctlWarp", "ctlVignette", "ctlGrain",
+  look: ["ctlBloom", "ctlMblur", "ctlMblurStars", "ctlWarp", "ctlVignette", "ctlGrain", "ctlFilmic",
     "ctlExposure", "ctlContrast", "ctlSaturation", "ctlClarity",
     "ctlStructure", "ctlSharpen", "ctlH2Det", "ctlH2Width", "ctlH2Sat",
     "ctlH2Hue", "ctlO3Det", "ctlO3Width", "ctlO3Sat", "ctlO3Hue", "ctlS2Det",
