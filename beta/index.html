@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-16-64">
+<link rel="stylesheet" href="style.css?v=2026-08-16-65">
 </head>
 <body>
 
@@ -707,6 +707,14 @@
         <span><span data-i18n="vignette">Vignette</span> <output id="outVignette">0</output></span>
         <input type="range" id="ctlVignette" min="0" max="100" step="1" value="0">
       </label>
+      <label class="slider">
+        <span><span data-i18n="grain">Film grain</span> <button class="qm" data-help="hintGrain">?</button> <output id="outGrain">0</output></span>
+        <input type="range" id="ctlGrain" min="0" max="100" step="1" value="0">
+      </label>
+      <p class="tip hint2" id="hintGrain" hidden data-i18n="grainHint">Fine, analog-style grain,
+      stronger in the shadows. Besides the look it helps video compression: smooth dark
+      gradients keep their texture instead of turning into blocky steps. Banding protection
+      (dithering) is always on, even at 0.</p>
 
       <details class="adv">
         <summary data-i18n="advLook">Color &amp; detail</summary>
@@ -1031,8 +1039,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-64"></script>
-<script src="objectinfo.js?v=2026-08-16-64"></script>
-<script src="app.js?v=2026-08-16-64"></script>
+<script src="i18n.js?v=2026-08-16-65"></script>
+<script src="objectinfo.js?v=2026-08-16-65"></script>
+<script src="app.js?v=2026-08-16-65"></script>
 </body>
 </html>

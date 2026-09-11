@@ -116,6 +116,7 @@ const state = {
   mblurStars: false,     // Bewegungsunschärfe nur auf die Sterne
   warp: 0,               // 0..100
   vignette: 0,           // 0..100
+  grain: 0,              // Filmkorn 0..100
   exposure: 0,           // -100..100 (Blendenstufen ±2)
   contrast: 0,           // -100..100
   saturation: 0,         // -100..100
@@ -867,6 +868,8 @@ uniform vec2 uPanVel;     // Kamerafahrt in Ebenen-Einheiten/s
 uniform float uChroma;    // Warp-Farbsäume
 uniform float uVignette;
 uniform float uFade;
+uniform float uGrain;      // Filmkorn-Staerke (0 = aus)
+uniform float uNoiseSeed;  // wechselt pro Frame: zeitlich variierendes Dither/Korn
 uniform float uExposure;   // Blendenstufen
 uniform float uContrast;   // 1 = neutral
 uniform float uSaturation; // 1 = neutral
@@ -948,8 +951,28 @@ void main() {
 
   float d = length(r) / (0.7071 * max(uViewAspect, 1.0));
   col *= 1.0 - uVignette * smoothstep(0.45, 1.25, d);
+  col *= uFade;
 
-  outColor = vec4(col * uFade, 1.0);
+  // Filmkorn (optional): pro Pixel und Frame neues Rauschen, in den
+  // Schatten staerker als in den Lichtern - wie analoges Korn. Gibt der
+  // Videokompression zudem etwas zum Festhalten (weniger Matsch)
+  if (uGrain > 0.0) {
+    vec3 seed = vec3(gl_FragCoord.xy, uNoiseSeed);
+    float n = fract(sin(dot(seed, vec3(12.9898, 78.233, 37.719))) * 43758.5453) - 0.5;
+    float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+    col += n * uGrain * (0.35 + 0.65 * (1.0 - clamp(lum, 0.0, 1.0)));
+  }
+  // Dither gegen Banding: die Ausgabe wird gleich auf 8 Bit quantisiert.
+  // Interleaved-Gradient-Noise (blue-noise-aehnlich, texturfrei) mit
+  // Frame-Versatz verteilt den Quantisierungsfehler unsichtbar - dunkle
+  // Nebelverlaeufe laufen seidig durch statt in Stufen zu brechen
+  {
+    vec2 p = gl_FragCoord.xy + vec2(uNoiseSeed * 17.0, uNoiseSeed * 29.0);
+    float ign = fract(52.9829189 * fract(0.06711056 * p.x + 0.00583715 * p.y));
+    col += (ign - 0.5) / 255.0;
+  }
+
+  outColor = vec4(max(col, 0.0), 1.0);
 }`;
 
 // --- Pass 1b (Kino-Modus): Sternmaske als Bild - Sterne behalten ihre
@@ -3638,6 +3661,10 @@ function render(forcedT) {
   u1f(compProg, "uChroma", warp * 0.5);
   u1f(compProg, "uVignette", state.vignette / 100);
   u1f(compProg, "uFade", fade);
+  u1f(compProg, "uGrain", (state.grain / 100) * 0.12);
+  // Frame-Index als Rausch-Seed: beim Export deterministisch pro Frame,
+  // in der Vorschau aus der Zeit
+  u1f(compProg, "uNoiseSeed", (Math.floor(t * 60) % 4096) + 1);
   u1f(compProg, "uExposure", (state.exposure / 100) * 2);
   u1f(compProg, "uContrast", 1 + (state.contrast / 100) * 0.6);
   u1f(compProg, "uSaturation", 1 + state.saturation / 100);
@@ -3852,6 +3879,7 @@ bindSlider("ctlBloom", "outBloom", "bloom", asInt);
 bindSlider("ctlMblur", "outMblur", "mblur", asInt);
 bindSlider("ctlWarp", "outWarp", "warp", asInt);
 bindSlider("ctlVignette", "outVignette", "vignette", asInt);
+bindSlider("ctlGrain", "outGrain", "grain", asInt);
 bindSlider("ctlExposure", "outExposure", "exposure", asInt);
 bindSlider("ctlContrast", "outContrast", "contrast", asInt);
 bindSlider("ctlSaturation", "outSaturation", "saturation", asInt);
@@ -3904,22 +3932,23 @@ const PRESET_SLIDERS = {
   bloom: "ctlBloom", mblur: "ctlMblur", warp: "ctlWarp", vignette: "ctlVignette",
   exposure: "ctlExposure", contrast: "ctlContrast", saturation: "ctlSaturation",
   clarity: "ctlClarity", structure: "ctlStructure", sharpen: "ctlSharpen",
+  grain: "ctlGrain",
 };
 
 const PRESETS = {
   // alles neutral / aus
-  neutral:   { bloom: 0,  mblur: 0,  warp: 0,  vignette: 0,  exposure: 0,   contrast: 0,  saturation: 0,    clarity: 0,   structure: 0,  sharpen: 0 },
+  neutral:   { bloom: 0,  mblur: 0,  warp: 0,  vignette: 0,  exposure: 0,   contrast: 0,  saturation: 0,    clarity: 0,   structure: 0,  sharpen: 0, grain: 0 },
   // klassischer Kino-Look: sanfter Glow, Filmkorn-freier Kontrast, Vignette
-  kino:      { bloom: 35, mblur: 35, warp: 0,  vignette: 35, exposure: 5,   contrast: 18, saturation: 8,    clarity: 15,  structure: 10, sharpen: 10 },
+  kino:      { bloom: 35, mblur: 35, warp: 0,  vignette: 35, exposure: 5,   contrast: 18, saturation: 8,    clarity: 15,  structure: 10, sharpen: 10, grain: 12 },
   // dunkel, entsättigt, hoher Kontrast – bedrohlich-episch
-  deepspace: { bloom: 25, mblur: 20, warp: 0,  vignette: 50, exposure: -12, contrast: 28, saturation: -18,  clarity: 25,  structure: 20, sharpen: 10 },
+  deepspace: { bloom: 25, mblur: 20, warp: 0,  vignette: 50, exposure: -12, contrast: 28, saturation: -18,  clarity: 25,  structure: 20, sharpen: 10, grain: 18 },
   // träumerischer Orton-Glow, weiche Nebel, kräftige Farben
-  glow:      { bloom: 75, mblur: 30, warp: 0,  vignette: 25, exposure: 8,   contrast: -8, saturation: 15,   clarity: -35, structure: -10, sharpen: 0 },
+  glow:      { bloom: 75, mblur: 30, warp: 0,  vignette: 25, exposure: 8,   contrast: -8, saturation: 15,   clarity: -35, structure: -10, sharpen: 0, grain: 0 },
   // dramatisches Schwarzweiß
-  mono:      { bloom: 30, mblur: 25, warp: 0,  vignette: 45, exposure: 0,   contrast: 30, saturation: -100, clarity: 35,  structure: 25, sharpen: 15 },
+  mono:      { bloom: 30, mblur: 25, warp: 0,  vignette: 45, exposure: 0,   contrast: 30, saturation: -100, clarity: 35,  structure: 25, sharpen: 15, grain: 22 },
   // Hyperraum: Warp + Streifen nur auf den Sternen (mblurStars) - der Nebel
   // bleibt scharf, sonst brennt das Bild bei hellen Kernen komplett aus
-  hyper:     { bloom: 28, mblur: 50, warp: 45, vignette: 30, exposure: 5,   contrast: 12, saturation: 10,   clarity: 10,  structure: 5,  sharpen: 0, mblurStars: true },
+  hyper:     { bloom: 28, mblur: 50, warp: 45, vignette: 30, exposure: 5,   contrast: 12, saturation: 10,   clarity: 10,  structure: 5,  sharpen: 0, mblurStars: true, grain: 0 },
 };
 
 $("ctlPreset").addEventListener("change", () => {
@@ -5550,7 +5579,7 @@ const USER_PRESET_GROUPS = {
   stars: ["ctlSpread", "ctlStarDist", "ctlLayers", "ctlStarPar", "ctlTwinkle",
     "ctlTwinkleSpeed", "ctlStarSize", "ctlStarBright", "ctlStarSat",
     "ctlGenStars", "ctlOcclude", "ctlStarCull", "ctlAnchor"],
-  look: ["ctlBloom", "ctlMblur", "ctlMblurStars", "ctlWarp", "ctlVignette",
+  look: ["ctlBloom", "ctlMblur", "ctlMblurStars", "ctlWarp", "ctlVignette", "ctlGrain",
     "ctlExposure", "ctlContrast", "ctlSaturation", "ctlClarity",
     "ctlStructure", "ctlSharpen", "ctlH2Det", "ctlH2Width", "ctlH2Sat",
     "ctlH2Hue", "ctlO3Det", "ctlO3Width", "ctlO3Sat", "ctlO3Hue", "ctlS2Det",
