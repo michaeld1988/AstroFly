@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-16-66">
+<link rel="stylesheet" href="style.css?v=2026-08-16-67">
 </head>
 <body>
 
@@ -719,6 +719,13 @@
       <details class="adv">
         <summary data-i18n="advLook">Color &amp; detail</summary>
         <label class="slider">
+          <span><span data-i18n="filmic">Filmic curve</span> <button class="qm" data-help="hintFilmic">?</button> <output id="outFilmic">0</output></span>
+          <input type="range" id="ctlFilmic" min="0" max="100" step="1" value="0">
+        </label>
+        <p class="tip hint2" id="hintFilmic" hidden data-i18n="filmicHint">Cinema-style tone
+        mapping: bright star cores and bloom roll off softly instead of burning out to flat
+        white, and the midtones get a gentle film contrast. 0 keeps the classic look.</p>
+        <label class="slider">
           <span><span data-i18n="exposure">Exposure</span> <output id="outExposure">0</output></span>
           <input type="range" id="ctlExposure" min="-100" max="100" step="1" value="0">
         </label>
@@ -1048,8 +1055,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-66"></script>
-<script src="objectinfo.js?v=2026-08-16-66"></script>
-<script src="app.js?v=2026-08-16-66"></script>
+<script src="i18n.js?v=2026-08-16-67"></script>
+<script src="objectinfo.js?v=2026-08-16-67"></script>
+<script src="app.js?v=2026-08-16-67"></script>
 </body>
 </html>
