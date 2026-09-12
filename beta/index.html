@@ -696,6 +696,37 @@
           <input type="range" id="ctlOcclude" min="0" max="100" step="1" value="0">
         </label>
       </details>
+
+      <details class="adv">
+        <summary data-i18n="advOptics">Optics: Airy core &amp; diffraction spikes</summary>
+        <label class="check">
+          <input type="checkbox" id="ctlAiry">
+          <span data-i18n="airy">Airy core (diffraction disc instead of soft blob)</span>
+          <button class="qm" data-help="hintAiry">?</button>
+        </label>
+        <p class="tip hint2" id="hintAiry" hidden data-i18n="airyHint">Renders each star with the
+        diffraction pattern of a real telescope: a crisp bright disc with a faint ring around it
+        instead of a soft Gaussian blob. Subtle, but stars look like optics, not sprites.</p>
+        <label class="slider">
+          <span><span data-i18n="spikes">Diffraction spikes</span> <button class="qm" data-help="hintSpikes">?</button> <output id="outSpikes">0</output></span>
+          <input type="range" id="ctlSpikes" min="0" max="100" step="1" value="0">
+        </label>
+        <p class="tip hint2" id="hintSpikes" hidden data-i18n="spikesHint">Adds the spider-vane
+        spikes of a reflector telescope to bright stars. Only the brightest stars get long spikes,
+        faint ones stay clean. Off by default, since not every photo wants them.</p>
+        <label class="selfull">
+          <span data-i18n="spikeArms">Number of spikes</span>
+          <select id="ctlSpikeArms">
+            <option value="4" selected data-i18n="spikeArms4">4 (Newtonian, 4-vane spider)</option>
+            <option value="6" data-i18n="spikeArms6">6 (3-vane spider)</option>
+            <option value="8" data-i18n="spikeArms8">8 (double spider)</option>
+          </select>
+        </label>
+        <label class="slider">
+          <span><span data-i18n="spikeRot">Spike rotation</span> <output id="outSpikeRot">0°</output></span>
+          <input type="range" id="ctlSpikeRot" min="0" max="90" step="1" value="0">
+        </label>
+      </details>
     </section>
 
     <!-- ==================== LOOK ==================== -->
@@ -1082,6 +1113,6 @@
 <script src="vendor/UTIF.js"></script>
 <script src="i18n.js?v=2026-08-16-67"></script>
 <script src="objectinfo.js?v=2026-08-16-67"></script>
-<script src="app.js?v=2026-08-16-68"></script>
+<script src="app.js?v=2026-08-16-69"></script>
 </body>
 </html>
