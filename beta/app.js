@@ -64,6 +64,11 @@ const state = {
   customDepth: null,     // eigene, importierte Tiefenkarte { canvas, width, height }
   aiDepth: null,         // KI-Tiefenkarte (Depth Anything): { data: Float32Array 0..1, w, h }
   depthAiMix: 100,       // Anteil der KI-Karte an der Tiefenkarte in %
+  vol: false,            // Volumetrischer Nebel: transparente Leuchtebenen statt Relief
+  volLayers: 5,          // Anzahl der Leuchtebenen (2..6)
+  volSpread: 70,         // Tiefenspreizung der Ebenen 0..100
+  volFine: 30,           // Feinmodulation innerhalb einer Ebene (Tiefenkarte) 0..100
+  volDust: 60,           // Staub-Verdeckung 0..100
   srcFiles: { starless: null, stars: null, depth: null }, // Original-Dateien (Projekt-Speicherung)
   invertDepth: false,
   target: { x: 0, y: 0 }, // Zoomziel in Bildebenen-Einheiten (0,0 = Mitte)
@@ -261,6 +266,12 @@ uniform float uBandFeather; // weiche Kante der Banderkennung (0 = hart, 1 = seh
 uniform float uBandOn;      // 1 = mindestens ein Band-Regler aktiv
 uniform float uDof;         // Tiefenschaerfe: Steilheit des Unschaerfekreises (0 = aus)
 uniform float uFocus;       // Fokusebene in Tiefeneinheiten 0..1
+uniform float uVol;         // Volumetrischer Nebel: Anzahl der Leuchtebenen (0 = aus)
+uniform sampler2D uVolW0;   // Ebenengewichte 0..3 (Summe aller Gewichte = 1)
+uniform sampler2D uVolW1;   // Ebenengewichte 4..5, Alpha = Staub-Durchlaessigkeit
+uniform float uVolSpread;   // Tiefenspreizung der Ebenen (0..1)
+uniform float uVolFine;     // Feinmodulation der Tiefe innerhalb einer Ebene
+uniform float uVolDust;     // Staerke der Staub-Verdeckung 0..1
 
 vec2 imgUv(vec2 q) {
   return vec2(q.x / uImgAspect, q.y) + 0.5;
@@ -328,6 +339,85 @@ vec2 spinWarp(vec2 q) {
   return uSpinCenter + mat2(c, s, -s, c) * e;
 }
 
+// Farbabtastung: beim Hineinzoomen bikubisch (Catmull-Rom, 9 bilineare
+// Taps) statt nur bilinear - deutlich weniger Verpixelung bei Zoom > 1
+vec3 sampleCol(vec2 uv) {
+  if (uBicubic > 0.5) {
+    vec2 pos = uv / uColorTexel - 0.5;
+    vec2 f = fract(pos);
+    vec2 base = (pos - f + 0.5) * uColorTexel;
+    vec2 f2 = f * f, f3 = f2 * f;
+    vec2 w0 = -0.5 * f3 + f2 - 0.5 * f;
+    vec2 w1 =  1.5 * f3 - 2.5 * f2 + 1.0;
+    vec2 w2 = -1.5 * f3 + 2.0 * f2 + 0.5 * f;
+    vec2 w3 =  0.5 * f3 - 0.5 * f2;
+    vec2 w12 = w1 + w2;
+    vec2 uv12 = base + (w2 / w12) * uColorTexel;
+    vec2 uv0 = base - uColorTexel;
+    vec2 uv3 = base + 2.0 * uColorTexel;
+    vec3 col =
+      texture(uColor, vec2(uv0.x,  uv0.y)).rgb  * (w0.x  * w0.y) +
+      texture(uColor, vec2(uv12.x, uv0.y)).rgb  * (w12.x * w0.y) +
+      texture(uColor, vec2(uv3.x,  uv0.y)).rgb  * (w3.x  * w0.y) +
+      texture(uColor, vec2(uv0.x,  uv12.y)).rgb * (w0.x  * w12.y) +
+      texture(uColor, vec2(uv12.x, uv12.y)).rgb * (w12.x * w12.y) +
+      texture(uColor, vec2(uv3.x,  uv12.y)).rgb * (w3.x  * w12.y) +
+      texture(uColor, vec2(uv0.x,  uv3.y)).rgb  * (w0.x  * w3.y) +
+      texture(uColor, vec2(uv12.x, uv3.y)).rgb  * (w12.x * w3.y) +
+      texture(uColor, vec2(uv3.x,  uv3.y)).rgb  * (w3.x  * w3.y);
+    return max(col, 0.0);
+  }
+  return texture(uColor, uv).rgb;
+}
+
+// Bildebenen-Punkt einer Ebene mit fester Tiefe d (gleiche Kameramathematik
+// wie die Fixpunkt-Iteration der Tiefenkarte, aber ohne Iteration)
+vec2 layerQ(vec2 pr, float d) {
+  float ex = 1.0 + uParallax * (d - 0.45) * uDepthRange;
+  float scale = uCover * pow(uZoom, ex);
+  return uCenter + pr / scale + uTilt * (d - 0.45);
+}
+float layerW(vec2 uv, int k) {
+  vec4 a = texture(uVolW0, uv);
+  if (k == 0) return a.r;
+  if (k == 1) return a.g;
+  if (k == 2) return a.b;
+  if (k == 3) return a.a;
+  vec4 b = texture(uVolW1, uv);
+  if (k == 4) return b.r;
+  return b.g;
+}
+// Durchlaessigkeit der Staubebene (1 = kein Staub), Staerke per Regler;
+// nie unter 0.3, sonst wird die Rekonstruktion dahinter zu Rauschen
+float dustT(vec2 uv) {
+  float t = texture(uVolW1, uv).a;
+  return max(0.3, 1.0 - uVolDust * (1.0 - t));
+}
+// Volumetrischer Nebel: das Bild ist in transparente Leuchtebenen zerlegt
+// (Gewichte summieren sich zu 1, additiv zusammengesetzt = Original). Jede
+// Ebene liegt auf einer eigenen Tiefe und bewegt sich starr mit ihr - kein
+// Verzerren, keine Loecher, Gluehen schiebt sich gegen Gluehen. Der Staub
+// liegt als absorbierende Ebene ganz vorn: das Leuchten dahinter wird aus
+// dem Bild rekonstruiert (Farbe / Durchlaessigkeit) und beim Vorbeiflug
+// vom wandernden Staub verdeckt oder freigegeben
+vec3 volumetric(vec2 pr) {
+  vec3 acc = vec3(0.0);
+  for (int k = 0; k < 6; k++) {
+    if (float(k) >= uVol) break;
+    float ck = (float(k) + 0.5) / uVol;
+    float dk = 0.45 + (ck - 0.5) * uVolSpread;
+    vec2 uvk = imgUv(spinWarp(layerQ(pr, dk)));
+    if (uVolFine > 0.0) {
+      float dm = texture(uDepth, uvk).r;
+      uvk = imgUv(spinWarp(layerQ(pr, dk + uVolFine * (dm - 0.45))));
+    }
+    float wk = layerW(uvk, k);
+    if (wk > 0.002) acc += sampleCol(uvk) / dustT(uvk) * wk;
+  }
+  vec2 uvD = imgUv(spinWarp(layerQ(pr, 0.45 + 0.5 * uVolSpread)));
+  return acc * dustT(uvD);
+}
+
 void main() {
   // Canvas-Punkt in Ebenen-Einheiten (Höhe = 1)
   vec2 p = vec2((vUv.x - 0.5) * uViewAspect, vUv.y - 0.5);
@@ -351,35 +441,15 @@ void main() {
     uv = imgUv(spinWarp(q));
   }
 
-  // Beim Hineinzoomen bikubisch (Catmull-Rom, 9 bilineare Taps) statt nur
-  // bilinear abtasten: deutlich weniger Verpixelung/Matschigkeit bei Zoom > 1
   vec3 col;
-  if (uBicubic > 0.5) {
-    vec2 pos = uv / uColorTexel - 0.5;
-    vec2 f = fract(pos);
-    vec2 base = (pos - f + 0.5) * uColorTexel;
-    vec2 f2 = f * f, f3 = f2 * f;
-    vec2 w0 = -0.5 * f3 + f2 - 0.5 * f;
-    vec2 w1 =  1.5 * f3 - 2.5 * f2 + 1.0;
-    vec2 w2 = -1.5 * f3 + 2.0 * f2 + 0.5 * f;
-    vec2 w3 =  0.5 * f3 - 0.5 * f2;
-    vec2 w12 = w1 + w2;
-    vec2 uv12 = base + (w2 / w12) * uColorTexel;
-    vec2 uv0 = base - uColorTexel;
-    vec2 uv3 = base + 2.0 * uColorTexel;
-    col =
-      texture(uColor, vec2(uv0.x,  uv0.y)).rgb  * (w0.x  * w0.y) +
-      texture(uColor, vec2(uv12.x, uv0.y)).rgb  * (w12.x * w0.y) +
-      texture(uColor, vec2(uv3.x,  uv0.y)).rgb  * (w3.x  * w0.y) +
-      texture(uColor, vec2(uv0.x,  uv12.y)).rgb * (w0.x  * w12.y) +
-      texture(uColor, vec2(uv12.x, uv12.y)).rgb * (w12.x * w12.y) +
-      texture(uColor, vec2(uv3.x,  uv12.y)).rgb * (w3.x  * w12.y) +
-      texture(uColor, vec2(uv0.x,  uv3.y)).rgb  * (w0.x  * w3.y) +
-      texture(uColor, vec2(uv12.x, uv3.y)).rgb  * (w12.x * w3.y) +
-      texture(uColor, vec2(uv3.x,  uv3.y)).rgb  * (w3.x  * w3.y);
-    col = max(col, 0.0);
+  if (uVol > 0.5 && uObjFar < 0.5 && uMoonMode < 0.5) {
+    col = volumetric(pr);
+    // uv/q der mittleren Ebene fuer Masken, Mond und Tiefenschaerfe
+    q = layerQ(pr, 0.45);
+    uv = imgUv(spinWarp(q));
+    d = texture(uDepth, uv).r;
   } else {
-    col = texture(uColor, uv).rgb;
+    col = sampleCol(uv);
   }
   // Nebelfarben: HII-/OIII-/SII-artige Farbbereiche gezielt anpassen.
   // Arbeitet auf dem Farbton (Rot, Türkis, Gold) - wirkt damit auf RGB-
@@ -1215,6 +1285,8 @@ const starBuf = gl.createBuffer();
 let texColor = null;
 let texDepth = null;
 let texSpinMask = null;
+let texVol0 = null, texVol1 = null; // Ebenengewichte des volumetrischen Nebels
+let volBuiltN = 0;                  // Ebenenzahl, mit der die Texturen gebaut wurden
 let texStarAtlas = null;
 let texStarsImg = null;   // Kino-Modus: Sternmaske als Bildtextur (bis 4096 px)
 
@@ -1630,6 +1702,92 @@ function computeCustomDepthMap(radius, invert, maxEdge) {
   return { canvas: c, data: dst, w, h };
 }
 
+// Rohdaten-Textur (RGBA8, bilinear, gespiegelt wie die Bildtexturen). Kein
+// Umweg ueber ein Canvas: der wuerde Alpha vormultiplizieren und die
+// Staub-Durchlaessigkeit im Alphakanal verfaelschen
+function makeTextureRaw(w, h, data) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.MIRRORED_REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.MIRRORED_REPEAT);
+  return t;
+}
+
+/**
+ * Volumetrischer Nebel: Zerlegung des Starless in transparente Leuchtebenen.
+ * Der Schluessel je Pixel mischt die (feine) Helligkeit mit der (groben)
+ * Tiefenkarte; Hut-Funktionen verteilen den Pixel weich auf benachbarte
+ * Ebenen (Summe 1 -> additiv wieder das Original). Staub = lokale Senke
+ * gegenueber der Umgebung innerhalb des Nebels, als Durchlaessigkeit im
+ * Alphakanal. Nur Gewichte, keine Farben: die bleiben in voller Aufloesung
+ */
+function buildVolLayers() {
+  if (!state.starless || !state.vol) return;
+  const N = Math.max(2, Math.min(6, Math.round(state.volLayers)));
+  const src = downscale(state.starless, 1024);
+  const w = src.width, h = src.height, n = w * h;
+  const px = src.getContext("2d").getImageData(0, 0, w, h).data;
+  const L = new Float32Array(n);
+  const hist = new Uint32Array(256);
+  for (let i = 0, j = 0; i < n; i++, j += 4) {
+    L[i] = (0.299 * px[j] + 0.587 * px[j + 1] + 0.114 * px[j + 2]) / 255;
+    hist[Math.round(L[i] * 255)]++;
+  }
+  let lo = 0, hi = 255, acc = 0;
+  for (let k = 0; k < 256; k++) { acc += hist[k]; if (acc >= n * 0.01) { lo = k / 255; break; } }
+  acc = 0;
+  for (let k = 255; k >= 0; k--) { acc += hist[k]; if (acc >= n * 0.005) { hi = k / 255; break; } }
+  const span = Math.max(0.02, hi - lo);
+  // Umgebungshelligkeit (grosser Radius) fuer die Staub-Erkennung
+  const bg = new Float32Array(n), tmp = new Float32Array(n);
+  const rBig = Math.max(4, Math.round(w * 0.03));
+  boxBlurH(L, tmp, w, h, rBig);
+  boxBlurV(tmp, bg, w, h, rBig);
+  const dd = state.depthData;
+  const W = [];
+  for (let k = 0; k < N; k++) W.push(new Float32Array(n));
+  const dust = new Float32Array(n);
+  const sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  for (let y = 0, i = 0; y < h; y++) {
+    const dy = dd ? Math.min(dd.h - 1, Math.floor(y * dd.h / h)) * dd.w : 0;
+    for (let x = 0; x < w; x++, i++) {
+      const lf = Math.pow(Math.min(1, Math.max(0, (L[i] - lo) / span)), 0.7);
+      const dc = dd ? dd.data[(dy + Math.min(dd.w - 1, Math.floor(x * dd.w / w))) * 4] / 255 : lf;
+      let key = 0.5 * lf + 0.5 * dc;
+      key = Math.min(1 - 0.5 / N, Math.max(0.5 / N, key)) * N - 0.5;
+      const k0 = Math.floor(key), f = key - k0;
+      W[k0][i] += 1 - f;
+      if (k0 + 1 < N) W[k0 + 1][i] += f;
+      dust[i] = sm(0.15, 0.6, (bg[i] - L[i]) / (bg[i] + 0.02)) * sm(0.04, 0.12, bg[i]);
+    }
+  }
+  // leichte Glaettung: weiche Ebenenuebergaenge, kein Pixelflimmern
+  const r = Math.max(1, Math.round(w / 500));
+  const blur = (a) => { boxBlurH(a, tmp, w, h, r); boxBlurV(tmp, a, w, h, r); };
+  for (const a of W) blur(a);
+  blur(dust);
+  const d0 = new Uint8ClampedArray(n * 4), d1 = new Uint8ClampedArray(n * 4);
+  for (let i = 0, j = 0; i < n; i++, j += 4) {
+    d0[j] = Math.round(W[0][i] * 255);
+    d0[j + 1] = Math.round(W[1][i] * 255);
+    d0[j + 2] = N > 2 ? Math.round(W[2][i] * 255) : 0;
+    d0[j + 3] = N > 3 ? Math.round(W[3][i] * 255) : 0;
+    d1[j] = N > 4 ? Math.round(W[4][i] * 255) : 0;
+    d1[j + 1] = N > 5 ? Math.round(W[5][i] * 255) : 0;
+    d1[j + 2] = 0;
+    d1[j + 3] = Math.round((1 - dust[i]) * 255);
+  }
+  if (texVol0) gl.deleteTexture(texVol0);
+  if (texVol1) gl.deleteTexture(texVol1);
+  texVol0 = makeTextureRaw(w, h, d0);
+  texVol1 = makeTextureRaw(w, h, d1);
+  volBuiltN = N;
+}
+
 function buildDepthMap() {
   if (!state.starless) return;
   const m = state.moonMode && state.moonDisk
@@ -1646,6 +1804,7 @@ function buildDepthMap() {
   const pv = $("depthPreview");
   pv.height = Math.round(160 * m.h / m.w) || 107;
   pv.getContext("2d").drawImage(m.canvas, 0, 0, pv.width, pv.height);
+  if (state.vol) buildVolLayers();
 }
 
 /**
@@ -3603,6 +3762,19 @@ function render(forcedT) {
     bandSat.some((v) => v !== 1) || bandHue.some((v) => v !== 0) || bandShow ? 1 : 0);
   u1f(bgProg, "uDof", dofK);
   u1f(bgProg, "uFocus", focus);
+  // Volumetrischer Nebel: Ebenengewichte + Staub
+  const volOn = state.vol && texVol0 && volBuiltN > 0;
+  gl.activeTexture(gl.TEXTURE12);
+  gl.bindTexture(gl.TEXTURE_2D, texVol0 || texBlack);
+  gl.activeTexture(gl.TEXTURE13);
+  gl.bindTexture(gl.TEXTURE_2D, texVol1 || texBlack);
+  gl.activeTexture(gl.TEXTURE0);
+  u1i(bgProg, "uVolW0", 12);
+  u1i(bgProg, "uVolW1", 13);
+  u1f(bgProg, "uVol", volOn ? volBuiltN : 0);
+  u1f(bgProg, "uVolSpread", state.volSpread / 100);
+  u1f(bgProg, "uVolFine", (state.volFine / 100) * 0.5);
+  u1f(bgProg, "uVolDust", state.volDust / 100);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
   // Bewegungsgrößen numerisch aus der Kamerakurve ableiten (für die
@@ -4915,6 +5087,12 @@ const STATUS_CHIPS = [
   },
   {
     tab: "tiefe",
+    on: () => state.vol,
+    label: () => t("chipVol"),
+    off: () => setCheck("ctlVol", false),
+  },
+  {
+    tab: "tiefe",
     on: () => !!state.customDepth,
     label: () => t(state.aiDepth ? "chipDepthAi" : "chipDepth"),
     off: () => $("btnDepthClear").click(),
@@ -5385,6 +5563,24 @@ function applyAiDepth() {
 }
 
 $("btnDepthAi").addEventListener("click", runAiDepth);
+
+// Volumetrischer Nebel
+bindSlider("ctlVolLayers", "outVolLayers", "volLayers", asInt);
+bindSlider("ctlVolSpread", "outVolSpread", "volSpread", asInt);
+bindSlider("ctlVolFine", "outVolFine", "volFine", asInt);
+bindSlider("ctlVolDust", "outVolDust", "volDust", asInt);
+$("ctlVol").addEventListener("change", () => {
+  state.vol = $("ctlVol").checked;
+  if (state.vol) buildVolLayers();
+  refreshStatusChips();
+});
+{
+  let timer = 0;
+  $("ctlVolLayers").addEventListener("input", () => {
+    clearTimeout(timer);
+    timer = setTimeout(buildVolLayers, 150);
+  });
+}
 {
   let timer = 0;
   $("ctlDepthAiMix").addEventListener("input", () => {
@@ -6032,7 +6228,8 @@ async function loadFile(which, file) {
 const USER_PRESET_GROUPS = {
   camera: ["ctlFlightMode", "ctlDriftDir", "ctlZoom", "ctlSpeed", "ctlEase",
     "ctlEaseMode", "ctlParallax", "ctlDepthBoost", "ctlDof", "ctlFocus",
-    "ctlFocusAuto", "ctlRotation", "ctlOrient",
+    "ctlFocusAuto", "ctlVol", "ctlVolLayers", "ctlVolSpread", "ctlVolFine",
+    "ctlVolDust", "ctlRotation", "ctlOrient",
     "ctlFrameX", "ctlFrameY", "ctlTiltX", "ctlTiltY", "ctlSwayAmp",
     "ctlSwayTempo", "ctlSwayDir", "ctlSwayRandom", "ctlTiltRamp",
     "ctlTiltRampDir", "ctlFade", "ctlDuration", "ctlLoop", "ctlSpinSpeed",

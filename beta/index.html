@@ -408,6 +408,38 @@
       </label>
       <p class="tip" id="depthCustomStatus" hidden></p>
       <button id="btnDepthClear" class="secondary" hidden data-i18n="depthClear">Remove custom depth map</button>
+      <details class="adv" open>
+        <summary><span data-i18n="advVol">Volumetric nebula</span><span class="grow"></span><span class="badge" data-i18n="expBadge">Experimental</span></summary>
+        <p class="tip" data-i18n="volTip">Instead of bending one image along the depth map, the
+        nebula is split into translucent glowing layers, each flying at its own depth, plus a
+        dust layer in front that hides and reveals the glow behind it. Nothing can tear, since
+        the layers are see-through like real nebula gas.</p>
+        <label class="check">
+          <input type="checkbox" id="ctlVol">
+          <span data-i18n="vol">Render nebula as translucent layers</span>
+          <button class="qm" data-help="hintVol">?</button>
+        </label>
+        <p class="tip hint2" id="hintVol" hidden data-i18n="volHint">Faint, diffuse glow goes to
+        the far layers, bright dense filaments to the near ones; dark dust lanes become an
+        absorbing layer in front. The depth map still adds fine depth inside each layer.
+        Off = the classic single depth-map warp.</p>
+        <label class="slider">
+          <span><span data-i18n="volLayers">Layers</span> <output id="outVolLayers">5</output></span>
+          <input type="range" id="ctlVolLayers" min="2" max="6" step="1" value="5">
+        </label>
+        <label class="slider">
+          <span><span data-i18n="volSpread">Depth spread of the layers</span> <output id="outVolSpread">70</output></span>
+          <input type="range" id="ctlVolSpread" min="0" max="100" step="1" value="70">
+        </label>
+        <label class="slider">
+          <span><span data-i18n="volFine">Fine depth inside a layer</span> <output id="outVolFine">30</output></span>
+          <input type="range" id="ctlVolFine" min="0" max="100" step="1" value="30">
+        </label>
+        <label class="slider">
+          <span><span data-i18n="volDust">Dust occlusion</span> <output id="outVolDust">60</output></span>
+          <input type="range" id="ctlVolDust" min="0" max="100" step="1" value="60">
+        </label>
+      </details>
       <div class="selrow">
         <label for="ctlDepthRes" data-i18n="depthRes">Depth map resolution</label>
         <select id="ctlDepthRes">
@@ -1126,8 +1158,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-70"></script>
+<script src="i18n.js?v=2026-08-16-71"></script>
 <script src="objectinfo.js?v=2026-08-16-67"></script>
-<script src="app.js?v=2026-08-16-70"></script>
+<script src="app.js?v=2026-08-16-71"></script>
 </body>
 </html>
