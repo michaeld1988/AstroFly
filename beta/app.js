@@ -62,6 +62,8 @@ const state = {
   smooth: 18,
   depthRes: 768,        // Kantenlaenge der Tiefenkarte (768/1536/2048)
   customDepth: null,     // eigene, importierte Tiefenkarte { canvas, width, height }
+  aiDepth: null,         // KI-Tiefenkarte (Depth Anything): { data: Float32Array 0..1, w, h }
+  depthAiMix: 100,       // Anteil der KI-Karte an der Tiefenkarte in %
   srcFiles: { starless: null, stars: null, depth: null }, // Original-Dateien (Projekt-Speicherung)
   invertDepth: false,
   target: { x: 0, y: 0 }, // Zoomziel in Bildebenen-Einheiten (0,0 = Mitte)
@@ -4914,7 +4916,7 @@ const STATUS_CHIPS = [
   {
     tab: "tiefe",
     on: () => !!state.customDepth,
-    label: () => t("chipDepth"),
+    label: () => t(state.aiDepth ? "chipDepthAi" : "chipDepth"),
     off: () => $("btnDepthClear").click(),
   },
   {
@@ -5228,9 +5230,170 @@ $("fileDepth").addEventListener("change", async (e) => {
 $("btnDepthClear").addEventListener("click", () => {
   state.customDepth = null;
   state.srcFiles.depth = null;
+  state.aiDepth = null;
+  $("ctlDepthAiMix").disabled = true;
+  aiDepthStatus("");
   updateDepthCustomUi();
   buildDepthMap();
 });
+
+// ------------------------------------------- KI-Tiefenkarte (Depth Anything v2)
+// Laeuft komplett im Browser (Transformers.js; WebGPU, sonst WASM). Das
+// Modell wird erst beim ersten Klick geladen (~25-50 MB, der Browser cacht
+// es). Das Ergebnis geht den Weg der importierten Tiefenkarte: Glaettung
+// und Invertieren wirken weiterhin, Spiegeln zieht mit, Projekte speichern
+// die Karte als PNG. Der Mischregler blendet gegen die automatische Karte
+const AI_DEPTH_MODEL = "onnx-community/depth-anything-v2-small";
+// Debug/Selbst-Hosting: localStorage "astrofly-ai-mirror" = Basis-URL mit
+// transformers.min.js, ort/ (ONNX-Runtime-WASM) und models/<modell>/
+const AI_DEPTH_MIRROR = (() => { try { return localStorage.getItem("astrofly-ai-mirror") || ""; } catch { return ""; } })();
+const AI_DEPTH_LIB = AI_DEPTH_MIRROR ? AI_DEPTH_MIRROR + "transformers.min.js"
+  : "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.1";
+let aiDepthPipe = null, aiDepthRawImage = null, aiDepthDevice = "", aiDepthGen = 0;
+let aiDepthForceWasm = false; // nach einem WebGPU-Fehlschlag dauerhaft WASM
+
+function aiDepthStatus(msg, busy) {
+  const el = $("depthAiStatus");
+  el.hidden = !msg;
+  el.textContent = msg || "";
+  $("btnDepthAi").disabled = !!busy;
+}
+
+async function loadAiDepthPipeline(onProgress) {
+  if (aiDepthPipe) return aiDepthPipe;
+  const tf = await import(AI_DEPTH_LIB);
+  aiDepthRawImage = tf.RawImage;
+  if (AI_DEPTH_MIRROR) {
+    tf.env.remoteHost = AI_DEPTH_MIRROR + "models/";
+    tf.env.remotePathTemplate = "{model}/";
+    tf.env.backends.onnx.wasm.wasmPaths = AI_DEPTH_MIRROR + "ort/";
+  }
+  const webgpu = !!navigator.gpu && !aiDepthForceWasm;
+  aiDepthDevice = webgpu ? "WebGPU" : "WASM";
+  try {
+    aiDepthPipe = await tf.pipeline("depth-estimation", AI_DEPTH_MODEL,
+      { device: webgpu ? "webgpu" : "wasm", dtype: webgpu ? "fp16" : "q8", progress_callback: onProgress });
+  } catch (err) {
+    if (!webgpu) throw err;
+    console.warn("WebGPU-Pipeline fehlgeschlagen, Rueckfall auf WASM", err);
+    aiDepthDevice = "WASM";
+    aiDepthPipe = await tf.pipeline("depth-estimation", AI_DEPTH_MODEL,
+      { device: "wasm", dtype: "q8", progress_callback: onProgress });
+  }
+  return aiDepthPipe;
+}
+
+async function runAiDepth() {
+  if (!state.starless) { updateDepthCustomUi(t("depthNoStarless")); return; }
+  const gen = ++aiDepthGen;
+  try {
+    let lastPc = -1;
+    aiDepthStatus(t("depthAiLoading", 0), true);
+    const pipe = await loadAiDepthPipeline((p) => {
+      if (p.status !== "progress" || !/\.onnx/.test(p.file || "")) return;
+      const pc = Math.round(p.progress || 0);
+      if (pc !== lastPc) { lastPc = pc; aiDepthStatus(t("depthAiLoading", pc), true); }
+    });
+    if (gen !== aiDepthGen) return;
+    aiDepthStatus(t("depthAiRunning", aiDepthDevice), true);
+    // Das Modell rechnet intern mit 518 px; mehr als ~1000 px Eingabe bringt
+    // nichts und kostet nur Speicher
+    const src = downscale(state.starless, 1036);
+    const blob = await new Promise((res) => src.toBlob(res, "image/png"));
+    const img = await aiDepthRawImage.fromBlob(blob);
+    const t0 = performance.now();
+    let d;
+    try {
+      const out = await pipe(img);
+      d = out.depth; // RawImage, Grauwerte: 255 = nah (wie AstroFly)
+      if (!d || !d.data.length || isNaN(d.data[0])) throw new Error("NaN");
+    } catch (err) {
+      // fp16 auf WebGPU kann je nach Treiber scheitern (Fehler oder NaN):
+      // einmal mit WASM (q8) wiederholen
+      if (aiDepthDevice !== "WebGPU") throw err;
+      console.warn("WebGPU-Inferenz fehlgeschlagen, Rueckfall auf WASM", err);
+      aiDepthForceWasm = true;
+      aiDepthPipe = null;
+      const pipe2 = await loadAiDepthPipeline(() => {});
+      if (gen !== aiDepthGen) return;
+      aiDepthStatus(t("depthAiRunning", aiDepthDevice), true);
+      d = (await pipe2(img)).depth;
+    }
+    if (gen !== aiDepthGen) return;
+    const w = d.width, h = d.height, ch = d.channels || 1;
+    const raw = new Float32Array(w * h);
+    for (let i = 0; i < raw.length; i++) raw[i] = d.data[i * ch] / 255;
+    // Robuste Streckung auf 0..1 (1./99. Perzentil), damit ein einzelner
+    // Ausreisser nicht die ganze Karte flach macht
+    const hist = new Uint32Array(256);
+    for (let i = 0; i < raw.length; i++) hist[Math.round(raw[i] * 255)]++;
+    let lo = 0, hi = 255, acc = 0;
+    for (let k = 0; k < 256; k++) { acc += hist[k]; if (acc >= raw.length * 0.01) { lo = k; break; } }
+    acc = 0;
+    for (let k = 255; k >= 0; k--) { acc += hist[k]; if (acc >= raw.length * 0.01) { hi = k; break; } }
+    const span = Math.max(1, hi - lo) / 255;
+    for (let i = 0; i < raw.length; i++) raw[i] = Math.min(1, Math.max(0, (raw[i] - lo / 255) / span));
+    if (isNaN(raw[0])) throw new Error("NaN");
+    state.aiDepth = { data: raw, w, h };
+    $("ctlDepthAiMix").disabled = false;
+    applyAiDepth();
+    aiDepthStatus(t("depthAiDone", ((performance.now() - t0) / 1000).toFixed(1), aiDepthDevice));
+  } catch (err) {
+    console.error(err);
+    if (gen === aiDepthGen) aiDepthStatus(t("depthAiFailed", err.message || String(err)));
+  }
+}
+
+// KI-Karte (gemischt mit der automatischen Helligkeitskarte) als eigene
+// Tiefenkarte setzen; Projekte bekommen sie als PNG-Datei
+function applyAiDepth() {
+  const ai = state.aiDepth;
+  if (!ai || !state.starless) return;
+  const mixAmt = state.depthAiMix / 100;
+  const w = ai.w, h = ai.h;
+  const lum = mixAmt < 1 ? computeLuminanceMap(2, false, Math.max(w, h)) : null;
+  const same = lum && lum.w === w && lum.h === h;
+  const dst = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0, j = 0; i < w * h; i++, j += 4) {
+    let v = ai.data[i];
+    if (lum) {
+      let l;
+      if (same) l = lum.data[j] / 255;
+      else {
+        const x = Math.min(lum.w - 1, Math.round((i % w) * lum.w / w));
+        const y = Math.min(lum.h - 1, Math.round(Math.floor(i / w) * lum.h / h));
+        l = lum.data[(y * lum.w + x) * 4] / 255;
+      }
+      v = l + (v - l) * mixAmt;
+    }
+    const g = Math.round(v * 255);
+    dst[j] = dst[j + 1] = dst[j + 2] = g;
+    dst[j + 3] = 255;
+  }
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  c.getContext("2d").putImageData(new ImageData(dst, w, h), 0, 0);
+  state.customDepth = { canvas: c, width: w, height: h, name: "ai-depth.png" };
+  const myGen = aiDepthGen;
+  c.toBlob((blob) => {
+    if (blob && myGen === aiDepthGen && state.aiDepth === ai) {
+      state.srcFiles.depth = new File([blob], "ai-depth.png", { type: "image/png" });
+    }
+  }, "image/png");
+  updateDepthCustomUi();
+  buildDepthMap();
+}
+
+$("btnDepthAi").addEventListener("click", runAiDepth);
+{
+  let timer = 0;
+  $("ctlDepthAiMix").addEventListener("input", () => {
+    state.depthAiMix = parseInt($("ctlDepthAiMix").value, 10);
+    $("outDepthAiMix").textContent = state.depthAiMix + " %";
+    clearTimeout(timer);
+    timer = setTimeout(applyAiDepth, 120);
+  });
+}
 
 $("ctlDepthRes").addEventListener("change", () => {
   state.depthRes = parseInt($("ctlDepthRes").value, 10);
@@ -5794,6 +5957,9 @@ async function loadFile(which, file) {
       state.texColorH = colSrc.height;
       if (state.customDepth) {
         state.customDepth = null;
+        state.aiDepth = null;
+        $("ctlDepthAiMix").disabled = true;
+        aiDepthStatus("");
         updateDepthCustomUi(t("depthCustomCleared"));
       }
       if (state.moonMode) {

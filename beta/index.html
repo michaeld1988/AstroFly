@@ -391,6 +391,21 @@
       image exactly (same framing; white = near, black = far). Export the automatic map,
       refine it in any editor, load it back - smoothing and invert still apply, and
       mirroring follows the image automatically.</p>
+      <div class="exportrow">
+        <button id="btnDepthAi" class="secondary" data-i18n="depthAi">Compute AI depth map (Depth Anything v2)</button>
+        <button class="qm" data-help="hintDepthAi">?</button>
+      </div>
+      <p class="tip hint2" id="hintDepthAi" hidden data-i18n="depthAiHint">Runs a neural depth
+      estimator (Depth Anything v2 Small) right in your browser, nothing is uploaded. The first
+      use downloads the model (about 25 to 50 MB, cached afterwards); with WebGPU it takes a
+      few seconds, the WASM fallback up to a minute. The model was trained on everyday scenes,
+      so for nebulae it mostly reads brightness and blur too: compare it with the automatic
+      map and blend with the slider.</p>
+      <p class="tip" id="depthAiStatus" hidden></p>
+      <label class="slider">
+        <span><span data-i18n="depthAiMix">AI share in the depth map</span> <output id="outDepthAiMix">100 %</output></span>
+        <input type="range" id="ctlDepthAiMix" min="0" max="100" step="1" value="100" disabled>
+      </label>
       <p class="tip" id="depthCustomStatus" hidden></p>
       <button id="btnDepthClear" class="secondary" hidden data-i18n="depthClear">Remove custom depth map</button>
       <div class="selrow">
@@ -1111,8 +1126,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-67"></script>
+<script src="i18n.js?v=2026-08-16-70"></script>
 <script src="objectinfo.js?v=2026-08-16-67"></script>
-<script src="app.js?v=2026-08-16-69"></script>
+<script src="app.js?v=2026-08-16-70"></script>
 </body>
 </html>
