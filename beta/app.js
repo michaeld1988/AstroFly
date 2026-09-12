@@ -121,6 +121,10 @@ const state = {
   dof: 0,                // Tiefenschaerfe: Staerke 0..100 (0 = aus)
   focus: 45,             // Fokusebene 0..100 (fern .. nah; 45 = Nebelmitte)
   focusAuto: false,      // Fokus folgt der Nebeltiefe am Zoomziel
+  airy: false,           // Airy-Kern: Beugungsscheibchen statt Gauss-Glocke
+  spikes: 0,             // Beugungsspikes: Staerke 0..100 (0 = aus)
+  spikeArms: 4,          // Anzahl der Spikes (4, 6, 8)
+  spikeRot: 0,           // Drehung der Spikes in Grad
   superSample: true,     // Export intern in 2x Aufloesung rendern und runterrechnen
   renderScale: 1,        // aktueller Supersampling-Faktor (nur waehrend des Exports > 1)
   exposure: 0,           // -100..100 (Blendenstufen ±2)
@@ -503,6 +507,8 @@ uniform sampler2D uColorS; // Starless-Bild (Dichte der Nebelschwaden)
 uniform float uDof;        // Tiefenschaerfe: Steilheit des Unschaerfekreises (0 = aus)
 uniform float uFocus;      // Fokusebene in Tiefeneinheiten 0..1
 uniform float uDofPx;      // groesster Bokeh-Durchmesser in Render-Pixeln
+uniform float uSpikes;     // Beugungsspikes: Staerke 0..1 (0 = aus)
+uniform float uSpikeMax;   // Zusatzlaenge der Spikes hellster Sterne in px
 out vec3 vColor;
 out float vAlpha;
 out vec2 vDir;    // Streifen-Richtung in Pixeln (normiert)
@@ -513,6 +519,7 @@ out float vGlow;  // Glanzhof der hellsten Sterne (0..1)
 out vec3 vAtlasUv;   // Atlas: Zentrum-UV + halbe Groesse in UV (x<0 = prozedural)
 out float vPatchHalf; // halbe Patch-Groesse auf dem Bildschirm in px
 out float vBokeh;     // 0 = scharfer Stern, 1 = flache Bokeh-Scheibe
+out float vSpike;     // Laenge der Beugungsspikes in px (0 = keine)
 
 // Sternposition mit der Galaxien-Rotation mitdrehen (identische Falloff-,
 // Differenzial- und Masken-Logik wie im Hintergrund-Shader)
@@ -548,7 +555,7 @@ void main() {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 1.0;
     vAlpha = 0.0; vColor = vec3(0.0); vDir = vec2(1.0, 0.0);
     vLen = 0.0; vBase = 1.0; vSize = 1.0; vGlow = 0.0;
-    vAtlasUv = vec3(-1.0); vPatchHalf = 0.0; vBokeh = 0.0;
+    vAtlasUv = vec3(-1.0); vPatchHalf = 0.0; vBokeh = 0.0; vSpike = 0.0;
     return;
   }
   float brightShift = aBright * 0.12;
@@ -567,7 +574,7 @@ void main() {
     gl_PointSize = 1.0;
     vColor = vec3(0.0); vAlpha = 0.0;
     vDir = vec2(1.0, 0.0); vLen = 0.0; vBase = 1.0; vSize = 1.0;
-    vAtlasUv = vec3(-1.0); vPatchHalf = 0.0; vGlow = 0.0; vBokeh = 0.0;
+    vAtlasUv = vec3(-1.0); vPatchHalf = 0.0; vGlow = 0.0; vBokeh = 0.0; vSpike = 0.0;
     return;
   }
 
@@ -681,6 +688,14 @@ void main() {
     }
   }
   vBokeh = bokeh;
+  // Beugungsspikes (Option): sichtbar nur an hellen Sternen, die Laenge
+  // waechst steil mit der Helligkeit - wie bei einer echten Fangspiegel-
+  // Spinne. Unscharfe Sterne (Bokeh) haben keine Spikes
+  float spike = 0.0;
+  if (uSpikes > 0.0) {
+    float spk = uSpikes * smoothstep(0.4, 1.0, aBright) * (1.0 - bokeh);
+    spike = spk * (base * 1.5 + uSpikeMax * spk);
+  }
 
   // Geschwindigkeits-Streifen: Position kurz danach mit demselben Tiefen-
   // Exponenten -> die Streifenlänge folgt der echten Geschwindigkeit dieses
@@ -747,6 +762,12 @@ void main() {
   // Sprite, nicht der Kern - sonst werden helle Sterne zu fetten Klumpen
   vGlow = smoothstep(0.86, 1.0, aBright) * (1.0 - bokeh);
   if (vGlow > 0.0 && vAtlasUv.x < 0.0) size = min(max(size, base * (1.0 + vGlow * 2.2)), uMaxPoint);
+  // Sprite muss die Spikes fassen (Deckel: groesste Punktgroesse der GPU)
+  if (spike > 0.0) {
+    spike = min(spike, uMaxPoint * 0.5 - 2.0);
+    size = min(max(size, spike * 2.0 + 4.0), uMaxPoint);
+  }
+  vSpike = spike;
   gl_PointSize = size;
   vDir = dirPx;
   vLen = len;
@@ -790,22 +811,62 @@ in float vGlow;
 in vec3 vAtlasUv;
 in float vPatchHalf;
 in float vBokeh;
+in float vSpike;
 uniform sampler2D uAtlas;   // echte Sternabbilder (Ausschnitte der Maske)
 uniform float uStarBrightF; // Helligkeits-Regler (wie uStarBright im VS)
 uniform float uAngleF;      // Kamerawinkel: Patch dreht mit dem Bild mit
+uniform float uAiry;        // 1 = Airy-Kern statt Gauss-Glocke
+uniform float uSpikeArms;   // Anzahl der Spikes (4, 6, 8)
+uniform float uSpikeRot;    // Drehung der Spikes (rad)
 out vec4 outColor;
+
+// Airy-Beugungsscheibchen: I = (2 J1(x) / x)^2 mit x = 7 r (r = 1 am Sprite-
+// Rand): heller Kern, erster dunkler Ring bei r = 0.55, schwacher zweiter
+// Ring bei r = 0.73, zweiter Nullring am Rand. Die Reihe von 2J1(x)/x
+// konvergiert im Sprite-Bereich schnell (10 Glieder)
+float airyI(float r2) {
+  float u = r2 * 12.25;
+  float s = 1.0 - u * (1.0 / 2.0 - u * (1.0 / 12.0 - u * (1.0 / 144.0 - u * (1.0 / 2880.0
+    - u * (1.0 / 86400.0 - u * (1.0 / 3628800.0 - u * (1.0 / 203212800.0
+    - u * (1.0 / 14631321600.0 - u / 1316818944000.0))))))));
+  return s * s;
+}
+
+// Beugungsspikes: N Strahlen durchs Sternzentrum, in der mitrotierten
+// Bildebene verankert (di), weicher Querschnitt (Breite w), zur Spitze hin
+// quadratisch auslaufend, mit dem Farbsaum echter Spider-Spikes (innen
+// blaeulich, aussen roetlich)
+vec3 spikeLight(vec2 di, float w) {
+  if (vSpike <= 0.0) return vec3(0.0);
+  float acc = 0.0, tint = 0.0;
+  int n = int(uSpikeArms * 0.5 + 0.5);
+  for (int k = 0; k < 4; k++) {
+    if (k >= n) break;
+    float a = uSpikeRot + float(k) * 3.14159265 / float(n);
+    vec2 dir = vec2(cos(a), sin(a));
+    float t = abs(dot(di, dir)) / vSpike;
+    if (t >= 1.0) continue;
+    float across = dot(di, vec2(-dir.y, dir.x));
+    float prof = exp(-across * across / (2.0 * w * w)) * pow(1.0 - t, 1.5);
+    acc += prof; tint += prof * t;
+  }
+  if (acc <= 0.0) return vec3(0.0);
+  return acc * mix(vec3(0.85, 0.92, 1.1), vec3(1.15, 0.9, 0.75), tint / acc);
+}
+
 void main() {
+  // Bildschirm-Offset in die (mitrotierte) Bildebene drehen: Spikes und
+  // Halos bleiben dadurch am Bild verankert statt am Bildschirm
+  vec2 dPx = (gl_PointCoord - 0.5) * vSize;
+  float caF = cos(uAngleF), saF = sin(uAngleF);
+  vec2 duUp = vec2(dPx.x, -dPx.y);
+  vec2 di = vec2(caF * duUp.x + saF * duUp.y, -saF * duUp.x + caF * duUp.y);
   // Echtes Sternabbild: Patch aus dem Atlas statt prozeduraler Glocke.
   // Additives Blending -> schwarzer Patch-Hintergrund addiert nichts;
   // ein weicher radialer Rand vermeidet sichtbare Kachelkanten
   if (vAtlasUv.x >= 0.0 && vPatchHalf > 0.5) {
-    vec2 d = (gl_PointCoord - 0.5) * vSize;
+    vec2 d = dPx;
     float rn = length(d) / vPatchHalf;
-    // Bildschirm-Offset in die (mitrotierte) Bildebene drehen: Spikes und
-    // Halos bleiben dadurch am Bild verankert statt am Bildschirm
-    float caF = cos(uAngleF), saF = sin(uAngleF);
-    vec2 duUp = vec2(d.x, -d.y);
-    vec2 di = vec2(caF * duUp.x + saF * duUp.y, -saF * duUp.x + caF * duUp.y);
     vec2 uv = vec2(vAtlasUv.x + di.x / vPatchHalf * vAtlasUv.z,
                    vAtlasUv.y + di.y / vPatchHalf * vAtlasUv.z);
     // WICHTIG: erst sampeln, DANN verwerfen. Ein texture()-Aufruf hinter
@@ -813,7 +874,8 @@ void main() {
     // wird dann treiberabhaengig falsch und kleine Sterne blitzen wie ein
     // Stroboskop (vom Nutzer gemeldetes Flackern)
     vec3 c = texture(uAtlas, uv).rgb;
-    if (rn > 1.0) discard;
+    vec3 sp = spikeLight(di, vPatchHalf * 0.1 + 0.7) * vAlpha * 0.6;
+    if (rn > 1.0 && max(sp.r, sp.b) < 0.002) discard;
     float edge = 1.0 - smoothstep(0.78, 1.0, rn);
     // Helligkeit wirkt RADIAL wie eine kuerzere Belichtung: Der Kern bleibt
     // weiss, nur Saum/Spikes dunkeln ab (globales Dimmen machte die Kerne
@@ -821,12 +883,13 @@ void main() {
     float b = uStarBrightF;
     float coreKeep = smoothstep(0.0, 0.3, b);
     float w = b >= 1.0 ? b : mix(coreKeep, b, smoothstep(0.15, 0.8, rn));
-    outColor = vec4(c * edge * vAlpha * w, 1.0);
+    outColor = vec4(c * edge * vAlpha * w + vColor * sp, 1.0);
     return;
   }
   // Kapsel entlang der Flugrichtung: Abstand zur Streifen-Mittellinie,
   // normiert auf den Stern-Radius (vLen = 0 -> runder Stern wie bisher)
-  vec2 d = (gl_PointCoord - 0.5) * vSize;
+  vec2 d = dPx;
+  vec3 sp = spikeLight(di, vBase * 0.09 + 0.7) * vAlpha * 0.6;
   float along = dot(d, vDir);
   float across = dot(d, vec2(-vDir.y, vDir.x));
   float da = max(abs(along) - vLen * 0.5, 0.0);
@@ -835,10 +898,14 @@ void main() {
   // Weiter Hof der Leitsterne: reicht bis zum Sprite-Rand und laeuft dort
   // weich aus; zusammen mit dem Bloom wirkt ein heller Stern dadurch so
   // dominant wie im Original, ohne dass sein Kern aufgeblaeht wird
-  float rOut = length(d) / max(vSize * 0.5, 1.0);
+  // Bezug ist die Glow-Groesse, nicht das Sprite: das kann durch Spikes
+  // deutlich groesser sein, und der Hof wuerde sonst mitwachsen
+  float rOut = length(d) / max(vBase * (1.0 + vGlow * 2.2) * 0.5, 1.0);
   float wide = vGlow > 0.0 ? exp(-rOut * rOut * 5.0) * vGlow * 0.5 : 0.0;
-  if (r2 > 1.0 && wide < 0.004) discard;
-  float gauss = r2 <= 1.0 ? exp(-r2 * 9.0) : 0.0;
+  if (r2 > 1.0 && wide < 0.004 && max(sp.r, sp.b) < 0.002) discard;
+  // Kernprofil: Gauss-Glocke oder (Option) Airy-Scheibchen; letzteres traegt
+  // etwas weniger Energie und wird entsprechend angehoben
+  float gauss = r2 <= 1.0 ? (uAiry > 0.5 ? airyI(r2) * 1.3 : exp(-r2 * 9.0)) : 0.0;
   // Bokeh-Scheibe unscharfer Sterne: flaches Plateau mit weichem Rand
   // statt Gauss-Glocke (so sehen defokussierte Punktlichter wirklich aus)
   float disc = r2 <= 1.0 ? (1.0 - smoothstep(0.55, 1.0, r2)) * 0.6 : 0.0;
@@ -855,7 +922,7 @@ void main() {
     // war nicht dosierbar (Sterne verschwanden bei kleinen Werten)
     a *= mix(1.0, grad, clamp(vLen / (vBase + 1.0), 0.0, 1.0));
   }
-  outColor = vec4(vColor * a, a);
+  outColor = vec4(vColor * (a + sp), a);
 }`;
 
 // --- Pass 2: Bloom ---
@@ -3616,6 +3683,13 @@ function render(forcedT) {
     // Supersampling automatisch mitskaliert) - muss deutlich groesser sein
     // als die Sprites heller Sterne, sonst bleibt die Scheibe unsichtbar
     u1f(starProg, "uDofPx", 0.06 * fbScene.h);
+    // Optik-Simulation: Airy-Kern und Beugungsspikes (Zusatzlaenge der
+    // hellsten Sterne 12 % der Bildhoehe, skaliert mit dem Supersampling)
+    u1f(starProg, "uAiry", state.airy ? 1 : 0);
+    u1f(starProg, "uSpikes", state.spikes / 100);
+    u1f(starProg, "uSpikeMax", 0.12 * fbScene.h);
+    u1f(starProg, "uSpikeArms", state.spikeArms);
+    u1f(starProg, "uSpikeRot", state.spikeRot * Math.PI / 180);
     u1f(starProg, "uStarSat", state.starSat / 100);
     u2f(starProg, "uCenter", cam.cx, cam.cy);
     u2f(starProg, "uTilt", starTiltX, starTiltY);
@@ -4042,6 +4116,14 @@ bindSlider("ctlStarDist", "outStarDist", "starDist", asInt);
 bindSlider("ctlTwinkle", "outTwinkle", "twinkle", asInt);
 bindSlider("ctlTwinkleSpeed", "outTwinkleSpeed", "twinkleSpeed", asPct);
 bindSlider("ctlStarSize", "outStarSize", "starSize", asPct);
+bindSlider("ctlSpikes", "outSpikes", "spikes", asInt);
+bindSlider("ctlSpikeRot", "outSpikeRot", "spikeRot", (v) => v + "\u00b0");
+$("ctlAiry").addEventListener("change", () => {
+  state.airy = $("ctlAiry").checked;
+});
+$("ctlSpikeArms").addEventListener("change", () => {
+  state.spikeArms = parseInt($("ctlSpikeArms").value, 10) || 4;
+});
 $("ctlStarCull").addEventListener("input", () => {
   state.starCull = parseFloat($("ctlStarCull").value);
   refreshStarCullOut();
@@ -5792,7 +5874,8 @@ const USER_PRESET_GROUPS = {
     "ctlSpinMaskAmt", "ctlSpinStars"],
   stars: ["ctlSpread", "ctlStarDist", "ctlLayers", "ctlStarPar", "ctlTwinkle",
     "ctlTwinkleSpeed", "ctlStarSize", "ctlStarBright", "ctlStarSat",
-    "ctlGenStars", "ctlOcclude", "ctlStarCull", "ctlAnchor"],
+    "ctlGenStars", "ctlOcclude", "ctlStarCull", "ctlAnchor", "ctlAiry",
+    "ctlSpikes", "ctlSpikeArms", "ctlSpikeRot"],
   look: ["ctlBloom", "ctlMblur", "ctlMblurStars", "ctlWarp", "ctlVignette", "ctlGrain", "ctlFilmic",
     "ctlExposure", "ctlContrast", "ctlSaturation", "ctlClarity",
     "ctlStructure", "ctlSharpen", "ctlH2Det", "ctlH2Width", "ctlH2Sat",
