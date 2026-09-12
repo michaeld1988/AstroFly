@@ -66,7 +66,7 @@ const state = {
   depthAiMix: 100,       // Anteil der KI-Karte an der Tiefenkarte in %
   vol: false,            // Volumetrischer Nebel: transparente Leuchtebenen statt Relief
   volLayers: 5,          // Anzahl der Leuchtebenen (2..6)
-  volSpread: 70,         // Tiefenspreizung der Ebenen 0..100
+  volSpread: 50,         // Tiefenspreizung der Ebenen 0..100
   volFine: 30,           // Feinmodulation innerhalb einer Ebene (Tiefenkarte) 0..100
   volDust: 60,           // Staub-Verdeckung 0..100
   srcFiles: { starless: null, stars: null, depth: null }, // Original-Dateien (Projekt-Speicherung)
@@ -388,10 +388,11 @@ float layerW(vec2 uv, int k) {
   return b.g;
 }
 // Durchlaessigkeit der Staubebene (1 = kein Staub), Staerke per Regler;
-// nie unter 0.3, sonst wird die Rekonstruktion dahinter zu Rauschen
+// nie unter 0.5: die Rekonstruktion dahinter (Farbe / Durchlaessigkeit)
+// hellt sonst das Restlicht in den Baendern zu truebem Braun auf
 float dustT(vec2 uv) {
   float t = texture(uVolW1, uv).a;
-  return max(0.3, 1.0 - uVolDust * (1.0 - t));
+  return max(0.5, 1.0 - uVolDust * (1.0 - t));
 }
 // Volumetrischer Nebel: das Bild ist in transparente Leuchtebenen zerlegt
 // (Gewichte summieren sich zu 1, additiv zusammengesetzt = Original). Jede
@@ -1742,11 +1743,18 @@ function buildVolLayers() {
   acc = 0;
   for (let k = 255; k >= 0; k--) { acc += hist[k]; if (acc >= n * 0.005) { hi = k / 255; break; } }
   const span = Math.max(0.02, hi - lo);
-  // Umgebungshelligkeit (grosser Radius) fuer die Staub-Erkennung
-  const bg = new Float32Array(n), tmp = new Float32Array(n);
-  const rBig = Math.max(4, Math.round(w * 0.03));
-  boxBlurH(L, tmp, w, h, rBig);
-  boxBlurV(tmp, bg, w, h, rBig);
+  const tmp = new Float32Array(n);
+  const blurTo = (src, f, minR) => {
+    const b = new Float32Array(n), r = Math.max(minR, Math.round(w * f));
+    boxBlurH(src, tmp, w, h, r); boxBlurV(tmp, b, w, h, r); return b;
+  };
+  // Leicht geglaettete Helligkeit fuer die Ebenenzuordnung: harte Kanten
+  // (Staubband gegen hellen Nebel) sollen nicht zwischen zwei Ebenen
+  // zerschnitten werden - das gab beim Flug doppelte, "gekaemmte" Kanten
+  const Ls = blurTo(L, 0.006, 2);
+  // Umgebungshelligkeit auf drei Skalen: schmale Baender, breite Baender,
+  // Grossfeld - so werden auch breite Staubbaender als Staub erkannt
+  const bgs = [0.03, 0.10, 0.25].map((f) => blurTo(L, f, 4));
   const dd = state.depthData;
   const W = [];
   for (let k = 0; k < N; k++) W.push(new Float32Array(n));
@@ -1755,21 +1763,32 @@ function buildVolLayers() {
   for (let y = 0, i = 0; y < h; y++) {
     const dy = dd ? Math.min(dd.h - 1, Math.floor(y * dd.h / h)) * dd.w : 0;
     for (let x = 0; x < w; x++, i++) {
-      const lf = Math.pow(Math.min(1, Math.max(0, (L[i] - lo) / span)), 0.7);
+      const lf = Math.pow(Math.min(1, Math.max(0, (Ls[i] - lo) / span)), 0.7);
       const dc = dd ? dd.data[(dy + Math.min(dd.w - 1, Math.floor(x * dd.w / w))) * 4] / 255 : lf;
+      // Staub: lokale Senke gegenueber der Umgebung (auf jeder Skala), nur
+      // innerhalb des Nebels (Grossfeld hell genug)
+      let du = 0;
+      for (const bg of bgs) du = Math.max(du, sm(0.18, 0.6, (bg[i] - L[i]) / (bg[i] + 0.02)));
+      du *= sm(0.04, 0.12, bgs[2][i]);
+      dust[i] = du;
+      // Staub liegt physikalisch VOR dem Gas: Staubpixel wandern in die
+      // vorderste Ebene, damit Band und Bandkante als Ganzes koharent fliegen
       let key = 0.5 * lf + 0.5 * dc;
+      key += (1 - key) * du;
       key = Math.min(1 - 0.5 / N, Math.max(0.5 / N, key)) * N - 0.5;
       const k0 = Math.floor(key), f = key - k0;
       W[k0][i] += 1 - f;
       if (k0 + 1 < N) W[k0 + 1][i] += f;
-      dust[i] = sm(0.15, 0.6, (bg[i] - L[i]) / (bg[i] + 0.02)) * sm(0.04, 0.12, bg[i]);
     }
   }
-  // leichte Glaettung: weiche Ebenenuebergaenge, kein Pixelflimmern
-  const r = Math.max(1, Math.round(w / 500));
-  const blur = (a) => { boxBlurH(a, tmp, w, h, r); boxBlurV(tmp, a, w, h, r); };
-  for (const a of W) blur(a);
-  blur(dust);
+  // Glaettung: breite, weiche Ebenenuebergaenge (kein Zerschneiden von
+  // Kanten, kein Pixelflimmern); der Staub etwas weicher, weil die gleiche
+  // Karte fuer Verdecken UND Rekonstruktion dient (Rekonstruktion bleibt
+  // damit exakt, ohne Rauschen zu verstaerken)
+  const rW = Math.max(2, Math.round(w / 120)), rD = Math.max(2, Math.round(w * 0.008));
+  const blur = (a, r) => { boxBlurH(a, tmp, w, h, r); boxBlurV(tmp, a, w, h, r); };
+  for (const a of W) blur(a, rW);
+  blur(dust, rD);
   const d0 = new Uint8ClampedArray(n * 4), d1 = new Uint8ClampedArray(n * 4);
   for (let i = 0, j = 0; i < n; i++, j += 4) {
     d0[j] = Math.round(W[0][i] * 255);
