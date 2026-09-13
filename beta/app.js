@@ -65,7 +65,7 @@ const state = {
   aiDepth: null,         // KI-Tiefenkarte (Depth Anything): { data: Float32Array 0..1, w, h }
   depthAiMix: 100,       // Anteil der KI-Karte an der Tiefenkarte in %
   vol: false,            // Volumetrischer Nebel: transparente Leuchtebenen statt Relief
-  volLayers: 5,          // Anzahl der Leuchtebenen (2..6)
+  volLayers: 1,          // Leuchtebenen: 1 = zusammenhaengender Warp (Standard), 2..6 = durchsichtige Ebenen
   volSpread: 50,         // Tiefenspreizung der Ebenen 0..100
   volFine: 30,           // Feinmodulation innerhalb einer Ebene (Tiefenkarte) 0..100
   volDust: 60,           // Staub-Verdeckung 0..100
@@ -393,16 +393,33 @@ vec3 emission(vec2 uv) {
   vec4 D = texture(uVolD, uv);
   return mix(sampleCol(uv), D.rgb, D.a);
 }
-// Volumetrischer Nebel (Hybrid): das Leuchten ist in weiche, durchsichtige
-// Ebenen zerlegt (Gewichte summieren sich zu 1, additiv = Original), die
-// jeweils starr auf ihrer Tiefe fliegen - Verlaeufe werden nirgends
-// zerschnitten. Die Staubbaender sind aus dem Leuchten herausgerechnet
-// (dahinter inhaltsbasiert aufgefuellt) und liegen als ausgeschnittene,
-// deckende Ebene ganz vorn: sie koennen nirgends doppelt erscheinen, und
-// beim Vorbeiflug erscheint hinter ihnen plausibler Nebel
+// Zusammenhaengender Warp entlang der Tiefenkarte (gleiche Fixpunkt-
+// Iteration wie der klassische Weg in main)
+vec2 warpUv(vec2 pr) {
+  vec2 q = uCenter + pr / (uCover * uZoom);
+  vec2 uv = imgUv(spinWarp(q));
+  for (int i = 0; i < 3; i++) {
+    float d = texture(uDepth, uv).r;
+    float ex = 1.0 + uParallax * (d - 0.45) * uDepthRange;
+    float scale = uCover * pow(uZoom, ex);
+    q = uCenter + pr / scale + uTilt * (d - 0.45);
+    uv = imgUv(spinWarp(q));
+  }
+  return uv;
+}
+// Volumetrischer Nebel: die Staubbaender sind aus dem Leuchten
+// herausgerechnet (dahinter inhaltsbasiert aufgefuellt) und liegen als
+// ausgeschnittene, deckende Ebene ganz vorn - sie koennen nirgends doppelt
+// erscheinen, und beim Vorbeiflug erscheint hinter ihnen plausibler Nebel.
+// Das Leuchten selbst bewegt sich standardmaessig als EIN zusammenhaengendes
+// Bild entlang der Tiefenkarte (uVol = 1): keine Aufteilung, keine Kopien.
+// Optional (uVol >= 2) wird es in weiche, durchsichtige Ebenen zerlegt,
+// die starr auf ihrer Tiefe fliegen - Strukturen, die zwei Ebenen
+// angehoeren, erscheinen dann allerdings doppelt
 vec3 volumetric(vec2 pr) {
   vec3 acc = vec3(0.0);
-  for (int k = 0; k < 6; k++) {
+  if (uVol < 1.5) acc = emission(warpUv(pr));
+  else for (int k = 0; k < 6; k++) {
     if (float(k) >= uVol) break;
     float ck = (float(k) + 0.5) / uVol;
     float dk = 0.45 + (ck - 0.5) * uVolSpread;
@@ -1800,7 +1817,7 @@ function pushPullFill(rgb, valid, w, h) {
  */
 function buildVolLayers() {
   if (!state.starless || !state.vol) return;
-  const N = Math.max(2, Math.min(6, Math.round(state.volLayers)));
+  const N = Math.max(1, Math.min(6, Math.round(state.volLayers)));
   const src = downscale(state.starless, 1024);
   const w = src.width, h = src.height, n = w * h;
   const px = src.getContext("2d").getImageData(0, 0, w, h).data;
@@ -1860,7 +1877,7 @@ function buildVolLayers() {
   const d0 = new Uint8ClampedArray(n * 4), d1 = new Uint8ClampedArray(n * 4), d2 = new Uint8ClampedArray(n * 4);
   for (let i = 0, j = 0; i < n; i++, j += 4) {
     d0[j] = Math.round(W[0][i] * 255);
-    d0[j + 1] = Math.round(W[1][i] * 255);
+    d0[j + 1] = N > 1 ? Math.round(W[1][i] * 255) : 0;
     d0[j + 2] = N > 2 ? Math.round(W[2][i] * 255) : 0;
     d0[j + 3] = N > 3 ? Math.round(W[3][i] * 255) : 0;
     d1[j] = N > 4 ? Math.round(W[4][i] * 255) : 0;
