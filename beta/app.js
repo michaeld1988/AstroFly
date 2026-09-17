@@ -126,9 +126,6 @@ const state = {
   vignette: 0,           // 0..100
   grain: 0,              // Filmkorn 0..100
   filmic: 0,             // filmische Tonwertkurve 0..100
-  dof: 0,                // Tiefenschaerfe: Staerke 0..100 (0 = aus)
-  focus: 45,             // Fokusebene 0..100 (fern .. nah; 45 = Nebelmitte)
-  focusAuto: false,      // Fokus folgt der Nebeltiefe am Zoomziel
   airy: false,           // Airy-Kern: Beugungsscheibchen statt Gauss-Glocke
   spikes: 0,             // Beugungsspikes: Staerke 0..100 (0 = aus)
   spikeArms: 4,          // Anzahl der Spikes (4, 6, 8)
@@ -265,8 +262,6 @@ uniform vec3 uBandWidth;    // Erkennungs-Bereich je Band (Kreisanteil, einstell
 uniform float uBandShow;    // Erkennungsmaske: 0 = aus, 1 = HII, 2 = OIII, 3 = SII
 uniform float uBandFeather; // weiche Kante der Banderkennung (0 = hart, 1 = sehr weich)
 uniform float uBandOn;      // 1 = mindestens ein Band-Regler aktiv
-uniform float uDof;         // Tiefenschaerfe: Steilheit des Unschaerfekreises (0 = aus)
-uniform float uFocus;       // Fokusebene in Tiefeneinheiten 0..1
 uniform float uVol;         // Volumetrischer Nebel: Anzahl der Leuchtebenen (0 = aus)
 uniform sampler2D uVolW0;   // Gewichte der Leuchtebenen 0..3 (Summe aller = 1)
 uniform sampler2D uVolW1;   // Gewichte der Leuchtebenen 4..5
@@ -519,11 +514,7 @@ void main() {
     vec2 ddM = vec2(uv.x - uMoonC.x, (uv.y - uMoonC.y) / uImgAspect);
     col *= 1.0 - smoothstep(uMoonR * 1.005, uMoonR * 1.04, length(ddM));
   }
-  // Tiefenschaerfe: Unschaerfekreis (0 = scharf, 1 = voll unscharf) aus dem
-  // Abstand zur Fokusebene - wandert im Alphakanal in den Composite, der
-  // damit zwischen scharfer und weichgezeichneter Szene ueberblendet
-  float coc = uDof > 0.0 ? clamp(abs(d - uFocus) * uDof, 0.0, 1.0) : 0.0;
-  outColor = vec4(col, coc);
+  outColor = vec4(col, 1.0);
 }`;
 
 // --- Pass 1b: Sterne (Punkt-Sprites mit individueller Tiefe) ---
@@ -595,9 +586,6 @@ uniform float uObjFarS;    // 1 = Objekt liegt einheitlich weit hinten
 uniform vec2 uTiltB;       // Kipp-Parallaxe des Hintergrunds (nicht der Sterne)
 uniform sampler2D uDepthS; // Tiefenkarte des Nebels
 uniform sampler2D uColorS; // Starless-Bild (Dichte der Nebelschwaden)
-uniform float uDof;        // Tiefenschaerfe: Steilheit des Unschaerfekreises (0 = aus)
-uniform float uFocus;      // Fokusebene in Tiefeneinheiten 0..1
-uniform float uDofPx;      // groesster Bokeh-Durchmesser in Render-Pixeln
 uniform float uSpikes;     // Beugungsspikes: Staerke 0..1 (0 = aus)
 uniform float uSpikeMax;   // Zusatzlaenge der Spikes hellster Sterne in px
 out vec3 vColor;
@@ -609,7 +597,6 @@ out float vSize;  // gl_PointSize (für gl_PointCoord -> px)
 out float vGlow;  // Glanzhof der hellsten Sterne (0..1)
 out vec3 vAtlasUv;   // Atlas: Zentrum-UV + halbe Groesse in UV (x<0 = prozedural)
 out float vPatchHalf; // halbe Patch-Groesse auf dem Bildschirm in px
-out float vBokeh;     // 0 = scharfer Stern, 1 = flache Bokeh-Scheibe
 out float vSpike;     // Laenge der Beugungsspikes in px (0 = keine)
 
 // Sternposition mit der Galaxien-Rotation mitdrehen (identische Falloff-,
@@ -646,7 +633,7 @@ void main() {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 1.0;
     vAlpha = 0.0; vColor = vec3(0.0); vDir = vec2(1.0, 0.0);
     vLen = 0.0; vBase = 1.0; vSize = 1.0; vGlow = 0.0;
-    vAtlasUv = vec3(-1.0); vPatchHalf = 0.0; vBokeh = 0.0; vSpike = 0.0;
+    vAtlasUv = vec3(-1.0); vPatchHalf = 0.0; vSpike = 0.0;
     return;
   }
   float brightShift = aBright * 0.12;
@@ -665,7 +652,7 @@ void main() {
     gl_PointSize = 1.0;
     vColor = vec3(0.0); vAlpha = 0.0;
     vDir = vec2(1.0, 0.0); vLen = 0.0; vBase = 1.0; vSize = 1.0;
-    vAtlasUv = vec3(-1.0); vPatchHalf = 0.0; vGlow = 0.0; vBokeh = 0.0; vSpike = 0.0;
+    vAtlasUv = vec3(-1.0); vPatchHalf = 0.0; vGlow = 0.0; vSpike = 0.0;
     return;
   }
 
@@ -759,32 +746,12 @@ void main() {
     dimSmall *= dimSmall;
     base = uPxMin;
   }
-  // Tiefenschaerfe: Sterne ausserhalb der Fokusebene werden zu weichen
-  // Bokeh-Scheiben - je weiter weg von der Schaerfeebene, desto groesser
-  // die Scheibe und desto schwaecher ihr Licht (wie bei echter Optik:
-  // helle Sterne bleiben als Scheibe sichtbar, schwache verschwinden)
-  float bokeh = 0.0;
-  float dofDim = 1.0;
-  if (uDof > 0.0) {
-    float coc = clamp(abs(depth - uFocus) * uDof, 0.0, 1.0);
-    float blurD = coc * uDofPx;
-    if (blurD > 0.5) {
-      float nb = min(sqrt(base * base + blurD * blurD), max(uMaxPoint - 8.0, base));
-      // Fast energieerhaltend (Exponent 2 waere exakt): schwache Sterne
-      // loesen sich in der Unschaerfe auf, nur helle bleiben als Scheibe -
-      // sonst ueberzieht ein graues "Schneegestoeber" das ganze Bild
-      dofDim = pow(base / nb, 1.7);
-      bokeh = smoothstep(0.3, 2.0, blurD / base);
-      base = nb;
-    }
-  }
-  vBokeh = bokeh;
   // Beugungsspikes (Option): sichtbar nur an hellen Sternen, die Laenge
   // waechst steil mit der Helligkeit - wie bei einer echten Fangspiegel-
-  // Spinne. Unscharfe Sterne (Bokeh) haben keine Spikes
+  // Spinne
   float spike = 0.0;
   if (uSpikes > 0.0) {
-    float spk = uSpikes * smoothstep(0.4, 1.0, aBright) * (1.0 - bokeh);
+    float spk = uSpikes * smoothstep(0.4, 1.0, aBright);
     spike = spk * (base * 1.5 + uSpikeMax * spk);
   }
 
@@ -840,9 +807,7 @@ void main() {
     // Halbbreite) flackerten beim Bewegen wie ein Stroboskop und tragen
     // ohnehin keine sichtbare PSF - sie fallen auf den stabilen
     // prozeduralen Sprite zurueck
-    // Unscharfe Sterne fallen auf die prozedurale Bokeh-Scheibe zurueck -
-    // ein scharfes Sternabbild neben weichem Nebel saehe falsch aus
-    if (patchHalf > uPxMin && bokeh < 0.2) {
+    if (patchHalf > uPxMin) {
       vPatchHalf = min(patchHalf, uMaxPoint * 0.5 - 1.0);
       size = max(size, vPatchHalf * 2.0 + 2.0);
       vAtlasUv = vec3(aAtlas.x, aAtlas.y, aAtlas.z);
@@ -851,7 +816,7 @@ void main() {
   }
   // Leitsterne bekommen einen weiten, weichen Hof. Dafuer waechst nur das
   // Sprite, nicht der Kern - sonst werden helle Sterne zu fetten Klumpen
-  vGlow = smoothstep(0.86, 1.0, aBright) * (1.0 - bokeh);
+  vGlow = smoothstep(0.86, 1.0, aBright);
   if (vGlow > 0.0 && vAtlasUv.x < 0.0) size = min(max(size, base * (1.0 + vGlow * 2.2)), uMaxPoint);
   // Sprite muss die Spikes fassen (Deckel: groesste Punktgroesse der GPU)
   if (spike > 0.0) {
@@ -876,7 +841,7 @@ void main() {
   vAlpha *= 1.0 - occ;
   // Kleine-Sterne-Dimmen nur fuer prozedurale Sprites - echte Sternabbilder
   // bringen ihre Groesse aus dem Atlas-Patch mit
-  if (vAtlasUv.x < 0.0) vAlpha *= dimSmall * dofDim;
+  if (vAtlasUv.x < 0.0) vAlpha *= dimSmall;
   float lumS = dot(aColor, vec3(0.299, 0.587, 0.114));
   vec3 cS = aColor;
   if (uStarSat > 1.0) {
@@ -901,7 +866,6 @@ in float vSize;
 in float vGlow;
 in vec3 vAtlasUv;
 in float vPatchHalf;
-in float vBokeh;
 in float vSpike;
 uniform sampler2D uAtlas;   // echte Sternabbilder (Ausschnitte der Maske)
 uniform float uStarBrightF; // Helligkeits-Regler (wie uStarBright im VS)
@@ -996,12 +960,8 @@ void main() {
   if (r2 > 1.0 && wide < 0.004 && max(sp.r, sp.b) < 0.002) discard;
   // Kernprofil: Gauss-Glocke oder (Option) Airy-Scheibchen; letzteres traegt
   // etwas weniger Energie und wird entsprechend angehoben
-  float gauss = r2 <= 1.0 ? (uAiry > 0.5 ? airyI(r2) * 1.3 : exp(-r2 * 9.0)) : 0.0;
-  // Bokeh-Scheibe unscharfer Sterne: flaches Plateau mit weichem Rand
-  // statt Gauss-Glocke (so sehen defokussierte Punktlichter wirklich aus)
-  float disc = r2 <= 1.0 ? (1.0 - smoothstep(0.55, 1.0, r2)) * 0.6 : 0.0;
-  float core = mix(gauss, disc, vBokeh);
-  float halo = r2 <= 1.0 ? exp(-r2 * 2.5) * (0.35 + vGlow * 0.3) * (1.0 - vBokeh) : 0.0;
+  float core = r2 <= 1.0 ? (uAiry > 0.5 ? airyI(r2) * 1.3 : exp(-r2 * 9.0)) : 0.0;
+  float halo = r2 <= 1.0 ? exp(-r2 * 2.5) * (0.35 + vGlow * 0.3) : 0.0;
   float a = (core + halo + wide) * vAlpha;
   // Verlauf entlang des Schweifs: am Kopf (Sternposition, in Flugrichtung
   // vorn) volle Helligkeit, zum Ende hin weich auslaufend
@@ -1086,10 +1046,6 @@ uniform float uSharpen;    // 0 = aus
 uniform vec2 uTexel;       // 1 px der Szene in UV
 uniform sampler2D uStarsTex; // separate Sternebene ("nur Sterne"-Unschärfe)
 uniform float uSplit;      // 1 = Bewegungsunschärfe nur auf die Sterne
-uniform sampler2D uDofTex;      // weichgezeichnete Szene (Tiefenschaerfe)
-uniform float uDofOn;           // 1 = Tiefenschaerfe aktiv
-uniform sampler2D uDofStarsTex; // weichgezeichnete Sternebene (Kino-Modus)
-uniform float uDofStarsAmt;     // Unschaerfe der Sternebene 0..1
 
 void main() {
   vec2 r = vec2((vUv.x - 0.5) * uViewAspect, vUv.y - 0.5);
@@ -1125,17 +1081,6 @@ void main() {
     }
     col = acc / float(N);
     stars = accS / float(N);
-  }
-
-  // Tiefenschaerfe: der Unschaerfekreis (Alphakanal der Szene, aus der
-  // Tiefenkarte) blendet den Nebel weich in seine weichgezeichnete Kopie;
-  // im Kino-Sternmodus ebenso die Sternebene (eine Tiefe fuer alle Sterne)
-  if (uDofOn > 0.5) {
-    float coc = texture(uScene, vUv).a;
-    col = mix(col, texture(uDofTex, vUv).rgb, smoothstep(0.0, 1.0, coc));
-  }
-  if (uDofStarsAmt > 0.0) {
-    stars = mix(stars, texture(uDofStarsTex, vUv).rgb, uDofStarsAmt);
   }
 
   // Klarheit: lokaler Kontrast gegen stark weichgezeichnete Szene
@@ -1366,8 +1311,7 @@ gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 
 let fbScene = null, fbStars = null, fbSoftA = null, fbSoftB = null,
-    fbMedA = null, fbMedB = null,
-    fbDofA = null, fbDofB = null, fbDofSA = null, fbDofSB = null;
+    fbMedA = null, fbMedB = null;
 // Bloom in vier Oktaven (1/2, 1/4, 1/8, 1/16): jede Stufe mit A/B-Paar fuer
 // den separablen Blur; die kleinen Stufen liefern den weiten, weichen Hof
 const BLOOM_LEVELS = 4;
@@ -1376,8 +1320,7 @@ let fbBloom = [];
 function ensureFbos() {
   const w = canvas.width, h = canvas.height;
   if (fbScene && fbScene.w === w && fbScene.h === h) return;
-  for (const f of [fbScene, fbStars, fbSoftA, fbSoftB, fbMedA, fbMedB,
-                   fbDofA, fbDofB, fbDofSA, fbDofSB]) {
+  for (const f of [fbScene, fbStars, fbSoftA, fbSoftB, fbMedA, fbMedB]) {
     if (f) { gl.deleteFramebuffer(f.fb); gl.deleteTexture(f.tex); }
   }
   for (const lv of fbBloom) for (const f of [lv.a, lv.b]) { gl.deleteFramebuffer(f.fb); gl.deleteTexture(f.tex); }
@@ -1394,11 +1337,6 @@ function ensureFbos() {
   const mw = Math.max(1, w >> 1), mh = Math.max(1, h >> 1);
   fbMedA = makeFbo(mw, mh);
   fbMedB = makeFbo(mw, mh);
-  // Tiefenschaerfe: weichgezeichnete Kopien von Szene und Sternebene
-  fbDofA = makeFbo(mw, mh);
-  fbDofB = makeFbo(mw, mh);
-  fbDofSA = makeFbo(mw, mh);
-  fbDofSB = makeFbo(mw, mh);
 }
 
 // ---------------------------------------------------------------- Bild-Dekodierung
@@ -3816,16 +3754,7 @@ function render(forcedT) {
   const bgTiltY = tiltY + cam.driftTY * drK;
   const starTiltX = tiltX + cam.driftTX * drKStar;
   const starTiltY = tiltY + cam.driftTY * drKStar;
-  // Tiefenschaerfe: Steilheit des Unschaerfekreises (bei voller Staerke ist
-  // ein Tiefenabstand von 0.4 zur Fokusebene komplett unscharf) und die
-  // Fokusebene - fest per Regler oder die Nebeltiefe am Zoomziel
-  const dofK = (state.dof / 100) * 2.5;
-  const focus = state.focusAuto
-    ? (state.objFar ? 0.02 : depthAtPlane(state.target.x, state.target.y, imgAspect))
-    : state.focus / 100;
   const dSKino = Math.min(1, Math.max(0.02, state.starDist / 100));
-  const dofStarsAmt = dofK > 0 && state.starImage && state.stars
-    ? Math.min(1, Math.abs(dSKino - focus) * dofK) : 0;
 
   // ---- Pass 1: Szene in FBO ----
   gl.bindFramebuffer(gl.FRAMEBUFFER, fbScene.fb);
@@ -3886,8 +3815,6 @@ function render(forcedT) {
   u1f(bgProg, "uBandFeather", state.bandFeather / 100);
   u1f(bgProg, "uBandOn",
     bandSat.some((v) => v !== 1) || bandHue.some((v) => v !== 0) || bandShow ? 1 : 0);
-  u1f(bgProg, "uDof", dofK);
-  u1f(bgProg, "uFocus", focus);
   // Volumetrischer Nebel: Gewichte + entstaubtes Leuchten (Einheiten 3..5)
   const volOn = state.vol && texVolL.length === 3 && volBuiltN > 0;
   for (let k = 0; k < 3; k++) {
@@ -3977,12 +3904,6 @@ function render(forcedT) {
     // Mindestgroesse in AUSGABE-Pixeln: beim Supersampling entsprechend
     // groesser rendern, sonst holt das Herunterrechnen das Flackern zurueck
     u1f(starProg, "uPxMin", 2.6 * ssc);
-    u1f(starProg, "uDof", dofK);
-    u1f(starProg, "uFocus", focus);
-    // groesste Bokeh-Scheibe: 6 % der Bildhoehe (Render-Pixel, also beim
-    // Supersampling automatisch mitskaliert) - muss deutlich groesser sein
-    // als die Sprites heller Sterne, sonst bleibt die Scheibe unsichtbar
-    u1f(starProg, "uDofPx", 0.06 * fbScene.h);
     // Optik-Simulation: Airy-Kern und Beugungsspikes (Zusatzlaenge der
     // hellsten Sterne 12 % der Bildhoehe, skaliert mit dem Supersampling)
     u1f(starProg, "uAiry", state.airy ? 1 : 0);
@@ -4158,38 +4079,6 @@ function render(forcedT) {
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
-  // ---- Pass 2d: Tiefenschaerfe - weichgezeichnete Kopien (halbe Aufloesung) ----
-  // Zwei Blur-Durchgaenge je Kopie; der Radius waechst mit der Staerke.
-  // Der Composite blendet je Pixel nach dem Unschaerfekreis dazwischen um
-  if (dofK > 0) {
-    // Radius relativ zur Bildhoehe (1080p als Referenz), damit Vorschau und
-    // Export gleich aussehen; im Kino-Sternmodus deutlich kleiner, sonst
-    // loesen sich die Sterne in Nichts auf statt zu Scheiben zu werden
-    const dofR = (0.7 + 1.5 * state.dof / 100) * Math.max(0.5, fbScene.h / 1080);
-    gl.bindVertexArray(quadVao);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.useProgram(blurProg);
-    u1i(blurProg, "uScene", 0);
-    u1f(blurProg, "uGain", 1);
-    const blurInto = (srcTex, A, B, r) => {
-      gl.viewport(0, 0, A.w, A.h);
-      let src = srcTex;
-      for (let p = 0; p < 2; p++) {
-        gl.bindFramebuffer(gl.FRAMEBUFFER, A.fb);
-        gl.bindTexture(gl.TEXTURE_2D, src);
-        u2f(blurProg, "uDir", r / A.w, 0);
-        gl.drawArrays(gl.TRIANGLES, 0, 3);
-        gl.bindFramebuffer(gl.FRAMEBUFFER, B.fb);
-        gl.bindTexture(gl.TEXTURE_2D, A.tex);
-        u2f(blurProg, "uDir", 0, r / A.h);
-        gl.drawArrays(gl.TRIANGLES, 0, 3);
-        src = B.tex;
-      }
-    };
-    blurInto(fbScene.tex, fbDofA, fbDofB, dofR);
-    if (dofStarsAmt > 0) blurInto(fbStars.tex, fbDofSA, fbDofSB, dofR * 0.45);
-  }
-
   // ---- Pass 3: Composite auf den Bildschirm ----
   const zoomRate = Math.log(cam2.zoom / cam.zoom) / dt + warp * 0.6;
   const rotRate = (cam2.angle - cam.angle) / dt;
@@ -4215,20 +4104,12 @@ function render(forcedT) {
   gl.bindTexture(gl.TEXTURE_2D, structure !== 0 ? fbMedB.tex : fbScene.tex);
   gl.activeTexture(gl.TEXTURE4);
   gl.bindTexture(gl.TEXTURE_2D, fbStars.tex);
-  gl.activeTexture(gl.TEXTURE10);
-  gl.bindTexture(gl.TEXTURE_2D, dofK > 0 ? fbDofB.tex : fbScene.tex);
-  gl.activeTexture(gl.TEXTURE11);
-  gl.bindTexture(gl.TEXTURE_2D, dofStarsAmt > 0 ? fbDofSB.tex : fbStars.tex);
   gl.activeTexture(gl.TEXTURE0);
   u1i(compProg, "uScene", 0);
   u1i(compProg, "uBloom", 1);
   u1i(compProg, "uSoft", 2);
   u1i(compProg, "uMed", 3);
   u1i(compProg, "uStarsTex", 4);
-  u1i(compProg, "uDofTex", 10);
-  u1i(compProg, "uDofStarsTex", 11);
-  u1f(compProg, "uDofOn", dofK > 0 ? 1 : 0);
-  u1f(compProg, "uDofStarsAmt", dofStarsAmt);
   u1f(compProg, "uSplit", splitBlur ? 1 : 0);
   u1f(compProg, "uViewAspect", viewAspect);
   u1f(compProg, "uBloomStrength", bloomStrength * bloomNorm);
@@ -4382,12 +4263,6 @@ bindSlider("ctlSpeed", "outSpeed", "speed", asInt);
 bindSlider("ctlEase", "outEase", "ease", asInt);
 bindSlider("ctlParallax", "outParallax", "parallax", asInt);
 bindSlider("ctlDepthBoost", "outDepthBoost", "depthBoost", asInt);
-bindSlider("ctlDof", "outDof", "dof", asInt);
-bindSlider("ctlFocus", "outFocus", "focus", asInt);
-$("ctlFocusAuto").addEventListener("change", () => {
-  state.focusAuto = $("ctlFocusAuto").checked;
-  $("ctlFocus").disabled = state.focusAuto;
-});
 bindSlider("ctlRotation", "outRotation", "rotationSpeed", (v) => ctlNum(v, 1) + " °/s");
 bindSlider("ctlOrient", "outOrient", "orientation", (v) => v + "°");
 bindSlider("ctlFrameX", "outFrameX", "frameX", asInt);
@@ -4563,7 +4438,7 @@ $("ctlPreset").addEventListener("change", () => {
 // Neutralwerte, auf die jedes Flug-Preset zuerst zurücksetzt
 const SIMPLE_DEFAULTS = {
   ctlZoom: 1, ctlSpeed: 40, ctlEase: 60, ctlParallax: 60, ctlDepthBoost: 33,
-  ctlDof: 0, ctlFocus: 45, ctlRotation: 0, ctlOrient: 0, ctlFrameX: 0, ctlFrameY: 0, ctlTiltX: 0,
+  ctlRotation: 0, ctlOrient: 0, ctlFrameX: 0, ctlFrameY: 0, ctlTiltX: 0,
   ctlTiltY: 0, ctlSwayAmp: 0, ctlSwayTempo: 40, ctlSwayDir: 0, ctlSwayRandom: 0,
   ctlTiltRamp: 0, ctlTiltRampDir: 0, ctlFade: 0, ctlDriftDir: 90,
   ctlSpinSpeed: 0, ctlSpinRadius: 40, ctlSpinDiff: 40, ctlSpinFlat: 0,
@@ -6473,8 +6348,7 @@ async function loadFile(which, file) {
 // Bilddaten, Gaia-Abgleich und Plate-Solve werden nie mitgespeichert.
 const USER_PRESET_GROUPS = {
   camera: ["ctlFlightMode", "ctlDriftDir", "ctlZoom", "ctlSpeed", "ctlEase",
-    "ctlEaseMode", "ctlParallax", "ctlDepthBoost", "ctlDof", "ctlFocus",
-    "ctlFocusAuto", "ctlVol", "ctlVolLayers", "ctlVolSpread", "ctlVolFine",
+    "ctlEaseMode", "ctlParallax", "ctlDepthBoost", "ctlVol", "ctlVolLayers", "ctlVolSpread", "ctlVolFine",
     "ctlVolDust", "ctlRotation", "ctlOrient",
     "ctlFrameX", "ctlFrameY", "ctlTiltX", "ctlTiltY", "ctlSwayAmp",
     "ctlSwayTempo", "ctlSwayDir", "ctlSwayRandom", "ctlTiltRamp",

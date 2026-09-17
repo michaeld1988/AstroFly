@@ -544,31 +544,6 @@
         </label>
       </details>
       <details class="adv">
-        <summary data-i18n="advDof">Depth of field</summary>
-        <label class="slider">
-          <span><span data-i18n="dof">Depth of field</span> <button class="qm" data-help="hintDof">?</button> <output id="outDof">0</output></span>
-          <input type="range" id="ctlDof" min="0" max="100" step="1" value="0">
-        </label>
-        <p class="tip hint2" id="hintDof" hidden data-i18n="dofHint">Like a real lens: only the
-        focus plane is sharp. Nebula regions in front of or behind it soften, and stars turn
-        into soft bokeh discs the further they are from focus. 0 = everything sharp.</p>
-        <label class="slider">
-          <span><span data-i18n="focus">Focus plane</span> <button class="qm" data-help="hintFocus">?</button> <output id="outFocus">45</output></span>
-          <input type="range" id="ctlFocus" min="0" max="100" step="1" value="45">
-        </label>
-        <p class="tip hint2" id="hintFocus" hidden data-i18n="focusHint">Where the sharp plane
-        sits: low values focus far away (background), high values close up (foreground stars).
-        45 is roughly the middle of the nebula.</p>
-        <label class="check">
-          <input type="checkbox" id="ctlFocusAuto">
-          <span data-i18n="focusAuto">Focus follows the zoom target</span>
-          <button class="qm" data-help="hintFocusAuto">?</button>
-        </label>
-        <p class="tip hint2" id="hintFocusAuto" hidden data-i18n="focusAutoHint">The focus plane
-        is taken from the nebula depth at the zoom target, so the region you fly to is always the
-        sharp one. The manual focus slider is ignored while active.</p>
-      </details>
-      <details class="adv">
         <summary data-i18n="advFrame">Framing</summary>
         <label class="slider">
           <span><span data-i18n="orient">Rotate framing</span> <output id="outOrient">0°</output></span>
@@ -1165,8 +1140,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-76"></script>
+<script src="i18n.js?v=2026-08-16-77"></script>
 <script src="objectinfo.js?v=2026-08-16-67"></script>
-<script src="app.js?v=2026-08-16-76"></script>
+<script src="app.js?v=2026-08-16-77"></script>
 </body>
 </html>
