@@ -189,6 +189,9 @@ const I18N = {
       objShowLabels: "Render field labels into the video",
       starDetails: "Star data in labels (size & age)",
       cardObjLabel: "Info card shows",
+      cardHead: "Info card (bottom left)",
+      cardTip: "Fill in what the card should say. Empty fields stay hidden; filled fields complete or replace the automatically detected data, and without detection the card is built from these fields alone.",
+      labelsHead: "Field labels",
       labelStyleLabel: "Label style",
       lsEditorial: "Editorial (line + text)",
       lsGlass: "Glass pill",
@@ -609,6 +612,9 @@ const I18N = {
       objShowLabels: "Feld-Beschriftungen ins Video einblenden",
       starDetails: "Sterndaten im Label (Gr\u00f6\u00dfe & Alter)",
       cardObjLabel: "Infokarte zeigt",
+      cardHead: "Infokarte (unten links)",
+      cardTip: "Trag ein, was auf der Karte stehen soll. Leere Felder erscheinen nicht; ausgefüllte ergänzen oder ersetzen die automatisch erkannten Angaben, und ohne Erkennung entsteht die Karte allein aus diesen Feldern.",
+      labelsHead: "Feld-Beschriftungen",
       labelStyleLabel: "Beschriftungs-Stil",
       lsEditorial: "Editorial (Linie + Text)",
       lsGlass: "Glas-Pill",
@@ -871,6 +877,9 @@ function applyLanguage() {
   }
   for (const el of document.querySelectorAll("[data-i18n-title]")) {
     el.title = t(el.dataset.i18nTitle);
+  }
+  for (const el of document.querySelectorAll("[data-i18n-ph]")) {
+    el.placeholder = t(el.dataset.i18nPh);
   }
   document.getElementById("langEn").classList.toggle("active", I18N.lang === "en");
   document.getElementById("langDe").classList.toggle("active", I18N.lang === "de");
