@@ -2973,9 +2973,10 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
       const info = state.objInfo;
       const f = info.facts ? info.facts[lang] : null;
       // Vom Nutzer bearbeitete Felder des zugehoerigen Labels haben Vorrang
-      const cLab = (state.labels || []).find((l) => !l.user && l.id === info.id);
+      const cLab = (state.labels || []).find((l) => l.id === info.id && (info.user ? l.user : !l.user));
       const cf = labelCustom(cLab);
-      const title = cf.name ? `${cf.name} · ${info.id}` : (f ? `${info.id} · ${f.name}` : info.id);
+      const title = info.user ? (cf.name || info.id)
+        : (cf.name ? `${cf.name} · ${info.id}` : (f ? `${info.id} · ${f.name}` : info.id));
       const typeLine = cf.type || (f ? f.type : (OTYPE_NAMES[lang][info.otype] || ""));
       const facts = [];
       const LBL = lang === "de"
@@ -3088,7 +3089,7 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
       ctx.globalAlpha = a * 0.8 * baseA;
       ctx.fillStyle = T.accCol;
       ctx.font = `${10.5 * u}px ${fam}`;
-      ctx.fillText("Data: SIMBAD/CDS · ESA Gaia DR3", x0 + 2 * u, y0 + cardH + 15 * u);
+      if (!info.user) ctx.fillText("Data: SIMBAD/CDS · ESA Gaia DR3", x0 + 2 * u, y0 + cardH + 15 * u);
       ctx.globalAlpha = baseA;
     }
   }
@@ -5850,9 +5851,15 @@ $("ctlStrictEdges").addEventListener("change", () => {
  */
 function applyCardChoice() {
   const items = state.objChoices || [];
+  const c = state.cardChoice || "auto";
+  // Eigenes Objekt als Kartenobjekt: die Karte zeigt seine Freitext-Felder
+  if (c.startsWith("user:")) {
+    const L = (state.labels || []).filter((l) => l.user)[parseInt(c.slice(5), 10)];
+    if (L) { state.objInfo = { id: L.id, user: true, facts: null, otype: "" }; return; }
+    state.cardChoice = "auto";
+  }
   if (!items.length) { state.objInfo = null; return; }
   const reg = state.objRegion;
-  const c = state.cardChoice || "auto";
   if (reg && (c === "auto" || c === "region")) {
     state.objInfo = { id: reg.id, facts: { de: reg.de, en: reg.en }, otype: reg.otype };
     return;
@@ -5880,7 +5887,8 @@ function customFieldLabels(lang) {
 /** Eigenes Objekt-Label an einem Bildebenen-Punkt anlegen und Editor oeffnen */
 function addUserLabel(x, y) {
   if (!state.labels) state.labels = [];
-  const n = state.labels.filter((l) => l.user).length + 1;
+  let n = state.labels.filter((l) => l.user).length + 1;
+  while (state.labels.some((l) => l.id === `${t("objOwnDefault")} ${n}`)) n++;
   const L = { id: `${t("objOwnDefault")} ${n}`, user: true, otype: "", x, y,
     sizePlane: 0.05, on: true, custom: { name: "" } };
   state.labels.push(L);
@@ -5900,22 +5908,26 @@ function rebuildObjList() {
   const row = $("cardObjRow");
   const sel = $("ctlCardObj");
   const items = state.objChoices || [];
-  row.hidden = !items.length;
+  const userLabels = (state.labels || []).filter((l) => l.user);
+  row.hidden = !items.length && !userLabels.length;
   sel.innerHTML = "";
-  if (items.length) {
+  if (items.length || userLabels.length) {
     const add = (value, text) => {
       const o = document.createElement("option");
       o.value = value; o.textContent = text;
       sel.appendChild(o);
     };
-    add("auto", t("cardAuto"));
+    add("auto", items.length ? t("cardAuto") : t("cardNone"));
     if (state.objRegion) add("region", `${t("cardRegion")}: ${state.objRegion[lang].name}`);
     for (const it of items) {
       const facts = OBJECT_FACTS[normObjId(it.id)];
       add(it.id, facts ? `${it.id} – ${facts[lang].name}` : it.id);
     }
+    // Eigene Objekte: die Karte zeigt dann deren Freitext-Felder
+    userLabels.forEach((L, i) => { const c = labelCustom(L); add("user:" + i, `${t("cardOwn")}: ${c.name || L.id}`); });
     sel.value = state.cardChoice || "auto";
-    if (sel.selectedIndex < 0) sel.value = "auto";
+    if (sel.selectedIndex < 0) { sel.value = "auto"; state.cardChoice = "auto"; }
+    applyCardChoice();
   }
   if (!state.labels) return;
   for (const L of state.labels) {
@@ -5967,6 +5979,11 @@ function rebuildObjList() {
         if (!L.custom) L.custom = {};
         L.custom[k] = inp.value;
         setTitle();
+        if (k === "name" && L.user) {
+          const idx = state.labels.filter((l) => l.user).indexOf(L);
+          const opt = [...sel.options].find((o) => o.value === "user:" + idx);
+          if (opt) opt.textContent = `${t("cardOwn")}: ${labelCustom(L).name || L.id}`;
+        }
       });
       editor.appendChild(inp);
     }
@@ -5982,7 +5999,9 @@ function rebuildObjList() {
       del.addEventListener("click", () => {
         state.labels = state.labels.filter((x) => x !== L);
         state._objEditOpen = null;
+        if ((state.cardChoice || "").startsWith("user:")) state.cardChoice = "auto";
         rebuildObjList();
+        applyCardChoice();
       });
       editor.appendChild(del);
     }
