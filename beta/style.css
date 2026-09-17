@@ -796,3 +796,23 @@ button.primary:not(:disabled):hover { border-color: var(--accent); }
     top: auto !important; bottom: 14px;
   }
 }
+
+/* Objekt-Labels: Bearbeiten-Knopf und Freitext-Editor */
+.check .objeditbtn {
+  flex: none; width: 24px; height: 22px; padding: 0; margin-left: 4px;
+  background: var(--panel2); color: var(--muted, #7d8598);
+  border: 1px solid var(--border); border-radius: 5px; font-size: 13px; line-height: 20px; cursor: pointer;
+}
+.check .objeditbtn:hover { color: var(--text); border-color: var(--accent-dim); }
+.check span.edited { color: var(--text); }
+.objedit { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 12px 22px; }
+.objedit[hidden] { display: none; }
+.objedit input[type=text] {
+  flex: 1 1 calc(50% - 6px); min-width: 120px;
+  background: var(--panel2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 12.5px;
+}
+.objedit input[type=text]:focus { outline: none; border-color: var(--accent-dim); }
+.objedit .tip { flex: 1 1 100%; margin: 2px 0 0; }
+.objedit button.secondary { flex: 1 1 100%; }
+#btnObjAdd.active { border-color: var(--accent-dim); color: var(--text); }
