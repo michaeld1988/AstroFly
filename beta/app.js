@@ -109,6 +109,7 @@ const state = {
   flipOnlyStarless: false, // Spiegeln wirkt nur aufs Starless (Maske/Koordinaten bleiben)
   anchorStars: 100,      // % Sterne im Nebel verankern (100 = physikalisch korrekt)
   objInfo: null,         // erkanntes Hauptobjekt { id, facts, otype }
+  cardCustom: {},        // Infokarte: eigene Felder (name, type, size, dist, age, note)
   labels: null,          // Feld-Beschriftungen [{ id, x, y, sizePlane, otype, on }]
   showInfo: true,        // Infokarte ins Video einblenden
   showLabels: true,      // Feld-Beschriftungen ins Video einblenden
@@ -2782,7 +2783,7 @@ function uploadStars() {
 
 function overlayActive() {
   return (state.showLabels && state.labels && state.labels.some((l) => l.on)) ||
-    (state.showInfo && state.objInfo);
+    (state.showInfo && (state.objInfo || cardHasCustom()));
 }
 
 /**
@@ -2902,17 +2903,19 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
   // ---- Infokarte (blendet ein und wieder aus) ----
   // Vor den Beschriftungen gezeichnet, damit Chips ihr ausweichen können
   let cardRect = null;
-  if (state.showInfo && state.objInfo) {
+  if (state.showInfo && (state.objInfo || cardHasCustom())) {
     const outStart = Math.min(7, state.duration - 2);
     const a = Math.min(1, Math.max(0, (loopT - 0.8) / 0.8)) *
       Math.min(1, Math.max(0, (outStart + 1 - loopT) / 1));
     if (a > 0.01) {
       ctx.globalAlpha = a * baseA;
-      const info = state.objInfo;
+      // Ohne erkanntes Objekt traegt die Karte allein die eigenen Felder
+      const info = state.objInfo || { id: "", facts: null, otype: "", user: true };
       const f = info.facts ? info.facts[lang] : null;
-      // Vom Nutzer bearbeitete Felder des zugehoerigen Labels haben Vorrang
+      // Vorrang: eigene Felder der Infokarte, dann bearbeitete Felder des
+      // zugehoerigen Labels, dann die automatischen Angaben
       const cLab = (state.labels || []).find((l) => l.id === info.id && (info.user ? l.user : !l.user));
-      const cf = labelCustom(cLab);
+      const cf = { ...labelCustom(cLab), ...labelCustom({ custom: state.cardCustom }) };
       const title = info.user ? (cf.name || info.id)
         : (cf.name ? `${cf.name} · ${info.id}` : (f ? `${info.id} · ${f.name}` : info.id));
       const typeLine = cf.type || (f ? f.type : (OTYPE_NAMES[lang][info.otype] || ""));
@@ -3027,7 +3030,7 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
       ctx.globalAlpha = a * 0.8 * baseA;
       ctx.fillStyle = T.accCol;
       ctx.font = `${10.5 * u}px ${fam}`;
-      if (!info.user) ctx.fillText("Data: SIMBAD/CDS · ESA Gaia DR3", x0 + 2 * u, y0 + cardH + 15 * u);
+      if (!info.user && f) ctx.fillText("Data: SIMBAD/CDS · ESA Gaia DR3", x0 + 2 * u, y0 + cardH + 15 * u);
       ctx.globalAlpha = baseA;
     }
   }
@@ -5753,6 +5756,21 @@ function labelCustom(L) {
   for (const k of LABEL_FIELDS) if (typeof c[k] === "string" && c[k].trim()) out[k] = c[k].trim();
   return out;
 }
+function cardHasCustom() {
+  return Object.keys(labelCustom({ custom: state.cardCustom })).length > 0;
+}
+function syncCardInputs() {
+  for (const k of LABEL_FIELDS) {
+    const el = $("ctlCard_" + k);
+    if (el) el.value = (state.cardCustom && state.cardCustom[k]) || "";
+  }
+}
+for (const k of LABEL_FIELDS) {
+  $("ctlCard_" + k).addEventListener("input", () => {
+    if (!state.cardCustom) state.cardCustom = {};
+    state.cardCustom[k] = $("ctlCard_" + k).value;
+  });
+}
 function customFieldLabels(lang) {
   return lang === "de"
     ? { size: "Größe", dist: "Entfernung", age: "Alter", note: "Hinweis" }
@@ -6624,6 +6642,7 @@ async function saveProject() {
       gaiaCatalog: S.gaiaCatalog, gaiaDepth: S.gaiaDepth, gaiaColorRGB: S.gaiaColorRGB,
       gaiaPM: S.gaiaPM, gaiaInfo: S.gaiaInfo,
       labels: cleanLabels, objInfo: S.objInfo, objChoices: S.objChoices, objRegion: S.objRegion,
+      cardCustom: S.cardCustom || {},
       moonObj: S.moonObj,
     },
   };
@@ -6704,6 +6723,8 @@ async function loadProject(id) {
     state.gaiaInfo = X.gaiaInfo || null;
     state.labels = X.labels || null;
     state.objInfo = X.objInfo || null;
+    state.cardCustom = X.cardCustom || {};
+    syncCardInputs();
     state.objChoices = X.objChoices || null;
     state.objRegion = X.objRegion || null;
     state.moonObj = X.moonObj || "moon";

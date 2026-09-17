@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-16-75">
+<link rel="stylesheet" href="style.css?v=2026-08-16-78">
 </head>
 <body>
 
@@ -996,10 +996,23 @@
           <option value="classic" data-i18n="lsClassic">Classic</option>
         </select>
       </div>
+      <h2 class="sub"><span data-i18n="cardHead">Info card (bottom left)</span></h2>
+      <p class="tip" data-i18n="cardTip">Fill in what the card should say. Empty fields stay hidden;
+      filled fields complete or replace the automatically detected data, and without detection
+      the card is built from these fields alone.</p>
+      <div class="objedit cardedit">
+        <input type="text" id="ctlCard_name" data-i18n-ph="objF_name" placeholder="Name (e.g. Flame Nebula)">
+        <input type="text" id="ctlCard_type" data-i18n-ph="objF_type" placeholder="Type (e.g. emission nebula)">
+        <input type="text" id="ctlCard_size" data-i18n-ph="objF_size" placeholder="Size (e.g. 12 light-years)">
+        <input type="text" id="ctlCard_dist" data-i18n-ph="objF_dist" placeholder="Distance (e.g. 1,350 light-years)">
+        <input type="text" id="ctlCard_age" data-i18n-ph="objF_age" placeholder="Age (e.g. 2 million years)">
+        <input type="text" id="ctlCard_note" data-i18n-ph="objF_note" placeholder="Note (free text)">
+      </div>
       <div id="cardObjRow" class="selrow" hidden>
         <label for="ctlCardObj" data-i18n="cardObjLabel">Info card shows</label>
         <select id="ctlCardObj"></select>
       </div>
+      <h2 class="sub"><span data-i18n="labelsHead">Field labels</span></h2>
       <div id="objList"></div>
       <div class="btnrow">
         <button id="btnObjAdd" class="secondary" data-i18n="objAddOwn">Add your own object</button>
@@ -1140,8 +1153,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-77"></script>
+<script src="i18n.js?v=2026-08-16-78"></script>
 <script src="objectinfo.js?v=2026-08-16-67"></script>
-<script src="app.js?v=2026-08-16-77"></script>
+<script src="app.js?v=2026-08-16-78"></script>
 </body>
 </html>
