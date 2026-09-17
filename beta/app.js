@@ -44,6 +44,7 @@ const state = {
   spinTilt: 0,           // Ellipsen-Winkel in Grad
   spinCenter: { x: 0, y: 0 }, // Rotationszentrum in Ebenen-Einheiten
   spinPick: false,       // nächster Klick setzt das Rotationszentrum
+  labelPick: false,      // nächster Klick setzt ein eigenes Objekt-Label
   spinShow: false,       // Rotationsbereich als rote Maske einblenden
   spinMaskAmt: 0,        // Helligkeitsmaske einbeziehen 0..100 (0 = nur Kreis/Ellipse)
   spinMaskSmooth: 6,     // eigene Glättung der Spin-Helligkeitsmaske
@@ -2971,17 +2972,26 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
       ctx.globalAlpha = a * baseA;
       const info = state.objInfo;
       const f = info.facts ? info.facts[lang] : null;
-      const title = f ? `${info.id} · ${f.name}` : info.id;
-      const typeLine = f ? f.type : (OTYPE_NAMES[lang][info.otype] || "");
+      // Vom Nutzer bearbeitete Felder des zugehoerigen Labels haben Vorrang
+      const cLab = (state.labels || []).find((l) => !l.user && l.id === info.id);
+      const cf = labelCustom(cLab);
+      const title = cf.name ? `${cf.name} · ${info.id}` : (f ? `${info.id} · ${f.name}` : info.id);
+      const typeLine = cf.type || (f ? f.type : (OTYPE_NAMES[lang][info.otype] || ""));
       const facts = [];
+      const LBL = lang === "de"
+        ? { dist: "Entfernung", size: "Durchmesser", radius: "Gr\u00f6\u00dfe", stars: "Sterne", mass: "Masse", age: "Alter" }
+        : { dist: "Distance", size: "Diameter", radius: "Size", stars: "Stars", mass: "Mass", age: "Age" };
       if (f) {
-        const LBL = lang === "de"
-          ? { dist: "Entfernung", size: "Durchmesser", radius: "Gr\u00f6\u00dfe", stars: "Sterne", mass: "Masse", age: "Alter" }
-          : { dist: "Distance", size: "Diameter", radius: "Size", stars: "Stars", mass: "Mass", age: "Age" };
         for (const k of ["dist", "size", "radius", "stars", "mass", "age"]) {
-          if (f[k]) facts.push([LBL[k], f[k]]);
+          const v = (k === "dist" && cf.dist) || (k === "size" && cf.size) || (k === "age" && cf.age) || f[k];
+          if (v) facts.push([LBL[k], v]);
         }
       }
+      const FLc = customFieldLabels(lang);
+      for (const k of ["dist", "size", "age"]) {
+        if (cf[k] && !facts.some(([kk]) => kk === LBL[k] || kk === FLc[k])) facts.push([FLc[k], cf[k]]);
+      }
+      if (cf.note) facts.push([FLc.note, cf.note]);
       const pad = 20 * u, colW = 195 * u;
       const cardW = Math.min(W - 40 * u, Math.max(300 * u, 2 * colW + 2 * pad));
       const rows = Math.ceil(facts.length / 2);
@@ -3119,10 +3129,19 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
       ctx.globalAlpha = edgeA * baseA;
       const r = Math.max(16 * u, (L.sizePlane * (L.sizeMul || 1) * sp.scaleD * H) / 2);
       const facts = OBJECT_FACTS[normObjId(L.id)];
-      const name = L.id;
-      let sub = facts
-        ? `${facts[lang].name} · ${facts[lang].dist || ""}`.replace(/ · $/, "")
-        : (OTYPE_NAMES[lang][L.otype] || L.otype);
+      const cf = labelCustom(L);
+      const FL = customFieldLabels(lang);
+      const name = cf.name || L.id;
+      // Unterzeile: Typ und Entfernung (automatisch oder vom Nutzer), dazu
+      // die ausgefuellten Freitext-Felder - leere erscheinen nicht
+      const parts = [];
+      parts.push(cf.type || (facts ? facts[lang].name : (OTYPE_NAMES[lang][L.otype] || L.otype || "")));
+      if (cf.dist) parts.push(`${FL.dist} ${cf.dist}`);
+      else if (facts && facts[lang].dist) parts.push(facts[lang].dist);
+      if (cf.size) parts.push(`${FL.size} ${cf.size}`);
+      if (cf.age) parts.push(`${FL.age} ${cf.age}`);
+      if (cf.note) parts.push(cf.note);
+      let sub = parts.filter(Boolean).join(" · ");
       if (L.star && L.phys && state.starDetails) sub += starPhysShort(L.phys, lang);
 
       // Seite/Richtung EINMAL pro Durchlauf waehlen und behalten: Ein
@@ -5843,6 +5862,36 @@ function applyCardChoice() {
     facts: OBJECT_FACTS[normObjId(pick.id)] || starFacts(pick) || null, otype: pick.otype };
 }
 
+// Freitext-Felder eines Labels (vom Nutzer bearbeitet): leere Felder
+// erscheinen nicht, ausgefuellte gehen in Beschriftung und Infokarte
+const LABEL_FIELDS = ["name", "type", "size", "dist", "age", "note"];
+function labelCustom(L) {
+  const c = L && L.custom ? L.custom : {};
+  const out = {};
+  for (const k of LABEL_FIELDS) if (typeof c[k] === "string" && c[k].trim()) out[k] = c[k].trim();
+  return out;
+}
+function customFieldLabels(lang) {
+  return lang === "de"
+    ? { size: "Größe", dist: "Entfernung", age: "Alter", note: "Hinweis" }
+    : { size: "Size", dist: "Distance", age: "Age", note: "Note" };
+}
+
+/** Eigenes Objekt-Label an einem Bildebenen-Punkt anlegen und Editor oeffnen */
+function addUserLabel(x, y) {
+  if (!state.labels) state.labels = [];
+  const n = state.labels.filter((l) => l.user).length + 1;
+  const L = { id: `${t("objOwnDefault")} ${n}`, user: true, otype: "", x, y,
+    sizePlane: 0.05, on: true, custom: { name: "" } };
+  state.labels.push(L);
+  state.showLabels = true;
+  $("ctlShowLabels").checked = true;
+  state._objEditOpen = L;
+  rebuildObjList();
+  const first = $("objList").querySelector(".objedit input");
+  if (first) first.focus();
+}
+
 function rebuildObjList() {
   const box = $("objList");
   box.innerHTML = "";
@@ -5878,7 +5927,14 @@ function rebuildObjList() {
     cb.addEventListener("change", () => { L.on = cb.checked; });
     const span = document.createElement("span");
     const facts = OBJECT_FACTS[normObjId(L.id)];
-    span.textContent = facts ? `${L.id} – ${facts[lang].name}` : L.id;
+    const cf = labelCustom(L);
+    const setTitle = () => {
+      const c = labelCustom(L);
+      span.textContent = c.name ? (L.user ? c.name : `${c.name} (${L.id})`)
+        : (facts ? `${L.id} – ${facts[lang].name}` : L.id);
+      if (Object.keys(c).length) span.classList.add("edited"); else span.classList.remove("edited");
+    };
+    setTitle();
     // Ringgröße pro Label anpassbar (SIMBAD-Größen fehlen oft oder passen
     // nicht zum Ausschnitt)
     const rg = document.createElement("input");
@@ -5887,12 +5943,64 @@ function rebuildObjList() {
     rg.className = "objsize";
     rg.title = t("objRingSize");
     rg.addEventListener("input", () => { L.sizeMul = rg.value / 100; });
+    // Bearbeiten: Freitext-Felder (Name, Typ, Groesse, Entfernung, Alter,
+    // Hinweis) - fuer falsch oder nicht erkannte Objekte
+    const ed = document.createElement("button");
+    ed.type = "button";
+    ed.className = "objeditbtn";
+    ed.title = t("objEdit");
+    ed.textContent = "✎";
     lab.appendChild(cb);
     lab.appendChild(span);
     lab.appendChild(rg);
+    lab.appendChild(ed);
     box.appendChild(lab);
+    const editor = document.createElement("div");
+    editor.className = "objedit";
+    editor.hidden = state._objEditOpen !== L;
+    for (const k of LABEL_FIELDS) {
+      const inp = document.createElement("input");
+      inp.type = "text";
+      inp.placeholder = t("objF_" + k);
+      inp.value = cf[k] || "";
+      inp.addEventListener("input", () => {
+        if (!L.custom) L.custom = {};
+        L.custom[k] = inp.value;
+        setTitle();
+      });
+      editor.appendChild(inp);
+    }
+    const hint = document.createElement("p");
+    hint.className = "tip";
+    hint.textContent = t("objFHint");
+    editor.appendChild(hint);
+    if (L.user) {
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "secondary";
+      del.textContent = t("objDelete");
+      del.addEventListener("click", () => {
+        state.labels = state.labels.filter((x) => x !== L);
+        state._objEditOpen = null;
+        rebuildObjList();
+      });
+      editor.appendChild(del);
+    }
+    box.appendChild(editor);
+    ed.addEventListener("click", (e) => {
+      e.preventDefault();
+      editor.hidden = !editor.hidden;
+      state._objEditOpen = editor.hidden ? null : L;
+    });
   }
 }
+
+$("btnObjAdd").addEventListener("click", () => {
+  if (!state.starless) return;
+  state.labelPick = !state.labelPick;
+  $("btnObjAdd").classList.toggle("active", state.labelPick);
+  $("objStatus").textContent = state.labelPick ? t("objAddHint") : "";
+});
 I18N.onChange.push(rebuildObjList);
 
 $("ctlShowInfo").addEventListener("change", () => { state.showInfo = $("ctlShowInfo").checked; });
@@ -5984,7 +6092,13 @@ $("btnObjects").addEventListener("click", async () => {
       applyCardChoice();
       // Hauptobjekt nur beschriften, wenn es nicht das halbe Bild füllt
       const labels = items.filter((it, idx) => idx > 0 || it.sizePlane < 0.35).slice(0, 6);
-      state.labels = labels.map((it) => ({ ...it, on: true }));
+      // Eigene Objekte und Bearbeitungen ueberleben eine neue Erkennung
+      const old = state.labels || [];
+      state.labels = labels.map((it) => {
+        const prev = old.find((l) => !l.user && l.id === it.id);
+        return { ...it, on: prev ? prev.on : true, sizeMul: prev ? prev.sizeMul : undefined,
+          custom: prev && prev.custom ? prev.custom : undefined };
+      }).concat(old.filter((l) => l.user));
       rebuildObjList();
       $("objStatus").textContent = t("objFound", items.length, state.objInfo.id);
     }
@@ -6099,7 +6213,12 @@ canvas.addEventListener("click", (e) => {
   const clampedX = Math.min(imgAspect * 0.475, Math.max(-imgAspect * 0.475, qx));
   const clampedY = Math.min(0.475, Math.max(-0.475, qy));
   const wasSpinPick = state.spinPick;
-  if (state.spinPick) {
+  if (state.labelPick) {
+    state.labelPick = false;
+    $("btnObjAdd").classList.remove("active");
+    $("objStatus").textContent = "";
+    addUserLabel(clampedX, clampedY);
+  } else if (state.spinPick) {
     state.spinCenter = { x: clampedX, y: clampedY };
     state.spinPick = false;
     $("btnSpinCenter").classList.remove("active");
