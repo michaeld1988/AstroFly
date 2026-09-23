@@ -730,6 +730,14 @@
         diffraction pattern of a real telescope: a crisp bright disc with a faint ring around it
         instead of a soft Gaussian blob. Subtle, but stars look like optics, not sprites.</p>
         <label class="slider">
+          <span><span data-i18n="organic">Organic star glow (fine rays)</span> <button class="qm" data-help="hintOrganic">?</button> <output id="outOrganic">35</output></span>
+          <input type="range" id="ctlOrganic" min="0" max="100" step="1" value="35">
+        </label>
+        <p class="tip hint2" id="hintOrganic" hidden data-i18n="organicHint">Bright stars get a
+        halo of dozens of fine, uneven rays like in real astrophotos, drawn from a library of
+        16 star patterns - each star with its own pattern, rotation and strength. Faint stars
+        stay clean. Keep it subtle.</p>
+        <label class="slider">
           <span><span data-i18n="spikes">Diffraction spikes</span> <button class="qm" data-help="hintSpikes">?</button> <output id="outSpikes">0</output></span>
           <input type="range" id="ctlSpikes" min="0" max="100" step="1" value="0">
         </label>
@@ -1153,8 +1161,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-08-16-78"></script>
+<script src="i18n.js?v=2026-08-16-80"></script>
 <script src="objectinfo.js?v=2026-08-16-67"></script>
-<script src="app.js?v=2026-08-16-79"></script>
+<script src="app.js?v=2026-08-16-80"></script>
 </body>
 </html>
