@@ -589,6 +589,7 @@ uniform sampler2D uDepthS; // Tiefenkarte des Nebels
 uniform sampler2D uColorS; // Starless-Bild (Dichte der Nebelschwaden)
 uniform float uSpikes;     // Beugungsspikes: Staerke 0..1 (0 = aus)
 uniform float uSpikeMax;   // Zusatzlaenge der Spikes hellster Sterne in px
+uniform float uSpikeW;     // Grundbreite der Spikes in Render-Pixeln (1 Ausgabepixel)
 out vec3 vColor;
 out float vAlpha;
 out vec2 vDir;    // Streifen-Richtung in Pixeln (normiert)
@@ -874,6 +875,7 @@ uniform float uAngleF;      // Kamerawinkel: Patch dreht mit dem Bild mit
 uniform float uAiry;        // 1 = Airy-Kern statt Gauss-Glocke
 uniform float uSpikeArms;   // Anzahl der Spikes (4, 6, 8)
 uniform float uSpikeRot;    // Drehung der Spikes (rad)
+uniform float uSpikeWF;     // Grundbreite der Spikes in Render-Pixeln
 out vec4 outColor;
 
 // Airy-Beugungsscheibchen: I = (2 J1(x) / x)^2 mit x = 7 r (r = 1 am Sprite-
@@ -888,11 +890,13 @@ float airyI(float r2) {
   return s * s;
 }
 
-// Beugungsspikes: N Strahlen durchs Sternzentrum, in der mitrotierten
-// Bildebene verankert (di), weicher Querschnitt (Breite w), zur Spitze hin
-// quadratisch auslaufend, mit dem Farbsaum echter Spider-Spikes (innen
-// blaeulich, aussen roetlich)
-vec3 spikeLight(vec2 di, float w) {
+// Beugungsspikes wie bei einem echten Newton (Referenz: Deneb, 4 Streben):
+// hauchduenne Linien mit konstanter Breite in AUSGABE-Pixeln - unabhaengig
+// von der Sterngroesse (etwa 1,5 px am Kern, 0,6 px an der Spitze), nahe
+// am Kern hell und dann ein langer, schwacher Auslauf (1/(1+8t)), nur ein
+// Hauch Farbe (innen leicht blaeulich, aussen leicht warm). In der
+// mitrotierten Bildebene verankert (di)
+vec3 spikeLight(vec2 di) {
   if (vSpike <= 0.0) return vec3(0.0);
   float acc = 0.0, tint = 0.0;
   int n = int(uSpikeArms * 0.5 + 0.5);
@@ -903,11 +907,12 @@ vec3 spikeLight(vec2 di, float w) {
     float t = abs(dot(di, dir)) / vSpike;
     if (t >= 1.0) continue;
     float across = dot(di, vec2(-dir.y, dir.x));
-    float prof = exp(-across * across / (2.0 * w * w)) * pow(1.0 - t, 1.5);
+    float w = uSpikeWF * (0.6 + 0.9 * (1.0 - t) * (1.0 - t));
+    float prof = exp(-across * across / (2.0 * w * w)) * (1.0 - t) / (1.0 + 8.0 * t);
     acc += prof; tint += prof * t;
   }
   if (acc <= 0.0) return vec3(0.0);
-  return acc * mix(vec3(0.85, 0.92, 1.1), vec3(1.15, 0.9, 0.75), tint / acc);
+  return acc * mix(vec3(0.95, 0.97, 1.06), vec3(1.08, 0.96, 0.86), tint / acc);
 }
 
 void main() {
@@ -930,7 +935,7 @@ void main() {
     // wird dann treiberabhaengig falsch und kleine Sterne blitzen wie ein
     // Stroboskop (vom Nutzer gemeldetes Flackern)
     vec3 c = texture(uAtlas, uv).rgb;
-    vec3 sp = spikeLight(di, vPatchHalf * 0.1 + 0.7) * vAlpha * 0.6;
+    vec3 sp = spikeLight(di) * vAlpha * 1.4;
     if (rn > 1.0 && max(sp.r, sp.b) < 0.002) discard;
     float edge = 1.0 - smoothstep(0.78, 1.0, rn);
     // Helligkeit wirkt RADIAL wie eine kuerzere Belichtung: Der Kern bleibt
@@ -945,7 +950,7 @@ void main() {
   // Kapsel entlang der Flugrichtung: Abstand zur Streifen-Mittellinie,
   // normiert auf den Stern-Radius (vLen = 0 -> runder Stern wie bisher)
   vec2 d = dPx;
-  vec3 sp = spikeLight(di, vBase * 0.09 + 0.7) * vAlpha * 0.6;
+  vec3 sp = spikeLight(di) * vAlpha * 1.4;
   float along = dot(d, vDir);
   float across = dot(d, vec2(-vDir.y, vDir.x));
   float da = max(abs(along) - vLen * 0.5, 0.0);
@@ -3908,10 +3913,13 @@ function render(forcedT) {
     // groesser rendern, sonst holt das Herunterrechnen das Flackern zurueck
     u1f(starProg, "uPxMin", 2.6 * ssc);
     // Optik-Simulation: Airy-Kern und Beugungsspikes (Zusatzlaenge der
-    // hellsten Sterne 12 % der Bildhoehe, skaliert mit dem Supersampling)
+    // hellsten Sterne 40 % der Bildhoehe wie bei Deneb im Newton; Breite in
+    // Ausgabepixeln, beim Supersampling entsprechend mitskaliert)
     u1f(starProg, "uAiry", state.airy ? 1 : 0);
     u1f(starProg, "uSpikes", state.spikes / 100);
-    u1f(starProg, "uSpikeMax", 0.12 * fbScene.h);
+    u1f(starProg, "uSpikeMax", 0.4 * fbScene.h);
+    u1f(starProg, "uSpikeW", ssc);
+    u1f(starProg, "uSpikeWF", ssc);
     u1f(starProg, "uSpikeArms", state.spikeArms);
     u1f(starProg, "uSpikeRot", state.spikeRot * Math.PI / 180);
     u1f(starProg, "uStarSat", state.starSat / 100);
