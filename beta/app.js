@@ -374,9 +374,9 @@ float depthOf(vec2 uv, float mode) {
 }
 // Bildpunkt zu einem Bildschirmpunkt: Fixpunkt-Iteration der Parallaxe.
 // Die Tiefenkarte ist so steilheitsbegrenzt, dass die Abbildung ueber den
-// ganzen Flug kontrahiert (k <= 0,6): die Loesung ist eindeutig, fuenf
-// Schritte druecken den Restfehler unter 8 % - keine Doppelbilder, kein
-// Flimmern an Tiefenkanten
+// ganzen Flug kontrahiert (k <= 0,5): die Loesung ist eindeutig, fuenf
+// Schritte druecken den Restfehler unter 4 %, die lokale Dehnung bleibt
+// unter 1/(1-k) = 2-fach - keine Doppelbilder, kein Flimmern an Tiefenkanten
 vec2 solveUv(vec2 pr, float mode, float off, out vec2 qOut) {
   vec2 q = uCenter + pr / (uCover * uZoom);
   vec2 uv = imgUv(spinWarp(q));
@@ -1976,7 +1976,9 @@ function buildDepthMap() {
  * angehoben (sie fliegen mit ihrer Umgebung mit, statt aufzureissen), helle
  * Strukturen bleiben unveraendert. Sanfte Verlaeufe bleiben exakt erhalten
  */
-const DEPTH_KMAX = 0.65;
+// 0,5: lokale Dehnung hoechstens 2-fach (feine Textur bleibt ruhig), dabei
+// noch kraeftiges Relief
+const DEPTH_KMAX = 0.5;
 // Sicherheitsfaktor: Schachbrett-Metrik (8er-Nachbarschaft, <= 8 %) und
 // bilineare Interpolation zwischen den Karten-Pixeln
 const DEPTH_SAFETY = 1.15;
