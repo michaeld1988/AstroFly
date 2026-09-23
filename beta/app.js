@@ -131,6 +131,7 @@ const state = {
   spikes: 0,             // Beugungsspikes: Staerke 0..100 (0 = aus)
   spikeArms: 4,          // Anzahl der Spikes (4, 6, 8)
   spikeRot: 0,           // Drehung der Spikes in Grad
+  organic: 35,           // organischer Strahlenkranz aus der Sternbibliothek 0..100
   superSample: true,     // Export intern in 2x Aufloesung rendern und runterrechnen
   renderScale: 1,        // aktueller Supersampling-Faktor (nur waehrend des Exports > 1)
   exposure: 0,           // -100..100 (Blendenstufen ±2)
@@ -537,6 +538,7 @@ uniform float uPixelsY;   // Canvas-Höhe in px
 uniform float uTime;
 uniform float uSeed;      // Zufalls-Seed für die Ebenen-Verteilung
 uniform float uStarBase;  // Grundtiefe (Abstand zum Nebel), 0 fern .. 1 nah
+uniform float uOrganic;   // Staerke des organischen Strahlenkranzes 0..1
 uniform float uSpread;    // Streuung der Ebenen 0..1
 uniform float uLayers;    // Anzahl diskreter Ebenen (0 = kontinuierlich)
 uniform float uStarPar;   // Parallax-Multiplikator für Sterne
@@ -600,6 +602,7 @@ out float vGlow;  // Glanzhof der hellsten Sterne (0..1)
 out vec3 vAtlasUv;   // Atlas: Zentrum-UV + halbe Groesse in UV (x<0 = prozedural)
 out float vPatchHalf; // halbe Patch-Groesse auf dem Bildschirm in px
 out float vSpike;     // Laenge der Beugungsspikes in px (0 = keine)
+out vec4 vOrgP;       // Sternbibliothek: Staerke, Radius px, Kachel (+16 = gespiegelt), Drehung
 
 // Sternposition mit der Galaxien-Rotation mitdrehen (identische Falloff-,
 // Differenzial- und Masken-Logik wie im Hintergrund-Shader)
@@ -635,7 +638,7 @@ void main() {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 1.0;
     vAlpha = 0.0; vColor = vec3(0.0); vDir = vec2(1.0, 0.0);
     vLen = 0.0; vBase = 1.0; vSize = 1.0; vGlow = 0.0;
-    vAtlasUv = vec3(-1.0); vPatchHalf = 0.0; vSpike = 0.0;
+    vAtlasUv = vec3(-1.0); vPatchHalf = 0.0; vSpike = 0.0; vOrgP = vec4(0.0);
     return;
   }
   float brightShift = aBright * 0.12;
@@ -654,7 +657,7 @@ void main() {
     gl_PointSize = 1.0;
     vColor = vec3(0.0); vAlpha = 0.0;
     vDir = vec2(1.0, 0.0); vLen = 0.0; vBase = 1.0; vSize = 1.0;
-    vAtlasUv = vec3(-1.0); vPatchHalf = 0.0; vGlow = 0.0; vSpike = 0.0;
+    vAtlasUv = vec3(-1.0); vPatchHalf = 0.0; vGlow = 0.0; vSpike = 0.0; vOrgP = vec4(0.0);
     return;
   }
 
@@ -826,6 +829,18 @@ void main() {
     size = min(max(size, spike * 2.0 + 4.0), uMaxPoint);
   }
   vSpike = spike;
+  // Organischer Strahlenkranz (Sternbibliothek): nur helle prozedurale
+  // Sterne, jeder mit eigener Kachel, Drehung, Spiegelung und Staerke -
+  // so sieht kein Stern aus wie sein Nachbar. Radius: 1,7-facher Hof
+  vOrgP = vec4(0.0);
+  float hv = fract(sin(dot(aPos, vec2(12.9898, 78.233))) * 43758.5453);
+  float org = uOrganic * smoothstep(0.55, 1.0, aBright) * (0.7 + 0.6 * fract(hv * 5.17));
+  if (org > 0.002) {
+    float rOrg = min(base * 0.5 * (1.0 + vGlow * 2.2) * 1.7, uMaxPoint * 0.5 - 2.0);
+    size = min(max(size, rOrg * 2.0 + 2.0), uMaxPoint);
+    float tileI = floor(hv * 16.0) + (fract(hv * 13.7) < 0.5 ? 16.0 : 0.0);
+    vOrgP = vec4(org, rOrg, tileI, fract(hv * 7.31) * 6.2831853);
+  }
   gl_PointSize = size;
   vDir = dirPx;
   vLen = len;
@@ -869,7 +884,9 @@ in float vGlow;
 in vec3 vAtlasUv;
 in float vPatchHalf;
 in float vSpike;
+in vec4 vOrgP;
 uniform sampler2D uAtlas;   // echte Sternabbilder (Ausschnitte der Maske)
+uniform sampler2D uStarLib; // Sternbibliothek: 4x4 Kacheln je 256 px (R Strahlen, G Halo-Fasern)
 uniform float uStarBrightF; // Helligkeits-Regler (wie uStarBright im VS)
 uniform float uAngleF;      // Kamerawinkel: Patch dreht mit dem Bild mit
 uniform float uAiry;        // 1 = Airy-Kern statt Gauss-Glocke
@@ -922,6 +939,22 @@ void main() {
   float caF = cos(uAngleF), saF = sin(uAngleF);
   vec2 duUp = vec2(dPx.x, -dPx.y);
   vec2 di = vec2(caF * duUp.x + saF * duUp.y, -saF * duUp.x + caF * duUp.y);
+  // Sternbibliothek: Kachel des Sterns in der mitrotierten Bildebene
+  // abtasten (R = feine Strahlen, G = faserige Halo-Modulation um 0,5).
+  // Immer VOR einem discard sampeln (definierte Ableitungen, s. o.)
+  float rays = 0.0, fib = 1.0;
+  if (vOrgP.x > 0.0) {
+    float ca = cos(vOrgP.w), sa = sin(vOrgP.w);
+    vec2 q = mat2(ca, -sa, sa, ca) * di;
+    if (vOrgP.z >= 16.0) q.x = -q.x;
+    float ti = mod(vOrgP.z, 16.0);
+    vec2 tile = vec2(mod(ti, 4.0), floor(ti / 4.0));
+    vec2 luv = (tile + 0.5 + clamp(q / vOrgP.y * 0.5, -0.5, 0.5)) * 0.25;
+    vec2 lib = texture(uStarLib, luv).rg;
+    float inR = 1.0 - smoothstep(0.85, 1.0, length(di) / vOrgP.y);
+    rays = lib.r * vOrgP.x * 0.4 * inR;
+    fib = 1.0 + (lib.g * 2.0 - 1.0) * 0.8 * vOrgP.x;
+  }
   // Echtes Sternabbild: Patch aus dem Atlas statt prozeduraler Glocke.
   // Additives Blending -> schwarzer Patch-Hintergrund addiert nichts;
   // ein weicher radialer Rand vermeidet sichtbare Kachelkanten
@@ -936,7 +969,7 @@ void main() {
     // Stroboskop (vom Nutzer gemeldetes Flackern)
     vec3 c = texture(uAtlas, uv).rgb;
     vec3 sp = spikeLight(di) * vAlpha * 1.4;
-    if (rn > 1.0 && max(sp.r, sp.b) < 0.002) discard;
+    if (rn > 1.0 && max(sp.r, sp.b) < 0.002 && rays < 0.002) discard;
     float edge = 1.0 - smoothstep(0.78, 1.0, rn);
     // Helligkeit wirkt RADIAL wie eine kuerzere Belichtung: Der Kern bleibt
     // weiss, nur Saum/Spikes dunkeln ab (globales Dimmen machte die Kerne
@@ -944,7 +977,8 @@ void main() {
     float b = uStarBrightF;
     float coreKeep = smoothstep(0.0, 0.3, b);
     float w = b >= 1.0 ? b : mix(coreKeep, b, smoothstep(0.15, 0.8, rn));
-    outColor = vec4(c * edge * vAlpha * w + vColor * sp, 1.0);
+    // Strahlenkranz auch ueber echten Abbildern (dezent, dimmt wie der Saum)
+    outColor = vec4(c * edge * vAlpha * w + vColor * (sp + rays * vAlpha * w), 1.0);
     return;
   }
   // Kapsel entlang der Flugrichtung: Abstand zur Streifen-Mittellinie,
@@ -963,12 +997,13 @@ void main() {
   // deutlich groesser sein, und der Hof wuerde sonst mitwachsen
   float rOut = length(d) / max(vBase * (1.0 + vGlow * 2.2) * 0.5, 1.0);
   float wide = vGlow > 0.0 ? exp(-rOut * rOut * 5.0) * vGlow * 0.5 : 0.0;
-  if (r2 > 1.0 && wide < 0.004 && max(sp.r, sp.b) < 0.002) discard;
+  if (r2 > 1.0 && wide < 0.004 && max(sp.r, sp.b) < 0.002 && rays < 0.002) discard;
   // Kernprofil: Gauss-Glocke oder (Option) Airy-Scheibchen; letzteres traegt
   // etwas weniger Energie und wird entsprechend angehoben
   float core = r2 <= 1.0 ? (uAiry > 0.5 ? airyI(r2) * 1.3 : exp(-r2 * 9.0)) : 0.0;
   float halo = r2 <= 1.0 ? exp(-r2 * 2.5) * (0.35 + vGlow * 0.3) : 0.0;
-  float a = (core + halo + wide) * vAlpha;
+  // Hof und Strahlen faserig modulieren, Strahlenkranz additiv dazu
+  float a = (core + (halo + wide) * fib + rays) * vAlpha;
   // Verlauf entlang des Schweifs: am Kopf (Sternposition, in Flugrichtung
   // vorn) volle Helligkeit, zum Ende hin weich auslaufend
   if (vLen > 0.5) {
@@ -1258,6 +1293,7 @@ let texSpinMask = null;
 let texVolL = [];                   // Volumetrischer Nebel: [Gewichte 0-3, Gewichte 4-5, Staub/entstaubt]
 let volBuiltN = 0;                  // Ebenenzahl, mit der die Texturen gebaut wurden
 let texStarAtlas = null;
+let texStarLib = null;    // Sternbibliothek (prozedural, einmal pro Sitzung)
 let texStarsImg = null;   // Kino-Modus: Sternmaske als Bildtextur (bis 4096 px)
 
 // Kino-Modus: Sternmaske als Bild hochladen (nur bei Bedarf, wird bei
@@ -1315,6 +1351,10 @@ gl.bindTexture(gl.TEXTURE_2D, texBlack);
 gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
 gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+// Sternbibliothek im Leerlauf nach dem Start vorbauen (ca. 0,2-0,7 s CPU),
+// damit der erste Sternframe nach dem Bildladen nicht ruckelt
+setTimeout(() => { if (!texStarLib) { try { texStarLib = buildStarLib(); } catch { /* dann beim ersten Frame */ } } }, 400);
 
 let fbScene = null, fbStars = null, fbSoftA = null, fbSoftB = null,
     fbMedA = null, fbMedB = null;
@@ -1914,6 +1954,72 @@ function clampi(v, n) { return v < 0 ? 0 : (v >= n ? n - 1 : v); }
  * speichern Zentrum (Textur-UV, y bereits geflippt wie makeTexture), halbe
  * Groesse in Atlas-UV und halbe Groesse in Ebenen-Einheiten.
  */
+/**
+ * Sternbibliothek: 16 prozedurale Strahlenkraenze (4x4 Kacheln je 256 px),
+ * nachempfunden echten Astrofotos heller Sterne (Plejaden, Deneb im
+ * Newton, Seestar): Dutzende hauchfeine Strahlen ungleicher Laenge und
+ * Staerke, teils als gegenueberliegende Paare (Mikrolinsen-Beugung), dazu
+ * eine faserige Winkel-Modulation des Hofs und eine leichte Ellipse.
+ * R = Strahlen (0..1, am Kern hell, zum Rand auslaufend), G = Halo-Fasern
+ * um 0,5, ausserhalb des Kreises neutral. Wird einmal pro Sitzung gebaut.
+ */
+function buildStarLib() {
+  const T = 256, N = 4, W = T * N;
+  const c = document.createElement("canvas");
+  c.width = W; c.height = W;
+  const g = c.getContext("2d");
+  const img = g.createImageData(W, W);
+  const d = img.data;
+  const TAU = Math.PI * 2;
+  for (let k = 0; k < N * N; k++) {
+    const rnd = mulberry32(1000 + k * 7919);
+    const rays = [];
+    const n = 36 + Math.floor(rnd() * 45);
+    for (let i = 0; i < n; i++) {
+      const a = rnd() * TAU;
+      const sig = (0.25 + rnd() * 0.6) * Math.PI / 180;
+      let L = 0.12 + Math.pow(rnd(), 2.2) * 0.75;
+      let st = 0.25 + rnd() * 0.75;
+      if (rnd() < 0.1) { L = 0.45 + rnd() * 0.35; st = 0.7 + rnd() * 0.4; }
+      rays.push([a, sig, L, st]);
+      if (rnd() < 0.5) rays.push([a + Math.PI, sig, L * (0.7 + rnd() * 0.5), st * (0.7 + rnd() * 0.5)]);
+    }
+    const harm = [3, 5, 7, 11, 13, 19].map((h) => [h, rnd() * TAU, rnd()]);
+    const ell = 1 + rnd() * 0.12, ea = rnd() * Math.PI;
+    const ce = Math.cos(ea), se = Math.sin(ea);
+    const ox = (k % N) * T, oy = Math.floor(k / N) * T;
+    for (let y = 0; y < T; y++) {
+      for (let x = 0; x < T; x++) {
+        const o = ((oy + y) * W + ox + x) * 4;
+        const dx = (x + 0.5) / T * 2 - 1, dy = (y + 0.5) / T * 2 - 1;
+        const ex = (dx * ce + dy * se) / ell, ey = -dx * se + dy * ce;
+        const r = Math.hypot(ex, ey);
+        d[o + 3] = 255;
+        if (r >= 1) { d[o] = 0; d[o + 1] = 128; d[o + 2] = 0; continue; }
+        const th = Math.atan2(ey, ex);
+        let acc = 0;
+        const wMin = 0.9 / Math.max(r * T * 0.5, 1);
+        for (let i = 0; i < rays.length; i++) {
+          const ry = rays[i];
+          let dd = th - ry[0];
+          dd -= Math.round(dd / TAU) * TAU;
+          const w = Math.max(ry[1], wMin);
+          if (Math.abs(dd) > 4 * w) continue;
+          acc += ry[3] * Math.exp(-dd * dd / (2 * w * w)) * Math.exp(-r / ry[2]) * (1 - r);
+        }
+        let gv = 0.5;
+        for (let i = 0; i < harm.length; i++) gv += harm[i][2] * 0.08 * Math.cos(harm[i][0] * th + harm[i][1]);
+        d[o] = Math.min(255, Math.round(acc * 255));
+        d[o + 1] = Math.round(Math.min(1, Math.max(0, gv)) * 255);
+        d[o + 2] = 0;
+      }
+    }
+  }
+  g.putImageData(img, 0, 0);
+  state.starLib = { tiles: N * N, size: T };
+  return makeTexture(c);
+}
+
 function buildStarAtlas(list, srcCanvas, srcData) {
   const A = 2048;
   const c = document.createElement("canvas");
@@ -3921,6 +4027,7 @@ function render(forcedT) {
     u1f(starProg, "uSpikeW", ssc);
     u1f(starProg, "uSpikeWF", ssc);
     u1f(starProg, "uSpikeArms", state.spikeArms);
+    u1f(starProg, "uOrganic", state.organic / 100);
     u1f(starProg, "uSpikeRot", state.spikeRot * Math.PI / 180);
     u1f(starProg, "uStarSat", state.starSat / 100);
     u2f(starProg, "uCenter", cam.cx, cam.cy);
@@ -3970,6 +4077,10 @@ function render(forcedT) {
       gl.bindTexture(gl.TEXTURE_2D, texStarAtlas);
       u1i(starProg, "uAtlas", 8);
     }
+    if (!texStarLib) texStarLib = buildStarLib();
+    gl.activeTexture(gl.TEXTURE9);
+    gl.bindTexture(gl.TEXTURE_2D, texStarLib);
+    u1i(starProg, "uStarLib", 9);
     gl.activeTexture(gl.TEXTURE0);
     u1i(starProg, "uDepthS", 6);
     u1i(starProg, "uColorS", 7);
@@ -4303,6 +4414,7 @@ bindSlider("ctlTwinkle", "outTwinkle", "twinkle", asInt);
 bindSlider("ctlTwinkleSpeed", "outTwinkleSpeed", "twinkleSpeed", asPct);
 bindSlider("ctlStarSize", "outStarSize", "starSize", asPct);
 bindSlider("ctlSpikes", "outSpikes", "spikes", asInt);
+bindSlider("ctlOrganic", "outOrganic", "organic", asInt);
 bindSlider("ctlSpikeRot", "outSpikeRot", "spikeRot", (v) => v + "\u00b0");
 $("ctlAiry").addEventListener("change", () => {
   state.airy = $("ctlAiry").checked;
@@ -6384,7 +6496,7 @@ const USER_PRESET_GROUPS = {
   stars: ["ctlSpread", "ctlStarDist", "ctlLayers", "ctlStarPar", "ctlTwinkle",
     "ctlTwinkleSpeed", "ctlStarSize", "ctlStarBright", "ctlStarSat",
     "ctlGenStars", "ctlOcclude", "ctlStarCull", "ctlAnchor", "ctlAiry",
-    "ctlSpikes", "ctlSpikeArms", "ctlSpikeRot"],
+    "ctlSpikes", "ctlSpikeArms", "ctlSpikeRot", "ctlOrganic"],
   look: ["ctlBloom", "ctlMblur", "ctlMblurStars", "ctlWarp", "ctlVignette", "ctlGrain", "ctlFilmic",
     "ctlExposure", "ctlContrast", "ctlSaturation", "ctlClarity",
     "ctlStructure", "ctlSharpen", "ctlH2Det", "ctlH2Width", "ctlH2Sat",
