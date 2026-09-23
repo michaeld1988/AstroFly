@@ -65,11 +65,9 @@ const state = {
   customDepth: null,     // eigene, importierte Tiefenkarte { canvas, width, height }
   aiDepth: null,         // KI-Tiefenkarte (Depth Anything): { data: Float32Array 0..1, w, h }
   depthAiMix: 100,       // Anteil der KI-Karte an der Tiefenkarte in %
-  vol: false,            // Volumetrischer Nebel: transparente Leuchtebenen statt Relief
-  volLayers: 1,          // Leuchtebenen: 1 = zusammenhaengender Warp (Standard), 2..6 = durchsichtige Ebenen
-  volSpread: 50,         // Tiefenspreizung der Ebenen 0..100
-  volFine: 30,           // Feinmodulation innerhalb einer Ebene (Tiefenkarte) 0..100
-  volDust: 60,           // Staub-Verdeckung 0..100
+  vol: true,             // Volumetrischer Nebel: Grund-Leuchten + Strukturen + Staub als Schichten
+  volSpread: 50,         // Abstand Grund-Leuchten hinter den Strukturen 0..100
+  volDust: 0,            // Staub schwebt vor dem Leuchten 0..100 (0 = aus; fuer ausgepraegte Dunkelwolken)
   srcFiles: { starless: null, stars: null, depth: null }, // Original-Dateien (Projekt-Speicherung)
   invertDepth: false,
   target: { x: 0, y: 0 }, // Zoomziel in Bildebenen-Einheiten (0,0 = Mitte)
@@ -264,12 +262,11 @@ uniform vec3 uBandWidth;    // Erkennungs-Bereich je Band (Kreisanteil, einstell
 uniform float uBandShow;    // Erkennungsmaske: 0 = aus, 1 = HII, 2 = OIII, 3 = SII
 uniform float uBandFeather; // weiche Kante der Banderkennung (0 = hart, 1 = sehr weich)
 uniform float uBandOn;      // 1 = mindestens ein Band-Regler aktiv
-uniform float uVol;         // Volumetrischer Nebel: Anzahl der Leuchtebenen (0 = aus)
-uniform sampler2D uVolW0;   // Gewichte der Leuchtebenen 0..3 (Summe aller = 1)
-uniform sampler2D uVolW1;   // Gewichte der Leuchtebenen 4..5
+uniform float uVol;         // Volumetrischer Nebel: 1 = an
 uniform sampler2D uVolD;    // rgb = entstaubtes Leuchten (aufgefuellt), a = Staubmaske
-uniform float uVolSpread;   // Tiefenspreizung der Ebenen (0..1)
-uniform float uVolFine;     // Feinmodulation der Tiefe innerhalb einer Ebene
+uniform sampler2D uVolB;    // Grund-Leuchten (glatt, geringe Aufloesung, Float)
+uniform float uVolSep;      // so weit liegt das Grund-Leuchten hinter den Strukturen
+uniform float uVolDustZ;    // so weit liegt der Staub vor der lokalen Tiefe
 
 vec2 imgUv(vec2 q) {
   return vec2(q.x / uImgAspect, q.y) + 0.5;
@@ -368,70 +365,64 @@ vec3 sampleCol(vec2 uv) {
   return texture(uColor, uv).rgb;
 }
 
-// Bildebenen-Punkt einer Ebene mit fester Tiefe d (gleiche Kameramathematik
-// wie die Fixpunkt-Iteration der Tiefenkarte, aber ohne Iteration)
-vec2 layerQ(vec2 pr, float d) {
-  float ex = 1.0 + uParallax * (d - 0.45) * uDepthRange;
-  float scale = uCover * pow(uZoom, ex);
-  return uCenter + pr / scale + uTilt * (d - 0.45);
+// Tiefe fuer die Iteration: R = Struktur-Tiefe (steilheitsbegrenzt), G =
+// grossraeumig geglaettete Tiefe des Grund-Leuchtens (nie vor den Strukturen)
+float depthOf(vec2 uv, float mode) {
+  vec4 t = texture(uDepth, uv);
+  if (mode > 0.5) return min(t.g, t.r) - uVolSep;
+  return mix(t.r, 0.02, uObjFar);
 }
-float layerW(vec2 uv, int k) {
-  vec4 a = texture(uVolW0, uv);
-  if (k == 0) return a.r;
-  if (k == 1) return a.g;
-  if (k == 2) return a.b;
-  if (k == 3) return a.a;
-  vec4 b = texture(uVolW1, uv);
-  if (k == 4) return b.r;
-  return b.g;
-}
-// Entstaubtes Leuchten: ausserhalb der Staubmaske das Originalbild in
-// voller Aufloesung, innerhalb das aufgefuellte Leuchten hinter dem Staub
-vec3 emission(vec2 uv) {
-  vec4 D = texture(uVolD, uv);
-  return mix(sampleCol(uv), D.rgb, D.a);
-}
-// Zusammenhaengender Warp entlang der Tiefenkarte (gleiche Fixpunkt-
-// Iteration wie der klassische Weg in main)
-vec2 warpUv(vec2 pr) {
+// Bildpunkt zu einem Bildschirmpunkt: Fixpunkt-Iteration der Parallaxe.
+// Die Tiefenkarte ist so steilheitsbegrenzt, dass die Abbildung ueber den
+// ganzen Flug kontrahiert (k <= 0,6): die Loesung ist eindeutig, fuenf
+// Schritte druecken den Restfehler unter 8 % - keine Doppelbilder, kein
+// Flimmern an Tiefenkanten
+vec2 solveUv(vec2 pr, float mode, float off, out vec2 qOut) {
   vec2 q = uCenter + pr / (uCover * uZoom);
   vec2 uv = imgUv(spinWarp(q));
-  for (int i = 0; i < 3; i++) {
-    float d = texture(uDepth, uv).r;
+  for (int i = 0; i < 5; i++) {
+    float d = depthOf(uv, mode) + off;
     float ex = 1.0 + uParallax * (d - 0.45) * uDepthRange;
     float scale = uCover * pow(uZoom, ex);
     q = uCenter + pr / scale + uTilt * (d - 0.45);
     uv = imgUv(spinWarp(q));
   }
+  qOut = q;
   return uv;
 }
-// Volumetrischer Nebel: die Staubbaender sind aus dem Leuchten
-// herausgerechnet (dahinter inhaltsbasiert aufgefuellt) und liegen als
-// ausgeschnittene, deckende Ebene ganz vorn - sie koennen nirgends doppelt
-// erscheinen, und beim Vorbeiflug erscheint hinter ihnen plausibler Nebel.
-// Das Leuchten selbst bewegt sich standardmaessig als EIN zusammenhaengendes
-// Bild entlang der Tiefenkarte (uVol = 1): keine Aufteilung, keine Kopien.
-// Optional (uVol >= 2) wird es in weiche, durchsichtige Ebenen zerlegt,
-// die starr auf ihrer Tiefe fliegen - Strukturen, die zwei Ebenen
-// angehoeren, erscheinen dann allerdings doppelt
-vec3 volumetric(vec2 pr) {
-  vec3 acc = vec3(0.0);
-  if (uVol < 1.5) acc = emission(warpUv(pr));
-  else for (int k = 0; k < 6; k++) {
-    if (float(k) >= uVol) break;
-    float ck = (float(k) + 0.5) / uVol;
-    float dk = 0.45 + (ck - 0.5) * uVolSpread;
-    vec2 uvk = imgUv(spinWarp(layerQ(pr, dk)));
-    if (uVolFine > 0.0) {
-      float dm = texture(uDepth, uvk).r;
-      uvk = imgUv(spinWarp(layerQ(pr, dk + uVolFine * (dm - 0.45))));
-    }
-    float wk = layerW(uvk, k);
-    if (wk > 0.002) acc += emission(uvk) * wk;
+// Entstaubtes Leuchten: ausserhalb der Staubmaske das Originalbild in
+// voller Aufloesung, innerhalb das aufgefuellte Leuchten hinter dem Staub
+// Entstaubt = je Kanal das Hellere aus Original und Auffuellung: Staub ist
+// damit eine reine Abdunklung (Verhaeltnis <= 1), und helle Details am Rand
+// einer Staubstelle leben nur im Leuchten - sie koennen sich beim
+// Verschieben nicht auf zwei Schichten aufteilen (kein Geisterstreifen)
+float dustW(float a) { return smoothstep(0.0, 0.3, a); }
+vec3 emission(vec2 uv) {
+  vec4 D = texture(uVolD, uv);
+  vec3 c = sampleCol(uv);
+  return mix(c, max(c, D.rgb), dustW(D.a));
+}
+// Volumetrischer Nebel v2 - drei Schichten, jede mit eigener, faltungsfreier
+// Tiefe, im Ruhezustand exakt das Originalbild:
+//  1. Grund-Leuchten B (glatt, liegt um uVolSep hinter den Strukturen)
+//  2. Strukturen = entstaubtes Leuchten minus Grund-Leuchten (fliegen auf
+//     der Tiefenkarte) - additiv wie echtes, durchscheinendes Gas
+//  3. Staub als Durchlaessigkeit (Original / entstaubt), knapp VOR der
+//     lokalen Tiefe: er schiebt sich ueber das Leuchten, dahinter erscheint
+//     aufgefuelltes Leuchten statt eines schwarzen Lochs
+// Keine Aufteilung einer Struktur auf mehrere Ebenen -> nichts erscheint doppelt
+vec3 volumetric(vec2 pr, vec2 uvF) {
+  vec2 qB, qT;
+  vec2 uvB = solveUv(pr, 1.0, 0.0, qB);
+  vec2 uvT = solveUv(pr, 0.0, uVolDustZ, qT);
+  vec3 col = max(texture(uVolB, uvB).rgb + emission(uvF) - texture(uVolB, uvF).rgb, 0.0);
+  vec4 Dt = texture(uVolD, uvT);
+  if (Dt.a > 0.001) {
+    vec3 iT = texture(uColor, uvT).rgb;
+    vec3 eT = mix(iT, max(iT, Dt.rgb), dustW(Dt.a));
+    col *= clamp(iT / max(eT, vec3(1.5 / 255.0)), 0.0, 1.0);
   }
-  vec2 uvD = imgUv(spinWarp(layerQ(pr, 0.45 + 0.5 * uVolSpread)));
-  float D = texture(uVolD, uvD).a;
-  return mix(acc, sampleCol(uvD), D);
+  return col;
 }
 
 void main() {
@@ -443,27 +434,14 @@ void main() {
   // Parallax: nahe Bereiche (hohe Tiefe) zoomen überproportional;
   // Kippen verschiebt sie zusätzlich seitlich. Tiefe ist erst nach dem
   // Sampeln bekannt -> Fixpunkt-Iteration.
-  vec2 q = uCenter + pr / (uCover * uZoom);
-  vec2 uv = imgUv(spinWarp(q));
-  float d = 0.45;
-  for (int i = 0; i < 3; i++) {
-    d = texture(uDepth, uv).r;
-    // "Objekt in echte Tiefe": das Bild verhält sich wie ein fernes, starres
-    // Objekt (einheitlich weit hinten) - alle Sterne ziehen davor vorbei
-    d = mix(d, 0.02, uObjFar);
-    float ex = 1.0 + uParallax * (d - 0.45) * uDepthRange;
-    float scale = uCover * pow(uZoom, ex);
-    q = uCenter + pr / scale + uTilt * (d - 0.45);
-    uv = imgUv(spinWarp(q));
-  }
+  // "Objekt in echte Tiefe" (uObjFar): das Bild verhaelt sich wie ein
+  // fernes, starres Objekt - alle Sterne ziehen davor vorbei
+  vec2 q;
+  vec2 uv = solveUv(pr, 0.0, 0.0, q);
 
   vec3 col;
   if (uVol > 0.5 && uObjFar < 0.5 && uMoonMode < 0.5) {
-    col = volumetric(pr);
-    // uv/q der mittleren Ebene fuer Masken, Mond und Tiefenschaerfe
-    q = layerQ(pr, 0.45);
-    uv = imgUv(spinWarp(q));
-    d = texture(uDepth, uv).r;
+    col = volumetric(pr, uv);
   } else {
     col = sampleCol(uv);
   }
@@ -1290,8 +1268,9 @@ const starBuf = gl.createBuffer();
 let texColor = null;
 let texDepth = null;
 let texSpinMask = null;
-let texVolL = [];                   // Volumetrischer Nebel: [Gewichte 0-3, Gewichte 4-5, Staub/entstaubt]
-let volBuiltN = 0;                  // Ebenenzahl, mit der die Texturen gebaut wurden
+let texVolL = [];                   // Volumetrischer Nebel: [entstaubt + Staubmaske, Grund-Leuchten]
+let volBuiltN = 0;                  // 1 = Volumetrik-Texturen vorhanden
+let volBuiltTex = null;             // Farbtextur, fuer die sie gebaut wurden (neues/gespiegeltes Bild -> neu)
 let texStarAtlas = null;
 let texStarLib = null;    // Sternbibliothek (prozedural, einmal pro Sitzung)
 let texStarsImg = null;   // Kino-Modus: Sternmaske als Bildtextur (bis 4096 px)
@@ -1541,9 +1520,11 @@ function computeLuminanceMap(radius, invert, maxEdge) {
   }
 
   const dst = new Uint8ClampedArray(w * h * 4);
+  const f = new Float32Array(w * h);
   for (let i = 0, j = 0; i < a.length; i++, j += 4) {
     let d = a[i];
     if (invert) d = 1 - d;
+    f[i] = d;
     const v = Math.round(d * 255);
     dst[j] = dst[j + 1] = dst[j + 2] = v;
     dst[j + 3] = 255;
@@ -1552,7 +1533,7 @@ function computeLuminanceMap(radius, invert, maxEdge) {
   const c = document.createElement("canvas");
   c.width = w; c.height = h;
   c.getContext("2d").putImageData(new ImageData(dst, w, h), 0, 0);
-  return { canvas: c, data: dst, w, h };
+  return { canvas: c, data: dst, w, h, f };
 }
 
 
@@ -1659,15 +1640,17 @@ function computeMoonSphereMap() {
   boxBlurH(a, b, w, h, rM);
   boxBlurV(b, a, w, h, rM);
   const dst = new Uint8ClampedArray(w * h * 4);
+  const f = new Float32Array(w * h);
   for (let i = 0, j = 0; i < a.length; i++, j += 4) {
-    const v = Math.round(Math.min(1, Math.max(0, a[i])) * 255);
+    f[i] = Math.min(1, Math.max(0, a[i]));
+    const v = Math.round(f[i] * 255);
     dst[j] = dst[j + 1] = dst[j + 2] = v;
     dst[j + 3] = 255;
   }
   const c = document.createElement("canvas");
   c.width = w; c.height = h;
   c.getContext("2d").putImageData(new ImageData(dst, w, h), 0, 0);
-  return { canvas: c, data: dst, w, h };
+  return { canvas: c, data: dst, w, h, f };
 }
 
 
@@ -1692,17 +1675,19 @@ function computeCustomDepthMap(radius, invert, maxEdge) {
     boxBlurV(b, a, w, h, r);
   }
   const dst = new Uint8ClampedArray(w * h * 4);
+  const f = new Float32Array(w * h);
   for (let i = 0, j = 0; i < a.length; i++, j += 4) {
     let d = a[i];
     if (invert) d = 1 - d;
-    const v = Math.round(Math.min(1, Math.max(0, d)) * 255);
+    f[i] = Math.min(1, Math.max(0, d));
+    const v = Math.round(f[i] * 255);
     dst[j] = dst[j + 1] = dst[j + 2] = v;
     dst[j + 3] = 255;
   }
   const c = document.createElement("canvas");
   c.width = w; c.height = h;
   c.getContext("2d").putImageData(new ImageData(dst, w, h), 0, 0);
-  return { canvas: c, data: dst, w, h };
+  return { canvas: c, data: dst, w, h, f };
 }
 
 // Rohdaten-Textur (RGBA8, bilinear, gespiegelt wie die Bildtexturen). Kein
@@ -1789,94 +1774,177 @@ function pushPullFill(rgb, valid, w, h) {
   return out;
 }
 
+// Laufendes Minimum/Maximum ueber ein Fenster 2r+1 (van Herk / Gil-Werman):
+// O(n) unabhaengig vom Radius. src/dst mit Schrittweite (Zeilen oder Spalten)
+function runMinMax(src, dst, n, off, step, r, isMax) {
+  const k = 2 * r + 1, m = n + 2 * r;
+  const pad = new Float32Array(m), g = new Float32Array(m), hh = new Float32Array(m);
+  for (let i = 0; i < m; i++) {
+    const j = Math.min(n - 1, Math.max(0, i - r));
+    pad[i] = src[off + j * step];
+  }
+  for (let i = 0; i < m; i++) {
+    g[i] = (i % k === 0) ? pad[i] : (isMax ? Math.max(g[i - 1], pad[i]) : Math.min(g[i - 1], pad[i]));
+  }
+  for (let i = m - 1; i >= 0; i--) {
+    hh[i] = (i === m - 1 || (i + 1) % k === 0) ? pad[i] : (isMax ? Math.max(hh[i + 1], pad[i]) : Math.min(hh[i + 1], pad[i]));
+  }
+  for (let x = 0; x < n; x++) {
+    const a = hh[x], b = g[x + 2 * r];
+    dst[off + x * step] = isMax ? Math.max(a, b) : Math.min(a, b);
+  }
+}
+// Morphologische Oeffnung (erst Min, dann Max, separabel) eines Kanals:
+// entfernt helle Strukturen schmaler als 2r+1, laesst breites Leuchten stehen
+function openChannel(a, w, h, r) {
+  const t = new Float32Array(w * h), u = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) runMinMax(a, t, w, y * w, 1, r, false);
+  for (let x = 0; x < w; x++) runMinMax(t, u, h, x, w, r, false);
+  for (let y = 0; y < h; y++) runMinMax(u, t, w, y * w, 1, r, true);
+  for (let x = 0; x < w; x++) runMinMax(t, u, h, x, w, r, true);
+  return u;
+}
+
 /**
- * Volumetrischer Nebel (Hybrid): Zerlegung des Starless in weiche
- * Leuchtebenen plus ausgeschnittene Staubebene. Der Schluessel je Pixel
- * mischt die geglaettete Helligkeit (Radius ~2 % - kleine Strukturen
- * landen komplett in EINER Ebene, sonst erscheinen sie doppelt) mit der
- * groben Tiefenkarte; Hut-Funktionen verteilen weich auf Nachbarebenen
- * (Summe 1). Staub = lokale Senken innerhalb des Nebels auf drei Skalen;
- * das Leuchten wird an den Staubstellen per Push-Pull aufgefuellt. Nur
- * Gewichte/Maske und das aufgefuellte Leuchten liegen in 1024 px, die
- * uebrigen Farben bleiben in voller Aufloesung
+ * Volumetrischer Nebel v2: aus dem Starless zwei Texturen (unabhaengig von
+ * der Tiefenkarte, daher nur beim Bildwechsel / Staub-Regler neu):
+ *  - uVolD (1024 px): entstaubtes Leuchten (Staubstellen per Push-Pull aus
+ *    der Umgebung aufgefuellt) + Staubmaske im Alpha
+ *  - uVolB (256 px, Float): Grund-Leuchten - morphologische Oeffnung des
+ *    entstaubten Leuchtens (entfernt alle Strukturen unter ~5 % der
+ *    Bildbreite) plus weiche Glaettung. Die Strukturen ergeben sich im
+ *    Shader als Differenz, das Ruhebild bleibt dadurch exakt
  */
 function buildVolLayers() {
   if (!state.starless || !state.vol) return;
-  const N = Math.max(1, Math.min(6, Math.round(state.volLayers)));
   const src = downscale(state.starless, 1024);
   const w = src.width, h = src.height, n = w * h;
   const px = src.getContext("2d").getImageData(0, 0, w, h).data;
   const rgb = new Float32Array(n * 3);
   const L = new Float32Array(n);
-  const hist = new Uint32Array(256);
   for (let i = 0, j = 0; i < n; i++, j += 4) {
     rgb[i * 3] = px[j] / 255; rgb[i * 3 + 1] = px[j + 1] / 255; rgb[i * 3 + 2] = px[j + 2] / 255;
     L[i] = (0.299 * px[j] + 0.587 * px[j + 1] + 0.114 * px[j + 2]) / 255;
-    hist[Math.round(L[i] * 255)]++;
   }
-  let lo = 0, hi = 255, acc = 0;
-  for (let k = 0; k < 256; k++) { acc += hist[k]; if (acc >= n * 0.01) { lo = k / 255; break; } }
-  acc = 0;
-  for (let k = 255; k >= 0; k--) { acc += hist[k]; if (acc >= n * 0.005) { hi = k / 255; break; } }
-  const span = Math.max(0.02, hi - lo);
   const tmp = new Float32Array(n);
   const blurTo = (s0, f, minR) => {
     const b = new Float32Array(n), r = Math.max(minR, Math.round(w * f));
     boxBlurH(s0, tmp, w, h, r); boxBlurV(tmp, b, w, h, r); return b;
   };
-  const Ls = blurTo(L, 0.02, 3);
-  // Umgebungshelligkeit auf drei Skalen (schmale bis mittlere Baender);
-  // sehr grosse Skalen wuerden die ganze dunkle Umgebung eines hellen
-  // Kerns zu "Staub" erklaeren
-  const bgs = [0.02, 0.05, 0.10].map((f) => blurTo(L, f, 3));
-  const dd = state.depthData;
-  const dustAmt = state.volDust / 100;
+  // Staub: deutliche lokale Senke auf einer von drei Skalen, nur wo die
+  // mittlere Umgebung selbst hell genug ist (Band IM Nebel, kein Himmel).
+  // Gemessen auf einer geoeffneten Helligkeit ohne Sterne und Sternreste:
+  // sonst hellt ein Stern seine Umgebung auf, und der dunkle Himmel direkt
+  // daneben galt als "Staub" (dunkle Flecken mit Farbsaum neben Sternen)
+  const Lo = openChannel(L, w, h, Math.max(2, Math.round(w * 0.004)));
+  const bgs = [0.02, 0.05, 0.10].map((f) => blurTo(Lo, f, 3));
   const sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
-  const W = [];
-  for (let k = 0; k < N; k++) W.push(new Float32Array(n));
   const dust = new Float32Array(n);
-  for (let y = 0, i = 0; y < h; y++) {
-    const dy = dd ? Math.min(dd.h - 1, Math.floor(y * dd.h / h)) * dd.w : 0;
-    for (let x = 0; x < w; x++, i++) {
-      const lf = Math.pow(Math.min(1, Math.max(0, (Ls[i] - lo) / span)), 0.7);
-      const dc = dd ? dd.data[(dy + Math.min(dd.w - 1, Math.floor(x * dd.w / w))) * 4] / 255 : lf;
-      // Staub: deutliche lokale Senke (auf einer der Skalen), nur wo die
-      // mittlere Umgebung selbst hell genug ist (Band IM Nebel, kein Himmel)
-      let du = 0;
-      for (const bg of bgs) du = Math.max(du, sm(0.22, 0.65, (bg[i] - L[i]) / (bg[i] + 0.02)));
-      dust[i] = du * sm(0.07, 0.18, bgs[1][i]) * dustAmt;
-      let key = 0.5 * lf + 0.5 * dc;
-      key = Math.min(1 - 0.5 / N, Math.max(0.5 / N, key)) * N - 0.5;
-      const k0 = Math.floor(key), f = key - k0;
-      W[k0][i] += 1 - f;
-      if (k0 + 1 < N) W[k0 + 1][i] += f;
+  for (let i = 0; i < n; i++) {
+    let du = 0;
+    for (const bg of bgs) du = Math.max(du, sm(0.22, 0.65, (bg[i] - Lo[i]) / (bg[i] + 0.02)));
+    dust[i] = du * sm(0.07, 0.18, bgs[1][i]);
+  }
+  // Maske um den weichen Rand der Staubstellen erweitern (Max-Filter), sonst
+  // bleiben halbdunkle Randpixel im "entstaubten" Leuchten und zeichnen beim
+  // Verschieben eine doppelte Kante nach
+  {
+    const r = Math.max(1, Math.round(w * 0.006));
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let v = 0;
+      for (let k = -r; k <= r; k++) { const xx = x + k; if (xx >= 0 && xx < w && dust[y * w + xx] > v) v = dust[y * w + xx]; }
+      tmp[y * w + x] = v;
+    }
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let v = 0;
+      for (let k = -r; k <= r; k++) { const yy = y + k; if (yy >= 0 && yy < h && tmp[yy * w + x] > v) v = tmp[yy * w + x]; }
+      dust[y * w + x] = v;
+    }
+    const rb = Math.max(1, Math.round(w * 0.004));
+    boxBlurH(dust, tmp, w, h, rb); boxBlurV(tmp, dust, w, h, rb);
+  }
+  // Aufgefuellt wird nur aus sauberer Umgebung: schon ein Hauch Staub gilt
+  // als fehlend. Zwei Durchgaenge: Die Erweiterung darf nur erfassen, was
+  // DUNKLER als das aufgefuellte Leuchten ist - helle Filamente am Rand einer
+  // Staubstelle gehoeren zum Leuchten (sonst wanderten ihre Stuecke mit der
+  // Staubschicht), halbdunkle Randpixel zum Staub (sonst bliebe beim
+  // Verschieben eine dunkle Haarlinie stehen)
+  const valid = new Float32Array(n);
+  for (let i = 0; i < n; i++) valid[i] = 1 - sm(0.02, 0.25, dust[i]);
+  // Aufgefuellt wird aus einer geoeffneten Fassung (feine helle Strukturen
+  // unter ~1,6 % der Breite entfernt): ein Filament direkt neben dem Staub
+  // bluete sonst als heller Saum in die Fuellung und erschiene beim
+  // Verschieben als Geisterstreifen. Das Filament selbst bleibt erhalten -
+  // der Shader nimmt je Kanal das Hellere aus Original und Fuellung
+  const rgbO = new Float32Array(n * 3);
+  {
+    const ro = Math.max(2, Math.round(w * 0.008)), chn = new Float32Array(n);
+    for (let c = 0; c < 3; c++) {
+      for (let i = 0; i < n; i++) chn[i] = rgb[i * 3 + c];
+      const o = openChannel(chn, w, h, ro);
+      for (let i = 0; i < n; i++) rgbO[i * 3 + c] = o[i];
     }
   }
-  const blur = (a, r) => { boxBlurH(a, tmp, w, h, r); boxBlurV(tmp, a, w, h, r); };
-  for (const a of W) blur(a, Math.max(2, Math.round(w / 120)));
-  blur(dust, Math.max(1, Math.round(w * 0.004)));
-  // Leuchten hinter dem Staub: Staubpixel aus der Umgebung auffuellen
-  const valid = new Float32Array(n);
-  for (let i = 0; i < n; i++) valid[i] = Math.min(1, Math.max(0, 1 - dust[i] * 2));
-  const inp = pushPullFill(rgb, valid, w, h);
-  const d0 = new Uint8ClampedArray(n * 4), d1 = new Uint8ClampedArray(n * 4), d2 = new Uint8ClampedArray(n * 4);
+  const inp0 = pushPullFill(rgbO, valid, w, h);
+  for (let i = 0; i < n; i++) {
+    const li = 0.299 * inp0[i * 3] + 0.587 * inp0[i * 3 + 1] + 0.114 * inp0[i * 3 + 2];
+    dust[i] *= 1 - sm(-0.03, 0.06, (L[i] - li) / (li + 0.02));
+    valid[i] = 1 - sm(0.02, 0.25, dust[i]);
+  }
+  const inp = pushPullFill(rgbO, valid, w, h);
+  const d2 = new Uint8ClampedArray(n * 4);
   for (let i = 0, j = 0; i < n; i++, j += 4) {
-    d0[j] = Math.round(W[0][i] * 255);
-    d0[j + 1] = N > 1 ? Math.round(W[1][i] * 255) : 0;
-    d0[j + 2] = N > 2 ? Math.round(W[2][i] * 255) : 0;
-    d0[j + 3] = N > 3 ? Math.round(W[3][i] * 255) : 0;
-    d1[j] = N > 4 ? Math.round(W[4][i] * 255) : 0;
-    d1[j + 1] = N > 5 ? Math.round(W[5][i] * 255) : 0;
-    d1[j + 2] = 0;
-    d1[j + 3] = 255;
     d2[j] = Math.round(inp[i * 3] * 255);
     d2[j + 1] = Math.round(inp[i * 3 + 1] * 255);
     d2[j + 2] = Math.round(inp[i * 3 + 2] * 255);
     d2[j + 3] = Math.round(dust[i] * 255);
   }
+  // Grund-Leuchten in 256 px: Block-Mittel -> Oeffnung (Min, dann Max) ->
+  // dreifache Box-Glaettung, je Farbkanal
+  const f = Math.max(1, Math.round(w / 256));
+  const bw = Math.ceil(w / f), bh = Math.ceil(h / f), bn = bw * bh;
+  const base = new Float32Array(bn * 4);
+  const ch = new Float32Array(bn), ch2 = new Float32Array(bn), t2 = new Float32Array(bn);
+  const re = Math.max(2, Math.round(bw * 0.025));
+  const morph = (a, out, isMin) => {
+    // separabel: erst Zeilen, dann Spalten
+    for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
+      let v = isMin ? Infinity : -Infinity;
+      for (let k = -re; k <= re; k++) {
+        const xx = x + k < 0 ? 0 : (x + k >= bw ? bw - 1 : x + k);
+        const q = a[y * bw + xx];
+        v = isMin ? (q < v ? q : v) : (q > v ? q : v);
+      }
+      t2[y * bw + x] = v;
+    }
+    for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
+      let v = isMin ? Infinity : -Infinity;
+      for (let k = -re; k <= re; k++) {
+        const yy = y + k < 0 ? 0 : (y + k >= bh ? bh - 1 : y + k);
+        const q = t2[yy * bw + x];
+        v = isMin ? (q < v ? q : v) : (q > v ? q : v);
+      }
+      out[y * bw + x] = v;
+    }
+  };
+  for (let c = 0; c < 3; c++) {
+    ch.fill(0);
+    const cnt = new Float32Array(bn);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const b = Math.floor(y / f) * bw + Math.floor(x / f);
+      ch[b] += inp[(y * w + x) * 3 + c]; cnt[b]++;
+    }
+    for (let b = 0; b < bn; b++) ch[b] /= Math.max(1, cnt[b]);
+    morph(ch, ch2, true);
+    morph(ch2, ch, false);
+    for (let pass = 0; pass < 3; pass++) { boxBlurH(ch, ch2, bw, bh, re); boxBlurV(ch2, ch, bw, bh, re); }
+    for (let b = 0; b < bn; b++) base[b * 4 + c] = ch[b];
+  }
+  for (let b = 0; b < bn; b++) base[b * 4 + 3] = 1;
   for (const t of texVolL) gl.deleteTexture(t);
-  texVolL = [makeTextureRaw(w, h, d0), makeTextureRaw(w, h, d1), makeTextureRaw(w, h, d2)];
-  volBuiltN = N;
+  texVolL = [makeTextureRaw(w, h, d2), makeTextureFloat(bw, bh, base)];
+  volBuiltN = 1;
+  volBuiltTex = texColor;
 }
 
 function buildDepthMap() {
@@ -1886,16 +1954,215 @@ function buildDepthMap() {
     : state.customDepth
       ? computeCustomDepthMap(state.smooth, state.invertDepth)
       : computeLuminanceMap(state.smooth, state.invertDepth);
-  state.depthCanvas = m.canvas;
-  state.depthData = { data: m.data, w: m.w, h: m.h }; // CPU-Kopie für die Klick-Zuordnung
+  // Rohkarte (vor der Steilheitsgrenze) merken: Flugaenderungen rechnen nur
+  // die Huelle neu, nicht die ganze Karte
+  state.depthRaw = { f: m.f, w: m.w, h: m.h };
+  finalizeDepthMap();
+}
 
+/**
+ * Tiefen-Engine v2 - warum es keine Doppelbilder und Loecher mehr gibt:
+ * Der Shader sucht fuer jeden Bildschirmpunkt den Bildpunkt, dessen Tiefe
+ * zu seiner Verschiebung passt (Fixpunkt-Iteration q = f(d(q))). Eindeutig
+ * und stabil ist diese Loesung genau dann, wenn die Abbildung kontrahiert:
+ * k = |dq/dd| * |grad d| < 1. |dq/dd| waechst mit Parallaxe, Raeumlichkeit,
+ * Zoom-Fortschritt, Kippen und Abstand zur Bildmitte; |grad d| ist die
+ * Steilheit der Tiefenkarte. Bei k >= 1 gibt es mehrere Loesungen - der
+ * Nebel erscheint doppelt oder reisst auf (dunkle Taschen wachsen zu
+ * "schwarzen Loechern"). Wir bestimmen deshalb den groessten Wert von
+ * |dq/dd| ueber den GANZEN Flug und begrenzen die Steilheit der Karte so,
+ * dass k ueberall <= DEPTH_KMAX bleibt. Die Begrenzung ist die untere
+ * Lipschitz-Huelle: dunkle Taschen neben hellen Strukturen werden
+ * angehoben (sie fliegen mit ihrer Umgebung mit, statt aufzureissen), helle
+ * Strukturen bleiben unveraendert. Sanfte Verlaeufe bleiben exakt erhalten
+ */
+const DEPTH_KMAX = 0.65;
+// Sicherheitsfaktor: Schachbrett-Metrik (8er-Nachbarschaft, <= 8 %) und
+// bilineare Interpolation zwischen den Karten-Pixeln
+const DEPTH_SAFETY = 1.15;
+
+// Groesstes |dq/dd| (Bildebenen-Einheiten je Tiefeneinheit) ueber den Flug,
+// getrennt je Tiefe: nahe Bereiche zoomen staerker und verschieben sich
+// dadurch pro Tiefenschritt WENIGER (pr/scale ist kleiner) - sie vertragen
+// eine steilere Karte als ferne. Rueckgabe: Tabelle ueber d = 0..1
+const DEPTH_GAIN_N = 32;
+function depthFlightGain() {
+  const G = new Float32Array(DEPTH_GAIN_N + 1);
+  if (!state.starless) return G;
+  const A = state.aspect, imgAspect = state.starless.width / state.starless.height;
+  const cover = coverBase(A, imgAspect);
+  const PR = (state.parallax / 100) * 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
+  if (PR <= 0) return G;
+  const rmax = 0.5 * Math.hypot(A, 1); // Bildecke in Ebenen-Einheiten
+  const se = state.scenEdit;
+  state.scenEdit = false;
+  try {
+    const N = 48;
+    for (let s = 0; s <= N; s++) {
+      const cam = camAt((s / N) * state.duration);
+      const lz = Math.log(Math.max(1e-4, cam.zoom));
+      const tx = (state.tiltX / 100) * 0.08 + cam.tiltAddX + cam.driftTX * PR;
+      const ty = (state.tiltY / 100) * 0.08 + cam.tiltAddY + cam.driftTY * PR;
+      const tm = Math.hypot(tx, ty);
+      for (let k = 0; k <= DEPTH_GAIN_N; k++) {
+        const ex = 1 + PR * (k / DEPTH_GAIN_N - 0.45);
+        const g = rmax / (cover * Math.exp(lz * ex)) * Math.abs(lz) * PR + tm;
+        if (g > G[k]) G[k] = g;
+      }
+    }
+  } finally {
+    state.scenEdit = se;
+  }
+  return G;
+}
+
+// Alles, was |dq/dd| ueber den Flug veraendert (Signatur fuer den Neubau)
+function depthFlightSig() {
+  const s = state;
+  return [s.parallax, s.depthBoost, s.speed, s.duration, s.zoomBase, s.flightMode,
+    s.driftDir, s.loopMode, s.ease, s.easeMode, s.tiltX, s.tiltY, s.swayAmp,
+    s.swayTempo, s.swayDir, s.swayRandom, s.tiltRampAmp, s.tiltRampDir, s.aspect,
+    s.frameX, s.frameY, s.target.x, s.target.y, s.rotationSpeed, s.strictEdges,
+    s.scenarioOn, JSON.stringify(s.waypoints),
+    s.starless ? s.starless.width + "x" + s.starless.height : ""].join("|");
+}
+
+// Untere Lipschitz-Huelle (kleinste Funktion >= a mit Anstieg <= s je Pixel,
+// Schachbrett-Metrik): zwei Raster-Durchlaeufe wie bei einer Distanz-
+// transformation, O(n)
+function lowerEnvelope(src, w, h, s) {
+  const a = Float32Array.from(src);
+  if (!(s < 1)) return a;
+  const sd = s * Math.SQRT2;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      let v = a[i];
+      if (x > 0 && a[i - 1] - s > v) v = a[i - 1] - s;
+      if (y > 0) {
+        const u = i - w;
+        if (a[u] - s > v) v = a[u] - s;
+        if (x > 0 && a[u - 1] - sd > v) v = a[u - 1] - sd;
+        if (x < w - 1 && a[u + 1] - sd > v) v = a[u + 1] - sd;
+      }
+      a[i] = v;
+    }
+  }
+  for (let y = h - 1; y >= 0; y--) {
+    for (let x = w - 1; x >= 0; x--) {
+      const i = y * w + x;
+      let v = a[i];
+      if (x < w - 1 && a[i + 1] - s > v) v = a[i + 1] - s;
+      if (y < h - 1) {
+        const u = i + w;
+        if (a[u] - s > v) v = a[u] - s;
+        if (x < w - 1 && a[u + 1] - sd > v) v = a[u + 1] - sd;
+        if (x > 0 && a[u - 1] - sd > v) v = a[u - 1] - sd;
+      }
+      a[i] = v;
+    }
+  }
+  return a;
+}
+
+// Float-Textur (RGBA16F, bilinear, gespiegelt): die Tiefe braucht mehr als
+// 8 Bit - Stufen von 1/255 waeren bei flachen Verlaeufen als feine Kanten
+// in der Verschiebung sichtbar
+function makeTextureFloat(w, h, rgba) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.FLOAT, rgba);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.MIRRORED_REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.MIRRORED_REPEAT);
+  return t;
+}
+
+/**
+ * Aus der Rohkarte die Render-Tiefe bauen: Steilheitsgrenze fuer den
+ * aktuellen Flug (R), dazu die geglaettete Tiefe des Grund-Leuchtens fuer
+ * den volumetrischen Nebel (G). Laeuft beim Laden und - entprellt - wenn
+ * sich Flug- oder Parallaxe-Einstellungen aendern
+ */
+function finalizeDepthMap() {
+  const raw = state.depthRaw;
+  if (!raw) return;
+  const { w, h } = raw;
+  const n = w * h;
+  const G = depthFlightGain();
+  const NG = DEPTH_GAIN_N;
+  let gMax = 0;
+  for (let k = 0; k <= NG; k++) gMax = Math.max(gMax, G[k]);
+  let env;
+  if (gMax > 1e-5) {
+    // Tiefenabhaengige Steilheitsgrenze |grad d| <= L(d) = KMAX / (G(d) *
+    // SAFETY) ueber die Umparametrisierung phi(d) = Integral G * SAFETY /
+    // KMAX: dort lautet die Grenze einfach |grad phi| <= 1 (je Bildhoehe).
+    // Huelle in phi bilden, dann zurueck - monotone Abbildung, also bleibt
+    // es die kleinste zulaessige Anhebung
+    const phi = new Float32Array(NG + 1);
+    for (let k = 1; k <= NG; k++) phi[k] = phi[k - 1] + (G[k - 1] + G[k]) * 0.5 / NG * DEPTH_SAFETY / DEPTH_KMAX;
+    const toPhi = (d) => {
+      const x = Math.min(1, Math.max(0, d)) * NG, k = Math.min(NG - 1, Math.floor(x));
+      return phi[k] + (phi[k + 1] - phi[k]) * (x - k);
+    };
+    const p = new Float32Array(n);
+    for (let i = 0; i < n; i++) p[i] = toPhi(raw.f[i]);
+    const pe = lowerEnvelope(p, w, h, 1 / h);
+    env = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const v = pe[i];
+      let lo = 0, hi = NG;
+      while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (phi[mid] <= v) lo = mid; else hi = mid; }
+      const span = phi[hi] - phi[lo];
+      env[i] = (lo + (span > 0 ? Math.min(1, Math.max(0, (v - phi[lo]) / span)) : 0)) / NG;
+    }
+  } else {
+    env = Float32Array.from(raw.f);
+  }
+  // Grund-Leuchten: dieselbe Tiefe grossraeumig geglaettet (Glaetten erhaelt
+  // die Steilheitsgrenze)
+  const back = Float32Array.from(env), tmp = new Float32Array(n);
+  const rb = Math.max(2, Math.round(h * 0.025));
+  for (let pass = 0; pass < 3; pass++) {
+    boxBlurH(back, tmp, w, h, rb);
+    boxBlurV(tmp, back, w, h, rb);
+  }
+  const rgbaF = new Float32Array(n * 4);
+  const gray = new Uint8ClampedArray(n * 4);
+  for (let i = 0, j = 0; i < n; i++, j += 4) {
+    rgbaF[j] = env[i]; rgbaF[j + 1] = back[i]; rgbaF[j + 2] = env[i]; rgbaF[j + 3] = 1;
+    const v = Math.round(Math.min(1, Math.max(0, env[i])) * 255);
+    gray[j] = gray[j + 1] = gray[j + 2] = v; gray[j + 3] = 255;
+  }
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  c.getContext("2d").putImageData(new ImageData(gray, w, h), 0, 0);
+  state.depthCanvas = c;
+  // CPU-Kopie fuer Klick-Zuordnung und Beschriftungen (gleiche Tiefe wie der
+  // Shader: f in voller Genauigkeit)
+  state.depthData = { data: gray, f: env, w, h };
+  state.depthLimit = { gFar: +G[0].toFixed(4), gNear: +G[NG].toFixed(4), gMax: +gMax.toFixed(4) };
+  state.depthSig = depthFlightSig();
   if (texDepth) gl.deleteTexture(texDepth);
-  texDepth = makeTexture(m.canvas);
-
+  texDepth = makeTextureFloat(w, h, rgbaF);
   const pv = $("depthPreview");
-  pv.height = Math.round(160 * m.h / m.w) || 107;
-  pv.getContext("2d").drawImage(m.canvas, 0, 0, pv.width, pv.height);
-  if (state.vol) buildVolLayers();
+  pv.height = Math.round(160 * h / w) || 107;
+  pv.getContext("2d").drawImage(c, 0, 0, pv.width, pv.height);
+}
+
+// Flug-Einstellungen geaendert -> Huelle entprellt neu rechnen (beim Export
+// sofort, damit jedes Bild mit der passenden Karte entsteht)
+let depthSigTimer = 0;
+function checkDepthFlightSig() {
+  if (!state.depthRaw) return;
+  const sig = depthFlightSig();
+  if (sig === state.depthSig) return;
+  if (state.exporting) { clearTimeout(depthSigTimer); finalizeDepthMap(); return; }
+  if (depthSigTimer) return;
+  depthSigTimer = setTimeout(() => { depthSigTimer = 0; finalizeDepthMap(); }, 180);
 }
 
 /**
@@ -3845,6 +4112,10 @@ function render(forcedT) {
   if (!texColor || !texDepth) return;
 
   ensureFbos();
+  checkDepthFlightSig();
+  // Volumetrik haengt nur am Bild: bei neuem oder gespiegeltem Bild (neue
+  // Farbtextur) einmal neu aufbauen - nicht bei jeder Tiefenaenderung
+  if (state.vol && state.starless && volBuiltTex !== texColor) buildVolLayers();
 
   const t = forcedT !== undefined ? forcedT : currentTime();
   const { loopT, cam, fade } = animParams(t);
@@ -3929,19 +4200,18 @@ function render(forcedT) {
   u1f(bgProg, "uBandFeather", state.bandFeather / 100);
   u1f(bgProg, "uBandOn",
     bandSat.some((v) => v !== 1) || bandHue.some((v) => v !== 0) || bandShow ? 1 : 0);
-  // Volumetrischer Nebel: Gewichte + entstaubtes Leuchten (Einheiten 3..5)
-  const volOn = state.vol && texVolL.length === 3 && volBuiltN > 0;
-  for (let k = 0; k < 3; k++) {
+  // Volumetrischer Nebel v2: entstaubtes Leuchten + Grund-Leuchten (3, 4)
+  const volOn = state.vol && texVolL.length === 2 && volBuiltN > 0;
+  for (let k = 0; k < 2; k++) {
     gl.activeTexture(gl.TEXTURE3 + k);
     gl.bindTexture(gl.TEXTURE_2D, texVolL[k] || texBlack);
   }
   gl.activeTexture(gl.TEXTURE0);
-  u1i(bgProg, "uVolW0", 3);
-  u1i(bgProg, "uVolW1", 4);
-  u1i(bgProg, "uVolD", 5);
-  u1f(bgProg, "uVol", volOn ? volBuiltN : 0);
-  u1f(bgProg, "uVolSpread", state.volSpread / 100);
-  u1f(bgProg, "uVolFine", (state.volFine / 100) * 0.5);
+  u1i(bgProg, "uVolD", 3);
+  u1i(bgProg, "uVolB", 4);
+  u1f(bgProg, "uVol", volOn ? 1 : 0);
+  u1f(bgProg, "uVolSep", 0.3 * state.volSpread / 100);
+  u1f(bgProg, "uVolDustZ", 0.08 * state.volDust / 100);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
   // Bewegungsgrößen numerisch aus der Kamerakurve ableiten (für die
@@ -5639,7 +5909,8 @@ async function runAiDepth() {
     state.aiDepth = { data: raw, w, h };
     $("ctlDepthAiMix").disabled = false;
     applyAiDepth();
-    aiDepthStatus(t("depthAiDone", ((performance.now() - t0) / 1000).toFixed(1), aiDepthDevice));
+    aiDepthStatus(t("depthAiDone", ((performance.now() - t0) / 1000).toFixed(1), aiDepthDevice) +
+      (state.aiDepthFlipped ? " " + t("depthAiFlipped") : ""));
   } catch (err) {
     console.error(err);
     if (gen === aiDepthGen) aiDepthStatus(t("depthAiFailed", err.message || String(err)));
@@ -5652,20 +5923,52 @@ function applyAiDepth() {
   const ai = state.aiDepth;
   if (!ai || !state.starless) return;
   const mixAmt = state.depthAiMix / 100;
-  const w = ai.w, h = ai.h;
-  const lum = mixAmt < 1 ? computeLuminanceMap(2, false, Math.max(w, h)) : null;
-  const same = lum && lum.w === w && lum.h === h;
+  const w = ai.w, h = ai.h, n = w * h;
+  // Tunnel-Trend entfernen: Modelle fuer Alltagsszenen legen in jedes Bild
+  // einen grossraeumigen Verlauf (Boden vorn, Bildmitte weit weg). Bei
+  // Nebeln ist der falsch und erzeugt den "Tunnel" - wir ziehen den
+  // grossraeumigen Anteil (Glaettung ~12 % der Kante) zu 75 % ab und
+  // behalten die mittleren Strukturen des Modells; danach auf 1..99 %
+  // Perzentil normiert
+  const aiD = new Float32Array(n);
+  {
+    const trend = Float32Array.from(ai.data), tmp = new Float32Array(n);
+    const r = Math.max(2, Math.round(Math.max(w, h) * 0.12));
+    for (let pass = 0; pass < 3; pass++) { boxBlurH(trend, tmp, w, h, r); boxBlurV(tmp, trend, w, h, r); }
+    let mean = 0;
+    for (let i = 0; i < n; i++) mean += trend[i];
+    mean /= n;
+    for (let i = 0; i < n; i++) aiD[i] = ai.data[i] - 0.75 * (trend[i] - mean);
+    const srt = Float32Array.from(aiD).sort();
+    const lo = srt[Math.floor(n * 0.01)], hi = srt[Math.floor(n * 0.99)], span = Math.max(1e-4, hi - lo);
+    for (let i = 0; i < n; i++) aiD[i] = Math.min(1, Math.max(0, (aiD[i] - lo) / span));
+  }
+  const lum = computeLuminanceMap(2, false, Math.max(w, h));
+  const same = lum.w === w && lum.h === h;
+  const lumAt = (i) => {
+    if (same) return lum.f[i];
+    const x = Math.min(lum.w - 1, Math.round((i % w) * lum.w / w));
+    const y = Math.min(lum.h - 1, Math.round(Math.floor(i / w) * lum.h / h));
+    return lum.f[y * lum.w + x];
+  };
+  // Richtung pruefen: Fuer Nebel haelt das Modell den hellen Kern meist fuer
+  // ein fernes Licht am Ende eines Tunnels (Karte gegenlaeufig zur
+  // Helligkeit). Ist die Korrelation negativ, drehen wir die KI-Karte um -
+  // AstroFly-Konvention bleibt: hell = nah
+  {
+    let sa = 0, sl = 0, saa = 0, sll = 0, sal = 0;
+    for (let i = 0; i < n; i++) { const a = aiD[i], l = lumAt(i); sa += a; sl += l; saa += a * a; sll += l * l; sal += a * l; }
+    const cov = sal / n - (sa / n) * (sl / n);
+    const va = saa / n - (sa / n) ** 2, vl = sll / n - (sl / n) ** 2;
+    const corr = cov / Math.sqrt(Math.max(1e-9, va * vl));
+    state.aiDepthFlipped = corr < 0;
+    if (state.aiDepthFlipped) for (let i = 0; i < n; i++) aiD[i] = 1 - aiD[i];
+  }
   const dst = new Uint8ClampedArray(w * h * 4);
   for (let i = 0, j = 0; i < w * h; i++, j += 4) {
-    let v = ai.data[i];
-    if (lum) {
-      let l;
-      if (same) l = lum.data[j] / 255;
-      else {
-        const x = Math.min(lum.w - 1, Math.round((i % w) * lum.w / w));
-        const y = Math.min(lum.h - 1, Math.round(Math.floor(i / w) * lum.h / h));
-        l = lum.data[(y * lum.w + x) * 4] / 255;
-      }
+    let v = aiD[i];
+    if (mixAmt < 1) {
+      const l = lumAt(i);
       v = l + (v - l) * mixAmt;
     }
     const g = Math.round(v * 255);
@@ -5689,24 +5992,13 @@ function applyAiDepth() {
 $("btnDepthAi").addEventListener("click", runAiDepth);
 
 // Volumetrischer Nebel
-bindSlider("ctlVolLayers", "outVolLayers", "volLayers", asInt);
 bindSlider("ctlVolSpread", "outVolSpread", "volSpread", asInt);
-bindSlider("ctlVolFine", "outVolFine", "volFine", asInt);
 bindSlider("ctlVolDust", "outVolDust", "volDust", asInt);
 $("ctlVol").addEventListener("change", () => {
   state.vol = $("ctlVol").checked;
   if (state.vol) buildVolLayers();
   refreshStatusChips();
 });
-{
-  let timer = 0;
-  for (const id of ["ctlVolLayers", "ctlVolDust"]) {
-    $(id).addEventListener("input", () => {
-      clearTimeout(timer);
-      timer = setTimeout(buildVolLayers, 150);
-    });
-  }
-}
 {
   let timer = 0;
   $("ctlDepthAiMix").addEventListener("input", () => {
@@ -6486,7 +6778,7 @@ async function loadFile(which, file) {
 // Bilddaten, Gaia-Abgleich und Plate-Solve werden nie mitgespeichert.
 const USER_PRESET_GROUPS = {
   camera: ["ctlFlightMode", "ctlDriftDir", "ctlZoom", "ctlSpeed", "ctlEase",
-    "ctlEaseMode", "ctlParallax", "ctlDepthBoost", "ctlVol", "ctlVolLayers", "ctlVolSpread", "ctlVolFine",
+    "ctlEaseMode", "ctlParallax", "ctlDepthBoost", "ctlVol", "ctlVolSpread",
     "ctlVolDust", "ctlRotation", "ctlOrient",
     "ctlFrameX", "ctlFrameY", "ctlTiltX", "ctlTiltY", "ctlSwayAmp",
     "ctlSwayTempo", "ctlSwayDir", "ctlSwayRandom", "ctlTiltRamp",
@@ -8164,7 +8456,7 @@ function depthAtPlane(qx, qy, imgAspect) {
   const x0 = Math.floor(fx), y0 = Math.floor(fy);
   const x1 = Math.min(dd.w - 1, x0 + 1), y1 = Math.min(dd.h - 1, y0 + 1);
   const ax = fx - x0, ay = fy - y0;
-  const at = (x, y) => dd.data[(y * dd.w + x) * 4] / 255;
+  const at = dd.f ? (x, y) => dd.f[y * dd.w + x] : (x, y) => dd.data[(y * dd.w + x) * 4] / 255;
   return (at(x0, y0) * (1 - ax) + at(x1, y0) * ax) * (1 - ay) +
          (at(x0, y1) * (1 - ax) + at(x1, y1) * ax) * ay;
 }
