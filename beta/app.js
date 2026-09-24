@@ -2265,6 +2265,33 @@ function finalizeDepthMap() {
   pv.getContext("2d").drawImage(c, 0, 0, pv.width, pv.height);
 }
 
+// Mittlere Tiefe der Scheibenebene (Ring 0,3-0,6 der Ellipse: Neigung
+// hebt sich symmetrisch auf, der Bulge zaehlt nicht mit) - Drehpunkt fuer
+// den Orbit. Gemerkt je Tiefenkarte und Galaxie
+let galPivotCache = { dd: null, key: "", v: 0.45 };
+function galPivotDepth(g) {
+  const dd = state.depthData;
+  if (!dd || !dd.f || !state.starless) return 0.45;
+  const key = [g.x, g.y, g.rad, g.flat, g.tilt].map((v) => (+v).toFixed(4)).join(",");
+  if (galPivotCache.dd === dd && galPivotCache.key === key) return galPivotCache.v;
+  const { w, h, f } = dd;
+  const imgAspect = state.starless.width / state.starless.height;
+  const t = g.tilt * Math.PI / 180, cs = Math.cos(t), sn = Math.sin(t);
+  const flat = Math.max(0.05, g.flat), R = g.rad * 0.6;
+  const x0 = Math.max(0, Math.floor(((g.x - R) / imgAspect + 0.5) * w)), x1 = Math.min(w - 1, Math.ceil(((g.x + R) / imgAspect + 0.5) * w));
+  const y0 = Math.max(0, Math.floor((0.5 - (g.y + R)) * h)), y1 = Math.min(h - 1, Math.ceil((0.5 - (g.y - R)) * h));
+  let s = 0, c = 0;
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const dx = ((x + 0.5) / w - 0.5) * imgAspect - g.x, dy = 0.5 - (y + 0.5) / h - g.y;
+    const r = Math.hypot((cs * dx + sn * dy) / g.rad, (-sn * dx + cs * dy) / (flat * g.rad));
+    if (r < 0.3 || r > 0.6) continue;
+    s += f[y * w + x]; c++;
+  }
+  const v = c ? s / c : 0.45;
+  galPivotCache = { dd, key, v };
+  return v;
+}
+
 // Galaxien als 3D-Scheibe: aktiv, sobald Galaxien im Spiel sind (Drehung an
 // oder automatisch gefunden) - ein Standard-Kreis auf einem Nebelbild bleibt
 // unberuehrt
@@ -4355,13 +4382,28 @@ function camAt(loopT) {
     const sc = cover * zoom;
     const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.98;
     const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.98;
-    cx = Math.min(freeX, Math.max(-freeX, g.x));
-    cy = Math.min(freeY, Math.max(-freeY, g.y));
     const sweep = (60 + 1.2 * state.speed) * Math.PI / 180;
     const th = state.driftDir * Math.PI / 180 + sweep * (pe - 0.5);
     const A = g.rad * (0.6 + 1.4 * state.speed / 100);
     driftTX = A * Math.cos(th);
     driftTY = A * Math.sin(th);
+    // Drehpunkt = Scheibenebene der Galaxie: die Parallaxe verschiebt um
+    // Tiefe 0,45; das Ziel um denselben Betrag bei Galaxientiefe
+    // nachfuehren, damit die Galaxie ruhig an ihrem Platz bleibt und Himmel
+    // und nahe Scheibenseite gegeneinander um sie kreisen (reine
+    // Verschiebung - an der Steilheitsgrenze aendert sich nichts). Liegt
+    // die Galaxie nah am Bildrand, haelt das Ziel Abstand fuer diese
+    // Nachfuehrung, statt sie am Rand abzuschneiden
+    const PR = (state.parallax / 100) * 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
+    const kG = PR * (galPivotDepth(g) - 0.45), comp = A * Math.abs(kG);
+    // Platz fuer das Ziel beim kleinsten Zoom des Flugs messen: so steht
+    // die Galaxie ueber den ganzen Orbit still (sonst wandert sie mit dem
+    // leichten Heranzoomen zur Mitte)
+    const sc0 = cover * state.zoomBase * fit * Math.exp(-0.002 * Math.abs(state.speed));
+    const fx = Math.max(0, Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc0) * 0.98 - comp);
+    const fy = Math.max(0, Math.max(0, 0.5 - 0.5 / sc0) * 0.98 - comp);
+    cx = Math.min(freeX, Math.max(-freeX, Math.min(fx, Math.max(-fx, g.x)) - driftTX * kG));
+    cy = Math.min(freeY, Math.max(-freeY, Math.min(fy, Math.max(-fy, g.y)) - driftTY * kG));
   } else if (state.flightMode === "lateral") {
     // Konstanter Zoom; die Kamera fährt entlang der eingestellten Richtung
     // durch das Ziel (Klickpunkt). Die Strecke ist so begrenzt, dass der
