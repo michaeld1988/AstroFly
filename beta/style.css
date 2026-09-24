@@ -819,3 +819,16 @@ button.primary:not(:disabled):hover { border-color: var(--accent); }
 
 .objedit.cardedit { margin: 8px 0 12px 0; }
 h2.sub { margin-top: 18px; font-size: 11.5px; letter-spacing: 1.2px; }
+
+/* Galaxien-Liste (Rotation v2) */
+#galList { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 10px; }
+.galrow { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border: 1px solid var(--line, #333);
+  border-radius: 8px; cursor: pointer; font-size: 13px; }
+.galrow:hover { border-color: var(--accent-dim); }
+.galrow.sel { border-color: #e8c24a; background: rgba(232, 194, 74, 0.08); }
+.galrow .galname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.galrow .galmeta { color: var(--muted, #999); font-size: 12px; }
+.galrow button { background: none; border: 1px solid transparent; color: var(--muted, #aaa); cursor: pointer;
+  font-size: 15px; line-height: 1; padding: 2px 6px; border-radius: 6px; }
+.galrow button:hover { color: var(--text); border-color: var(--accent-dim); }
+#btnGalMove.active, #btnSpinCenter.active { outline: 2px solid var(--accent); }

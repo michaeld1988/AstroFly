@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-16-78">
+<link rel="stylesheet" href="style.css?v=2026-09-24-83">
 </head>
 <body>
 
@@ -606,28 +606,39 @@
     <!-- ==================== GALAXIEN-ROTATION ==================== -->
     <section data-tab="galaxie">
       <h2><span data-i18n="spinHead">Galaxy spin</span></h2>
-      <p class="tip" data-i18n="spinHint">Galaxy spin: rotates only the region around the spin
-      center – with a soft falloff at the edge, so the rest of the image stays untouched.
-      Foreground stars do not rotate.</p>
-      <button id="btnSpinCenter" class="secondary" data-i18n="spinCenterBtn">Set spin center (then click the preview)</button>
+      <p class="tip" data-i18n="spinHint">Each galaxy turns rigidly in its own (tilted) disc, like the
+      real spiral pattern, with a gentle, capped swirl in the core. Only the galaxy's light turns;
+      the sky behind it stays still, so nothing smears or appears twice, even after many turns.
+      Several galaxies can spin independently.</p>
+      <div class="exportrow">
+        <button id="btnGalDetect" class="secondary" data-i18n="galDetect">Find galaxies automatically</button>
+        <button class="qm" data-help="hintGalDetect">?</button>
+      </div>
+      <p class="tip hint2" id="hintGalDetect" hidden data-i18n="galDetectHint">Looks for extended objects
+      brighter than the sky (stars are ignored), fits an ellipse to each (up to 8) and reads the spin
+      direction from the spiral arms: arms trail behind the rotation. Plate-solved images show the
+      SIMBAD names. Check the rings with "Show galaxies" and fine-tune the selected one below.</p>
+      <p class="tip" id="galStatus" hidden></p>
+      <div id="galList"></div>
+      <div class="exportrow">
+        <button id="btnSpinCenter" class="secondary" data-i18n="galAdd">Add galaxy (click the preview)</button>
+        <button id="btnGalMove" class="secondary" data-i18n="galMove">Move selected (click the preview)</button>
+      </div>
       <label class="check">
         <input type="checkbox" id="ctlSpinShow">
-        <span data-i18n="spinShow">Show spin region (red mask overlay)</span>
+        <span data-i18n="spinShow">Show galaxies (rings, selected one in yellow)</span>
       </label>
       <label class="slider">
-        <span><span data-i18n="spinSpeed">Galaxy spin (°/s at core)</span> <output id="outSpinSpeed">0.0 °/s</output></span>
+        <span><span data-i18n="spinSpeed">Spin speed (°/s)</span> <output id="outSpinSpeed">0.0 °/s</output></span>
         <input type="range" id="ctlSpinSpeed" min="-10" max="10" step="0.1" value="0">
       </label>
+      <h2 class="sub" data-i18n="galSelHead">Selected galaxy</h2>
       <label class="slider">
-        <span><span data-i18n="spinRadius">Spin radius</span> <output id="outSpinRadius">40</output></span>
-        <input type="range" id="ctlSpinRadius" min="5" max="100" step="1" value="40">
+        <span><span data-i18n="spinRadius">Radius</span> <output id="outSpinRadius">40.0</output></span>
+        <input type="range" id="ctlSpinRadius" min="1" max="100" step="0.1" value="40">
       </label>
       <label class="slider">
-        <span><span data-i18n="spinDiff">Differential rotation (inner faster)</span> <output id="outSpinDiff">40</output></span>
-        <input type="range" id="ctlSpinDiff" min="0" max="100" step="1" value="40">
-      </label>
-      <label class="slider">
-        <span><span data-i18n="spinFlat">Spin ellipse (inclined galaxy)</span> <output id="outSpinFlat">0</output></span>
+        <span><span data-i18n="spinFlat">Tilt of the disc (ellipse)</span> <output id="outSpinFlat">0</output></span>
         <input type="range" id="ctlSpinFlat" min="0" max="100" step="1" value="0">
       </label>
       <label class="slider">
@@ -635,13 +646,12 @@
         <input type="range" id="ctlSpinTilt" min="0" max="180" step="1" value="0">
       </label>
       <label class="slider">
-        <span><span data-i18n="spinMaskAmt">Brightness mask influence</span> <output id="outSpinMaskAmt">0</output></span>
-        <input type="range" id="ctlSpinMaskAmt" min="0" max="100" step="1" value="0">
+        <span><span data-i18n="spinDiff">Swirl in the core (capped)</span> <button class="qm" data-help="hintSpinDiff">?</button> <output id="outSpinDiff">40</output></span>
+        <input type="range" id="ctlSpinDiff" min="0" max="100" step="1" value="40">
       </label>
-      <label class="slider">
-        <span><span data-i18n="spinMaskSmooth">Brightness mask smoothing</span> <output id="outSpinMaskSmooth">6</output></span>
-        <input type="range" id="ctlSpinMaskSmooth" min="2" max="60" step="1" value="6">
-      </label>
+      <p class="tip hint2" id="hintSpinDiff" hidden data-i18n="spinDiffHint">Lets the core run slightly ahead
+      of the outer disc, like a real rotation curve. The lead grows with the spin and then stops at about
+      11 degrees, so the arms never wind up or smear.</p>
       <label class="check">
         <input type="checkbox" id="ctlSpinStars">
         <span data-i18n="spinStars">Rotate stars inside the spin region</span>
@@ -1161,8 +1171,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-09-23-81"></script>
+<script src="i18n.js?v=2026-09-24-83"></script>
 <script src="objectinfo.js?v=2026-08-16-67"></script>
-<script src="app.js?v=2026-09-23-82"></script>
+<script src="app.js?v=2026-09-24-83"></script>
 </body>
 </html>
