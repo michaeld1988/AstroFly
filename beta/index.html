@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-09-24-83">
+<link rel="stylesheet" href="style.css?v=2026-09-24-85">
 </head>
 <body>
 
@@ -480,6 +480,7 @@
         <select id="ctlFlightMode">
           <option value="zoom" selected data-i18n="flightZoom">Toward the nebula (zoom in)</option>
           <option value="lateral" data-i18n="flightLateral">Lateral drift (glide across)</option>
+          <option value="orbit" data-i18n="flightOrbit">Orbit around the galaxy</option>
         </select>
       </label>
       <div id="driftRow" hidden>
@@ -487,7 +488,10 @@
           <span><span data-i18n="driftDir">Flight direction</span> <output id="outDriftDir">90°</output></span>
           <input type="range" id="ctlDriftDir" min="0" max="360" step="5" value="90">
         </label>
-        <p class="tip" data-i18n="lateralHint">The camera glides across the image at constant zoom –
+        <p class="tip" id="orbitHintP" hidden data-i18n="orbitHint">The camera frames the selected galaxy
+        (Galaxy tab) and circles it on an arc: the near side of the 3D disc and the core swing more than
+        the far side. Speed sets the arc and the swing, flight direction the start angle, zoom the framing.</p>
+        <p class="tip" id="lateralHintP" data-i18n="lateralHint">The camera glides across the image at constant zoom –
         near regions and stars drift past faster (parallax). Speed sets the travel distance,
         a click sets the path center. Increase zoom for a longer travel range.</p>
       </div>
@@ -632,6 +636,32 @@
         <span><span data-i18n="spinSpeed">Spin speed (°/s)</span> <output id="outSpinSpeed">0.0 °/s</output></span>
         <input type="range" id="ctlSpinSpeed" min="-10" max="10" step="0.1" value="0">
       </label>
+      <h2 class="sub" data-i18n="galCineHead">Cinematic</h2>
+      <label class="check">
+        <input type="checkbox" id="ctlGal3d" checked>
+        <span data-i18n="gal3d">Galaxies as 3D discs</span>
+        <button class="qm" data-help="hintGal3d">?</button>
+      </label>
+      <p class="tip hint2" id="hintGal3d" hidden data-i18n="gal3dHint">Each galaxy gets real depth: its disc
+      is tilted as its ellipse shows (the side with the dust lanes in front of the core is the near side),
+      and the core bulges out as a sphere. You see it when the camera moves - best with the orbit flight.
+      The arrow button in the list flips the near side.</p>
+      <label class="slider">
+        <span><span data-i18n="gal3dAmt">Depth of the disc</span> <output id="outGal3dAmt">50</output></span>
+        <input type="range" id="ctlGal3dAmt" min="0" max="100" step="1" value="50">
+      </label>
+      <label class="slider">
+        <span><span data-i18n="galStars">Stars flowing through the arms</span> <button class="qm" data-help="hintGalStars">?</button> <output id="outGalStars">50</output></span>
+        <input type="range" id="ctlGalStars" min="0" max="100" step="1" value="50">
+      </label>
+      <p class="tip hint2" id="hintGalStars" hidden data-i18n="galStarsHint">While the galaxy spins, faint stars
+      in its disc orbit like real stars: inside faster than the spiral pattern, outside slower, so they drift
+      through the arms. They follow the galaxy's light and take its colors. Points never smear.</p>
+      <label class="slider">
+        <span><span data-i18n="galGlow">Core glow on approach</span> <output id="outGalGlow">40</output></span>
+        <input type="range" id="ctlGalGlow" min="0" max="100" step="1" value="40">
+      </label>
+      <p class="tip" data-i18n="galOrbitTip">Tip: the flight mode "Orbit around the galaxy" (Flight tab) circles the selected galaxy.</p>
       <h2 class="sub" data-i18n="galSelHead">Selected galaxy</h2>
       <label class="slider">
         <span><span data-i18n="spinRadius">Radius</span> <output id="outSpinRadius">40.0</output></span>
@@ -1171,8 +1201,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-09-24-83"></script>
+<script src="i18n.js?v=2026-09-24-85"></script>
 <script src="objectinfo.js?v=2026-08-16-67"></script>
-<script src="app.js?v=2026-09-24-84"></script>
+<script src="app.js?v=2026-09-24-85"></script>
 </body>
 </html>
