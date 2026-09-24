@@ -45,6 +45,10 @@ const state = {
   spinCenter: { x: 0, y: 0 }, // Rotationszentrum in Ebenen-Einheiten (= ausgewaehlte Galaxie)
   galaxies: [],          // Galaxien-Rotation v2: [{ x, y, rad, flat, tilt, twist, dir, name, auto }]
   galSel: 0,             // ausgewaehlte Galaxie (Regler bearbeiten diese)
+  gal3d: true,           // Galaxien als 3D-Scheibe (Tiefe aus Neigung + Kern-Woelbung)
+  gal3dAmt: 50,          // Tiefe der Scheibe 0..100
+  galStars: 50,          // Sterne ziehen durch die Arme 0..100
+  galGlow: 40,           // Kern-Gluehen beim Anflug 0..100
   spinPick: false,       // nächster Klick setzt das Rotationszentrum
   labelPick: false,      // nächster Klick setzt ein eigenes Objekt-Label
   spinShow: false,       // Rotationsbereich als rote Maske einblenden
@@ -255,6 +259,8 @@ uniform vec4 uGalB[8];      // cos/sin der Ellipsenlage, Drehwinkel (rad), Wirbe
 uniform sampler2D uGalBk;   // Himmel hinter den Galaxien (aus der Umgebung aufgefuellt)
 uniform float uSpinShow;    // 1 = Galaxien-Ellipsen einblenden
 uniform float uGalSel;      // ausgewaehlte Galaxie (Vorschau hervorheben)
+uniform float uGal3D;       // 1 = Galaxien als 3D-Scheibe: Tiefe ist Geometrie und dreht NICHT mit
+uniform float uGalGlow;     // Kern-Gluehen (waechst mit dem Anflug), 0 = aus
 uniform vec3 uBandSat;      // Nebelfarben: Sättigung je Band (HII, OIII, SII)
 uniform vec3 uBandHue;      // Nebelfarben: Farbton-Shift je Band (Kreisanteil)
 uniform vec3 uBandCen;      // Erkennungs-Farbton je Band (Kreisanteil, einstellbar)
@@ -339,7 +345,7 @@ int galAt(vec2 q, out float rOut, out vec2 eOut) {
 // sonst springt die Parallaxe am Ellipsenrand und reisst eine Kante auf
 // (die Tiefe ist glatt, eine Scherung dort ist unsichtbar)
 vec2 spinWarpR(vec2 q, float rim) {
-  if (uGalN == 0) return q;
+  if (uGalN == 0 || (rim < 0.5 && uGal3D > 0.5)) return q;
   float r; vec2 e;
   int k = galAt(q, r, e);
   if (k < 0) return q;
@@ -505,6 +511,12 @@ void main() {
     float al = 1.0 - smoothstep(0.85, 1.0, rg);
     vec3 comp = max(mix(cQ, col + bkQ - bkS, al), 0.0);
     col = kg >= 0 ? comp : col;
+    // Kern-Gluehen beim Anflug: der Kern (rund im Bild) wird dezent heller;
+    // der Bloom macht daraus einen weichen Schein
+    if (uGalGlow > 0.0 && kg >= 0) {
+      float rImg = length(vec2(eg.x, eg.y * uGalA[kg].w)) / uGalA[kg].z;
+      col *= 1.0 + uGalGlow * exp(-2.0 * (rImg / 0.22) * (rImg / 0.22));
+    }
   }
   // Nebelfarben: HII-/OIII-/SII-artige Farbbereiche gezielt anpassen.
   // Arbeitet auf dem Farbton (Rot, Türkis, Gold) - wirkt damit auf RGB-
@@ -648,6 +660,25 @@ out vec4 vOrgP;       // Sternbibliothek: Staerke, Radius px, Kachel (+16 = gesp
 // und Wirbel wie im Hintergrund; der Inhalt dreht um +Winkel). Am Ellipsen-
 // rand laeuft die Drehung weich aus - Sterne sind Punkte, eine Scherung
 // dort verschmiert nichts
+// Scheibensterne einer Galaxie (Marke im Atlas-Feld): kreisen mit flacher
+// Rotationskurve RELATIV zum starr drehenden Armmuster - innerhalb des
+// Korotationsradius (aAtlas.z) schneller, ausserhalb langsamer. So ziehen
+// sie durch die Arme wie echte Sterne durch Dichtewellen; als Punkte
+// verschmieren sie dabei nie
+vec2 discStar(vec2 p, float second, int k, float rc) {
+  vec2 d = p - uGalAS[k].xy;
+  float c = uGalBS[k].x, s = uGalBS[k].y;
+  vec2 e = vec2(c * d.x + s * d.y, -s * d.x + c * d.y);
+  e.y /= uGalAS[k].w;
+  float r = length(e) / uGalAS[k].z;
+  float pat = second > 0.5 ? uGalCS[k].x : uGalBS[k].z;
+  float a = pat * rc / max(r, 0.18);
+  float ca = cos(a), sa = sin(a);
+  e = vec2(ca * e.x - sa * e.y, sa * e.x + ca * e.y);
+  e.y *= uGalAS[k].w;
+  return uGalAS[k].xy + vec2(c * e.x - s * e.y, s * e.x + c * e.y);
+}
+
 vec2 spinStar(vec2 p, float second) {
   if (uSpinStars < 0.5 || uGalNS == 0) return p;
   int best = -1;
@@ -686,6 +717,10 @@ void main() {
     vAtlasUv = vec3(-1.0); vPatchHalf = 0.0; vSpike = 0.0; vOrgP = vec4(0.0);
     return;
   }
+  // Scheibenstern? (Atlas-Feld x < 0, y = Galaxie + 10, z = Korotation)
+  bool disc = aAtlas.x < 0.0 && aAtlas.y > 9.5 && uGalNS > 0;
+  int dk = disc ? int(aAtlas.y - 10.0 + 0.5) : 0;
+  vec2 posNow = disc ? discStar(aPos, 0.0, dk, aAtlas.z) : aPos;
   float brightShift = aBright * 0.12;
   if (uLayers > 0.5) {
     h = (floor(h * uLayers) + 0.5) / uLayers;
@@ -717,7 +752,13 @@ void main() {
   // Nebel liegt, bleiben frei.
   float anchorW = 0.0;
   float dNA = 0.45;
-  if (uAnchor > 0.0) {
+  if (disc) {
+    // Scheibensterne gehoeren zur Galaxie: volle Verankerung an ihrer
+    // aktuellen Position (gleiche Tiefe und Bewegung wie die Scheibe)
+    vec2 uvA = vec2(posNow.x / uImgAspectS, posNow.y) + 0.5;
+    dNA = textureLod(uDepthS, uvA, 0.0).r;
+    anchorW = 1.0;
+  } else if (uAnchor > 0.0) {
     vec2 uvA = vec2(aPos.x / uImgAspectS, aPos.y) + 0.5;
     if (uvA.x > 0.001 && uvA.x < 0.999 && uvA.y > 0.001 && uvA.y < 0.999) {
       dNA = textureLod(uDepthS, uvA, 0.0).r;
@@ -743,7 +784,7 @@ void main() {
   // Wer bewusst Bewegung will, zieht die Stern-Parallaxe ueber 100 %
   if (uMoonMode > 0.5) ex = 0.3 * max(0.0, uStarPar - 1.0);
   float scale = uCover * pow(uZoom, ex);
-  vec2 sp1 = spinStar(aPos + aPm * uPmYears, 0.0);
+  vec2 sp1 = disc ? posNow : spinStar(aPos + aPm * uPmYears, 0.0);
   vec2 tOff = mix(uTilt * (depth - 0.45), uTiltB * (dNA - 0.45), anchorW);
   vec2 pr = (sp1 - uCenter - tOff) * scale;
   depth = mix(depth, dNA, anchorW);
@@ -814,7 +855,7 @@ void main() {
   if (uStreak > 0.0) {
     float scale2 = uCover * pow(uZoom2, ex);
     vec2 tOff2 = mix(uTilt2 * (depth - 0.45), uTiltB2 * (dNA - 0.45), anchorW);
-    vec2 pr2 = (spinStar(aPos + aPm * uPmYears2, 1.0) - uCenter2 - tOff2) * scale2;
+    vec2 pr2 = ((disc ? discStar(aPos, 1.0, dk, aAtlas.z) : spinStar(aPos + aPm * uPmYears2, 1.0)) - uCenter2 - tOff2) * scale2;
     float c2 = cos(uAngle2), s2 = sin(uAngle2);
     vec2 p2 = mat2(c2, s2, -s2, c2) * pr2;
     vec2 clip2 = vec2(p2.x * 2.0 / uViewAspect, p2.y * 2.0);
@@ -2093,7 +2134,7 @@ function depthFlightSig() {
     s.driftDir, s.loopMode, s.ease, s.easeMode, s.tiltX, s.tiltY, s.swayAmp,
     s.swayTempo, s.swayDir, s.swayRandom, s.tiltRampAmp, s.tiltRampDir, s.aspect,
     s.frameX, s.frameY, s.target.x, s.target.y, s.rotationSpeed, s.strictEdges,
-    s.scenarioOn, JSON.stringify(s.waypoints),
+    s.scenarioOn, JSON.stringify(s.waypoints), gal3dActive() ? "g3:" + s.gal3dAmt + galGeomSig() + (s.galaxies || []).map((g) => g.near || 1).join("") : "",
     s.starless ? s.starless.width + "x" + s.starless.height : ""].join("|");
 }
 
@@ -2163,6 +2204,7 @@ function finalizeDepthMap() {
   const n = w * h;
   const G = depthFlightGain();
   const NG = DEPTH_GAIN_N;
+  const rawF = gal3dActive() ? galDiscDepth(raw.f, w, h, G) : raw.f;
   let gMax = 0;
   for (let k = 0; k <= NG; k++) gMax = Math.max(gMax, G[k]);
   let env;
@@ -2179,7 +2221,7 @@ function finalizeDepthMap() {
       return phi[k] + (phi[k + 1] - phi[k]) * (x - k);
     };
     const p = new Float32Array(n);
-    for (let i = 0; i < n; i++) p[i] = toPhi(raw.f[i]);
+    for (let i = 0; i < n; i++) p[i] = toPhi(rawF[i]);
     const pe = lowerEnvelope(p, w, h, 1 / h);
     env = new Float32Array(n);
     for (let i = 0; i < n; i++) {
@@ -2190,7 +2232,7 @@ function finalizeDepthMap() {
       env[i] = (lo + (span > 0 ? Math.min(1, Math.max(0, (v - phi[lo]) / span)) : 0)) / NG;
     }
   } else {
-    env = Float32Array.from(raw.f);
+    env = Float32Array.from(rawF);
   }
   // Grund-Leuchten: dieselbe Tiefe grossraeumig geglaettet (Glaetten erhaelt
   // die Steilheitsgrenze)
@@ -2221,6 +2263,73 @@ function finalizeDepthMap() {
   const pv = $("depthPreview");
   pv.height = Math.round(160 * h / w) || 107;
   pv.getContext("2d").drawImage(c, 0, 0, pv.width, pv.height);
+}
+
+// Galaxien als 3D-Scheibe: aktiv, sobald Galaxien im Spiel sind (Drehung an
+// oder automatisch gefunden) - ein Standard-Kreis auf einem Nebelbild bleibt
+// unberuehrt
+function gal3dActive() {
+  return !!state.gal3d && state.gal3dAmt > 0 && Array.isArray(state.galaxies) && state.galaxies.length > 0 &&
+    (state.spinSpeed !== 0 || state.galaxies.some((g) => g.auto));
+}
+/**
+ * Tiefe jeder Galaxie als geneigte Scheibe mit Kern-Woelbung. Die Neigung
+ * folgt der Ellipse (cos i = b/a); die nahe Seite (g.near) steht vorn, die
+ * ferne Seite schliesst auf Hoehe des umgebenden Himmels an. Der Kern ist
+ * eine Kugel - rund im BILD, nicht in der Scheibenebene. Das Helligkeits-
+ * relief wird innerhalb der Galaxie ersetzt: sein steiler Kern haette sonst
+ * ueber die Steilheitsgrenze einen Kegel erzeugt, der die Neigung einebnet.
+ * Die Staerken passen sich der fuer den Flug erlaubten Steilheit an
+ * (G = Verschiebung je Tiefeneinheit): so bleibt die Neigung sichtbar und
+ * faltungsfrei, bei kraeftigen Fluegen entsprechend flacher
+ */
+function galDiscDepth(src, w, h, G) {
+  const f = Float32Array.from(src);
+  const imgAspect = state.starless.width / state.starless.height;
+  const amt = state.gal3dAmt / 100;
+  const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  const NG = DEPTH_GAIN_N;
+  const Lat = (d) => {
+    if (!G) return Infinity;
+    const x = Math.min(1, Math.max(0, d)) * NG, k = Math.min(NG - 1, Math.floor(x));
+    const gv = G[k] + (G[k + 1] - G[k]) * (x - k);
+    return gv > 1e-5 ? DEPTH_KMAX / (gv * DEPTH_SAFETY) : Infinity;
+  };
+  for (const g of state.galaxies.slice(0, 8)) {
+    const t = g.tilt * Math.PI / 180, cs = Math.cos(t), sn = Math.sin(t);
+    const flat = Math.max(0.05, g.flat), sinI = Math.sqrt(Math.max(0, 1 - flat * flat));
+    const near = g.near === -1 ? -1 : 1;
+    const R = g.rad * 1.12;
+    const x0 = Math.max(0, Math.floor(((g.x - R) / imgAspect + 0.5) * w)), x1 = Math.min(w - 1, Math.ceil(((g.x + R) / imgAspect + 0.5) * w));
+    const y0 = Math.max(0, Math.floor((0.5 - (g.y + R)) * h)), y1 = Math.min(h - 1, Math.ceil((0.5 - (g.y - R)) * h));
+    const pts = [], rim = [];
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      const qx = ((x + 0.5) / w - 0.5) * imgAspect, qy = 0.5 - (y + 0.5) / h;
+      const dx = qx - g.x, dy = qy - g.y;
+      const ex = (cs * dx + sn * dy) / g.rad, ey = (-sn * dx + cs * dy) / (flat * g.rad);
+      const r = Math.hypot(ex, ey);
+      if (r >= 1.1) continue;
+      pts.push(y * w + x, ex, ey, r);
+      if (r > 0.95) rim.push(src[y * w + x]);
+    }
+    if (!pts.length) continue;
+    rim.sort((p, q) => p - q);
+    const base = rim.length ? rim[Math.floor(rim.length / 2)] : src[pts[0]];
+    const L = Lat(base);
+    // Neigung: ferne Kante = Himmel, nahe Kante = base + 2*Atilt; Gefaelle
+    // ueber die kleine Achse hoechstens 80 % der erlaubten Steilheit
+    const Atilt = Math.min(0.15 * amt * sinI, 0.8 * L * flat * g.rad / 2);
+    const rb = 0.28;
+    const Ab = Math.min(0.18 * amt, 0.8 * L * rb * g.rad / 1.05);
+    for (let k = 0; k < pts.length; k += 4) {
+      const i = pts[k], ex = pts[k + 1], ey = pts[k + 2], r = pts[k + 3];
+      const rImg = Math.hypot(ex, ey * flat);
+      const model = base + Atilt * (1 + near * Math.max(-1, Math.min(1, ey))) + Ab * Math.exp(-1.5 * (rImg / rb) ** 2);
+      const wgt = 1 - smooth(0.8, 1.1, r);
+      f[i] = f[i] * (1 - wgt) + model * wgt;
+    }
+  }
+  return f;
 }
 
 // Flug-Einstellungen geaendert -> Huelle entprellt neu rechnen (beim Export
@@ -3284,6 +3393,67 @@ function generateStars() {
 }
 
 /**
+ * Sterne in den Galaxienscheiben ("Sterne ziehen durch die Arme"): je
+ * Galaxie nach ihrem Licht verteilt (Arme und Kern dichter), Farbe aus dem
+ * Bild, schwach und klein. Nur waehrend der Drehung und fuer drehende
+ * Galaxien. Rueckgabe: 7 Floats je Stern + Galaxie-Index je Stern
+ */
+function generateGalaxyStars() {
+  const out = { buf: new Float32Array(0), gal: [] };
+  if (!state.starless || !state.spinSpeed || state.galStars <= 0 || !state.galaxies.length) return out;
+  const src = downscale(state.starless, 512);
+  const w = src.width, h = src.height;
+  const px = src.getContext("2d").getImageData(0, 0, w, h).data;
+  const imgAspect = state.starless.width / state.starless.height;
+  const rnd = mulberry32(Math.floor(state.seed * 65536) + 911);
+  const list = [], gals = [];
+  state.galaxies.slice(0, 8).forEach((g, k) => {
+    if ((g.dir === undefined ? 1 : g.dir) === 0) return;
+    const t = g.tilt * Math.PI / 180, c = Math.cos(t), sn = Math.sin(t), flat = Math.max(0.05, g.flat);
+    const sample = (u, v) => {
+      const ex = u * g.rad, ey = v * g.rad * flat;
+      const qx = g.x + c * ex - sn * ey, qy = g.y + sn * ex + c * ey;
+      const x = Math.round((qx / imgAspect + 0.5) * w - 0.5), y = Math.round((0.5 - qy) * h - 0.5);
+      if (x < 0 || y < 0 || x >= w || y >= h) return null;
+      const j = (y * w + x) * 4;
+      return { qx, qy, r: px[j] / 255, g: px[j + 1] / 255, b: px[j + 2] / 255, L: (0.299 * px[j] + 0.587 * px[j + 1] + 0.114 * px[j + 2]) / 255 };
+    };
+    // Himmel am Rand der Ellipse als Nullpunkt des Galaxienlichts
+    let rim = [];
+    for (let i = 0; i < 64; i++) { const a = i / 64 * Math.PI * 2, sp = sample(Math.cos(a) * 0.97, Math.sin(a) * 0.97); if (sp) rim.push(sp.L); }
+    rim.sort((p, q) => p - q);
+    const sky = rim.length ? rim[Math.floor(rim.length / 2)] : 0;
+    let peak = 0;
+    for (let i = 0; i < 200; i++) { const sp = sample((rnd() * 2 - 1) * 0.3, (rnd() * 2 - 1) * 0.3); if (sp) peak = Math.max(peak, sp.L - sky); }
+    if (peak <= 0.01) return;
+    const want = Math.round(Math.min(1200, Math.max(30, (state.galStars / 100) * 900 * Math.pow(g.rad / 0.3, 1.2))));
+    let got = 0;
+    for (let tries = 0; tries < want * 40 && got < want; tries++) {
+      const u = rnd() * 2 - 1, v = rnd() * 2 - 1, r = Math.hypot(u, v);
+      if (r > 0.95 || r < 0.04) continue;
+      const sp = sample(u, v);
+      if (!sp) continue;
+      const wgt = Math.pow(Math.max(0, sp.L - sky) / peak, 0.7);
+      if (rnd() > wgt) continue;
+      const m = Math.max(sp.r, sp.g, sp.b, 1e-3);
+      const bright = 0.05 + 0.28 * Math.pow(rnd(), 2) * (0.4 + 0.6 * Math.sqrt(wgt));
+      const radiusPx = 0.6 + bright * 2.2;
+      list.push(sp.qx, sp.qy, bright, radiusPx / 1500,
+        0.45 + 0.55 * sp.r / m, 0.45 + 0.55 * sp.g / m, 0.45 + 0.55 * sp.b / m);
+      gals.push(k);
+      got++;
+    }
+  });
+  out.buf = Float32Array.from(list); out.gal = gals;
+  return out;
+}
+function galStarSig() {
+  return [state.spinSpeed !== 0, state.galStars, state.seed, galGeomSig(),
+    (state.galaxies || []).map((g) => g.dir === undefined ? 1 : g.dir).join(","), texColor ? 1 : 0].join("|");
+}
+let galStarsKey = "", galStarsTex = null, galStarTimer = 0;
+
+/**
  * Masken-Sterne + generierte Sterne in den GPU-Puffer laden.
  * GPU-Layout: 8 Floats pro Stern [x, y, helligkeit, größe, r, g, b, gaia];
  * gaia = echte Tiefe 0..1 (aus state.gaiaDepth) oder -1, wenn nicht zugeordnet.
@@ -3291,9 +3461,12 @@ function generateStars() {
 function uploadStars() {
   const mask = state.maskStarFloats || new Float32Array(0);
   const gen = generateStars();
-  const nMask = mask.length / 7, nGen = gen.length / 7;
-  const n = nMask + nGen;
+  const gst = generateGalaxyStars();
+  galStarsKey = galStarSig(); galStarsTex = texColor;
+  const nMask = mask.length / 7, nGen = gen.length / 7, nGal = gst.buf.length / 7;
+  const n = nMask + nGen + nGal;
   state.starCount = n;
+  state.galStarCount = nGal;
   if (!n) return;
 
   const F = 14; // [x, y, hell, größe, r, g, b, gaia, pmx, pmy, atlasU, atlasV, atlasHalfUv, atlasHalfPlane]
@@ -3325,6 +3498,14 @@ function uploadStars() {
     buf[(nMask + i) * F + 7] = -1;
     buf[(nMask + i) * F + 10] = -1;
   }
+  // Scheibensterne: Atlas-Feld markiert Galaxie (+10) und Korotationsradius
+  for (let i = 0; i < nGal; i++) {
+    const o = (nMask + nGen + i) * F;
+    buf.set(gst.buf.subarray(i * 7, i * 7 + 7), o);
+    buf[o + 7] = -1;
+    buf[o + 10] = -1; buf[o + 11] = gst.gal[i] + 10; buf[o + 12] = 0.55; buf[o + 13] = 0;
+  }
+  state.galStarCount = nGal;
 
   gl.bindVertexArray(starVao);
   gl.bindBuffer(gl.ARRAY_BUFFER, starBuf);
@@ -4157,6 +4338,30 @@ function camAt(loopT) {
     const sp = scenarioAt(p);
     zoom = sp.zoom; cx = sp.cx; cy = sp.cy;
     angle = (state.orientation + sp.angle) * Math.PI / 180;
+  } else if (state.flightMode === "orbit") {
+    // Orbit um die ausgewaehlte Galaxie: die Kamera rahmt sie ein und
+    // kreist auf einem Bogen um sie herum. Im 2,5D-Modell ist das eine
+    // kreisende Parallaxe-Verschiebung (wie beim seitlichen Flug): nahe
+    // Teile der 3D-Scheibe und der Kern schwingen staerker als ferne -
+    // man sieht die geneigte Scheibe aus wechselnden Winkeln. Tempo =
+    // Bogenweite und Ausschlag, Flugrichtung = Startwinkel
+    galEnsure();
+    const g = state.galaxies[state.galSel] || state.galaxies[0];
+    const viewAspect = state.aspect;
+    const imgAspect = state.starless ? state.starless.width / state.starless.height : 16 / 9;
+    const cover = coverBase(viewAspect, imgAspect);
+    const fit = Math.min(6, Math.max(1, 0.8 / (cover * 2.2 * g.rad)));
+    zoom = state.zoomBase * fit * Math.exp(0.004 * state.speed * (pe - 0.5));
+    const sc = cover * zoom;
+    const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.98;
+    const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.98;
+    cx = Math.min(freeX, Math.max(-freeX, g.x));
+    cy = Math.min(freeY, Math.max(-freeY, g.y));
+    const sweep = (60 + 1.2 * state.speed) * Math.PI / 180;
+    const th = state.driftDir * Math.PI / 180 + sweep * (pe - 0.5);
+    const A = g.rad * (0.6 + 1.4 * state.speed / 100);
+    driftTX = A * Math.cos(th);
+    driftTY = A * Math.sin(th);
   } else if (state.flightMode === "lateral") {
     // Konstanter Zoom; die Kamera fährt entlang der eingestellten Richtung
     // durch das Ziel (Klickpunkt). Die Strecke ist so begrenzt, dass der
@@ -4229,7 +4434,7 @@ function camAt(loopT) {
   // Loop-Modus nahtlos hin & zurück). Startpunkt ist der per Regler
   // verschiebbare Ausschnitt; beides wird an die Bildkanten geklemmt, damit
   // nie über den Bildrand hinaus geschwenkt wird.
-  if (state.flightMode !== "lateral" && !scenarioActive()) {
+  if (state.flightMode !== "lateral" && state.flightMode !== "orbit" && !scenarioActive()) {
     const viewAspect = state.aspect;
     const imgAspect = state.starless
       ? state.starless.width / state.starless.height : 16 / 9;
@@ -4361,16 +4566,27 @@ function render(forcedT) {
   // Aktiv bei Drehung oder zum Einrichten (Ellipsen-Vorschau)
   galSyncFromState();
   const galShow = (state.spinShow || state.spinPick) && !state.exporting;
-  const galOn = state.spinSpeed !== 0 || galShow;
+  const galOn = state.spinSpeed !== 0 || galShow || state.galaxies.some((g) => g.auto);
   if (galOn && state.starless && (galBkTex !== texColor || galBkSig !== galGeomSig())) {
     if (state.exporting || !texGalBk) { clearTimeout(galBkTimer); galBkTimer = 0; buildGalaxyBg(); }
     else if (!galBkTimer) galBkTimer = setTimeout(() => { galBkTimer = 0; buildGalaxyBg(); }, 250);
+  }
+  if (state.starless && (galStarSig() !== galStarsKey || galStarsTex !== texColor) && !galStarTimer) {
+    if (state.exporting) uploadStars();
+    else galStarTimer = setTimeout(() => { galStarTimer = 0; uploadStars(); }, 200);
   }
   const GU = galUniforms(cam.te);
   u1i(bgProg, "uGalN", galOn ? GU.N : 0);
   u4fv(bgProg, "uGalA", GU.A);
   u4fv(bgProg, "uGalB", GU.B);
   u1f(bgProg, "uGalSel", state.galSel);
+  u1f(bgProg, "uGal3D", gal3dActive() ? 1 : 0);
+  // Kern-Gluehen waechst mit dem Anflug (Zoom relativ zum Flugbeginn)
+  {
+    const z0 = camAt(0).zoom || 1;
+    const k = Math.min(1, Math.max(0, Math.log(Math.max(1e-3, cam.zoom / z0)) / Math.log(2.5)));
+    u1f(bgProg, "uGalGlow", galOn ? (state.galGlow / 100) * 0.45 * k : 0);
+  }
   const mdU = state.moonMode && state.moonDisk ? state.moonDisk : null;
   u1f(bgProg, "uMoonMode", mdU ? 1 : 0);
   u2f(bgProg, "uMoonC", mdU ? mdU.cx : 0, mdU ? 1 - mdU.cy : 0);
@@ -4843,6 +5059,10 @@ bindSlider("ctlOrient", "outOrient", "orientation", (v) => v + "°");
 bindSlider("ctlFrameX", "outFrameX", "frameX", asInt);
 bindSlider("ctlFrameY", "outFrameY", "frameY", asInt);
 bindSlider("ctlSpinSpeed", "outSpinSpeed", "spinSpeed", (v) => ctlNum(v, 1) + " °/s");
+bindSlider("ctlGal3dAmt", "outGal3dAmt", "gal3dAmt", asInt);
+bindSlider("ctlGalStars", "outGalStars", "galStars", asInt);
+bindSlider("ctlGalGlow", "outGalGlow", "galGlow", asInt);
+$("ctlGal3d").addEventListener("change", () => { state.gal3d = $("ctlGal3d").checked; });
 bindSlider("ctlSpinRadius", "outSpinRadius", "spinRadius", (v) => ctlNum(v, 1));
 bindSlider("ctlSpinDiff", "outSpinDiff", "spinDiff", asInt);
 bindSlider("ctlSpinFlat", "outSpinFlat", "spinFlat", asInt);
@@ -4889,7 +5109,9 @@ $("ctlEaseMode").addEventListener("change", () => {
 
 $("ctlFlightMode").addEventListener("change", () => {
   state.flightMode = $("ctlFlightMode").value;
-  $("driftRow").hidden = state.flightMode !== "lateral";
+  $("driftRow").hidden = state.flightMode !== "lateral" && state.flightMode !== "orbit";
+  $("lateralHintP").hidden = state.flightMode !== "lateral";
+  $("orbitHintP").hidden = state.flightMode !== "orbit";
   state.t0 = performance.now();
   state.pausedAt = 0;
 });
@@ -5012,6 +5234,15 @@ function rebuildGalList() {
     // Reihum: gegen den Uhrzeigersinn -> im Uhrzeigersinn -> steht still
     dir.addEventListener("click", (e) => { e.stopPropagation(); g.dir = dv > 0 ? -1 : (dv < 0 ? 0 : 1); g.chir = false; rebuildGalList(); });
     row.append(nm, meta, dir);
+    if (g.flat < 0.95) {
+      const nb = document.createElement("button");
+      nb.type = "button";
+      nb.className = "galnear";
+      nb.textContent = "⇅";
+      nb.title = t("galNearFlip");
+      nb.addEventListener("click", (e) => { e.stopPropagation(); g.near = g.near === -1 ? 1 : -1; });
+      row.append(nb);
+    }
     if (state.galaxies.length > 1) {
       const del = document.createElement("button");
       del.type = "button";
@@ -5212,9 +5443,31 @@ function detectGalaxies() {
     // in Wahrheit unsichtbar - als flache Scheibe gedreht wuerde die
     // "Zigarre" zum Klumpen. Solche Galaxien stehen standardmaessig still
     if (g.flat < 0.5) { g.dir = 0; g.edge = true; }
+    g.near = galNearSide(g, Lo, w, h, imgAspect);
     delete g.flux;
   }
   return sel;
+}
+
+// Nahe Seite einer geneigten Scheibe: Staubbahnen liegen VOR dem Kern und
+// verdunkeln ihn auf der nahen Seite. Vergleich der Helligkeit beidseits der
+// grossen Achse im Kernbereich - die dunklere Seite ist vorn
+function galNearSide(g, Lo, w, h, imgAspect) {
+  if (g.flat > 0.9) return 1;
+  const t = g.tilt * Math.PI / 180, c = Math.cos(t), s = Math.sin(t);
+  let sp = 0, np = 0, sm = 0, nm = 0;
+  for (let j = 0; j < 48; j++) for (let i = 0; i < 48; i++) {
+    const u = (i + 0.5) / 48 * 2 - 1, v = (j + 0.5) / 48 * 2 - 1, r = Math.hypot(u, v);
+    if (r < 0.08 || r > 0.45 || Math.abs(v) < 0.05) continue;
+    const ex = u * g.rad, ey = v * g.rad * g.flat;
+    const qx = g.x + c * ex - s * ey, qy = g.y + s * ex + c * ey;
+    const px = Math.round((qx / imgAspect + 0.5) * w - 0.5), py = Math.round((0.5 - qy) * h - 0.5);
+    if (px < 0 || py < 0 || px >= w || py >= h) continue;
+    const val = Lo[py * w + px];
+    if (v > 0) { sp += val; np++; } else { sm += val; nm++; }
+  }
+  if (!np || !nm) return 1;
+  return sp / np < sm / nm ? 1 : -1;
 }
 
 // Windungssinn der Spiralarme in der entzerrten Scheibe: Strukturtensor des
@@ -7269,7 +7522,7 @@ const USER_PRESET_GROUPS = {
     "ctlFrameX", "ctlFrameY", "ctlTiltX", "ctlTiltY", "ctlSwayAmp",
     "ctlSwayTempo", "ctlSwayDir", "ctlSwayRandom", "ctlTiltRamp",
     "ctlTiltRampDir", "ctlFade", "ctlDuration", "ctlLoop", "ctlSpinSpeed",
-    "ctlSpinDiff", "ctlSpinStars"],
+    "ctlSpinDiff", "ctlSpinStars", "ctlGal3d", "ctlGal3dAmt", "ctlGalStars", "ctlGalGlow"],
   stars: ["ctlSpread", "ctlStarDist", "ctlLayers", "ctlStarPar", "ctlTwinkle",
     "ctlTwinkleSpeed", "ctlStarSize", "ctlStarBright", "ctlStarSat",
     "ctlGenStars", "ctlOcclude", "ctlStarCull", "ctlAnchor", "ctlAiry",
