@@ -333,17 +333,29 @@ int galAt(vec2 q, out float rOut, out vec2 eOut) {
   rOut = rb;
   return best;
 }
-// Abtast-Drehung (der Inhalt dreht um +Winkel): starr + Wirbel innen
-vec2 spinWarp(vec2 q) {
+// Abtast-Drehung (der Inhalt dreht um +Winkel): starr + Wirbel innen.
+// rim = 1: Farbe (starr bis zum Rand, der Rand wird uebergeblendet);
+// rim = 0: Tiefe - sie laeuft am Rand weich auf die stehende Tiefe aus,
+// sonst springt die Parallaxe am Ellipsenrand und reisst eine Kante auf
+// (die Tiefe ist glatt, eine Scherung dort ist unsichtbar)
+vec2 spinWarpR(vec2 q, float rim) {
   if (uGalN == 0) return q;
   float r; vec2 e;
   int k = galAt(q, r, e);
   if (k < 0) return q;
   float t = 1.0 - r;
-  float a = uGalB[k].z + uGalB[k].w * t * t;
+  float a = (uGalB[k].z + uGalB[k].w * t * t) * (rim > 0.5 ? 1.0 : smoothstep(1.0, 0.75, r));
   float ca = cos(a), sa = sin(a);
   return galBack(vec2(ca * e.x + sa * e.y, -sa * e.x + ca * e.y), k);
 }
+vec2 spinWarp(vec2 q) { return spinWarpR(q, 1.0); }
+
+// Gradienten fuer die Mipmap-Wahl der Farbtextur: aus der UNGEDREHTEN
+// Bildposition (in main gesetzt). Eine Drehung aendert den Massstab nicht,
+// aber am Rand einer drehenden Galaxie springt die gedrehte Position von
+// Pixel zu Pixel - automatische Ableitungen waehlten dort eine verwaschene
+// Mipmap (gestrichelte Linie auf dem Ellipsenrand)
+vec2 gDx, gDy;
 
 // Farbabtastung: beim Hineinzoomen bikubisch (Catmull-Rom, 9 bilineare
 // Taps) statt nur bilinear - deutlich weniger Verpixelung bei Zoom > 1
@@ -362,18 +374,18 @@ vec3 sampleCol(vec2 uv) {
     vec2 uv0 = base - uColorTexel;
     vec2 uv3 = base + 2.0 * uColorTexel;
     vec3 col =
-      texture(uColor, vec2(uv0.x,  uv0.y)).rgb  * (w0.x  * w0.y) +
-      texture(uColor, vec2(uv12.x, uv0.y)).rgb  * (w12.x * w0.y) +
-      texture(uColor, vec2(uv3.x,  uv0.y)).rgb  * (w3.x  * w0.y) +
-      texture(uColor, vec2(uv0.x,  uv12.y)).rgb * (w0.x  * w12.y) +
-      texture(uColor, vec2(uv12.x, uv12.y)).rgb * (w12.x * w12.y) +
-      texture(uColor, vec2(uv3.x,  uv12.y)).rgb * (w3.x  * w12.y) +
-      texture(uColor, vec2(uv0.x,  uv3.y)).rgb  * (w0.x  * w3.y) +
-      texture(uColor, vec2(uv12.x, uv3.y)).rgb  * (w12.x * w3.y) +
-      texture(uColor, vec2(uv3.x,  uv3.y)).rgb  * (w3.x  * w3.y);
+      textureGrad(uColor, vec2(uv0.x,  uv0.y), gDx, gDy).rgb  * (w0.x  * w0.y) +
+      textureGrad(uColor, vec2(uv12.x, uv0.y), gDx, gDy).rgb  * (w12.x * w0.y) +
+      textureGrad(uColor, vec2(uv3.x,  uv0.y), gDx, gDy).rgb  * (w3.x  * w0.y) +
+      textureGrad(uColor, vec2(uv0.x,  uv12.y), gDx, gDy).rgb * (w0.x  * w12.y) +
+      textureGrad(uColor, vec2(uv12.x, uv12.y), gDx, gDy).rgb * (w12.x * w12.y) +
+      textureGrad(uColor, vec2(uv3.x,  uv12.y), gDx, gDy).rgb * (w3.x  * w12.y) +
+      textureGrad(uColor, vec2(uv0.x,  uv3.y), gDx, gDy).rgb  * (w0.x  * w3.y) +
+      textureGrad(uColor, vec2(uv12.x, uv3.y), gDx, gDy).rgb  * (w12.x * w3.y) +
+      textureGrad(uColor, vec2(uv3.x,  uv3.y), gDx, gDy).rgb  * (w3.x  * w3.y);
     return max(col, 0.0);
   }
-  return texture(uColor, uv).rgb;
+  return textureGrad(uColor, uv, gDx, gDy).rgb;
 }
 
 // Tiefe fuer die Iteration: R = Struktur-Tiefe (steilheitsbegrenzt), G =
@@ -388,18 +400,22 @@ float depthOf(vec2 uv, float mode) {
 // ganzen Flug kontrahiert (k <= 0,5): die Loesung ist eindeutig, fuenf
 // Schritte druecken den Restfehler unter 4 %, die lokale Dehnung bleibt
 // unter 1/(1-k) = 2-fach - keine Doppelbilder, kein Flimmern an Tiefenkanten
-vec2 solveUv(vec2 pr, float mode, float off, out vec2 qOut) {
+// rigid = 1: Farbe starr gedreht (Strukturen); 0: weich am Ellipsenrand
+// auslaufend (glattes Grund-Leuchten und Staub - sie loesen mit eigener
+// Tiefe und laegen sonst auf einem schmalen Ring ausserhalb der Ellipse
+// gedreht neben ungedrehtem Bild: feiner Riss am Rand)
+vec2 solveUv(vec2 pr, float mode, float off, out vec2 qOut, float rigid) {
   vec2 q = uCenter + pr / (uCover * uZoom);
-  vec2 uv = imgUv(spinWarp(q));
+  vec2 uvD = imgUv(spinWarpR(q, 0.0));
   for (int i = 0; i < 5; i++) {
-    float d = depthOf(uv, mode) + off;
+    float d = depthOf(uvD, mode) + off;
     float ex = 1.0 + uParallax * (d - 0.45) * uDepthRange;
     float scale = uCover * pow(uZoom, ex);
     q = uCenter + pr / scale + uTilt * (d - 0.45);
-    uv = imgUv(spinWarp(q));
+    uvD = imgUv(spinWarpR(q, 0.0));
   }
   qOut = q;
-  return uv;
+  return uGalN > 0 && rigid > 0.5 ? imgUv(spinWarp(q)) : uvD;
 }
 // Entstaubtes Leuchten: ausserhalb der Staubmaske das Originalbild in
 // voller Aufloesung, innerhalb das aufgefuellte Leuchten hinter dem Staub
@@ -422,18 +438,33 @@ vec3 emission(vec2 uv) {
 //     lokalen Tiefe: er schiebt sich ueber das Leuchten, dahinter erscheint
 //     aufgefuelltes Leuchten statt eines schwarzen Lochs
 // Keine Aufteilung einer Struktur auf mehrere Ebenen -> nichts erscheint doppelt
-vec3 volumetric(vec2 pr, vec2 uvF) {
-  vec2 qB, qT;
-  vec2 uvB = solveUv(pr, 1.0, 0.0, qB);
-  vec2 uvT = solveUv(pr, 0.0, uVolDustZ, qT);
-  vec3 col = max(texture(uVolB, uvB).rgb + emission(uvF) - texture(uVolB, uvF).rgb, 0.0);
-  vec4 Dt = texture(uVolD, uvT);
-  if (Dt.a > 0.001) {
-    vec3 iT = texture(uColor, uvT).rgb;
-    vec3 eT = mix(iT, max(iT, Dt.rgb), dustW(Dt.a));
-    col *= clamp(iT / max(eT, vec3(1.5 / 255.0)), 0.0, 1.0);
+// Kleinster Ellipsenradius ueber alle Galaxien (>= 1 = ausserhalb)
+float galRmin(vec2 q) {
+  float rb = 9.0;
+  for (int k = 0; k < 8; k++) {
+    if (k >= uGalN) break;
+    rb = min(rb, length(galE(q, k)) / uGalA[k].z);
   }
-  return col;
+  return rb;
+}
+vec3 volumetric(vec2 pr, vec2 uvF, vec2 qF) {
+  vec2 qB, qT;
+  vec2 uvB = solveUv(pr, 1.0, 0.0, qB, 0.0);
+  vec2 uvT = solveUv(pr, 0.0, uVolDustZ, qT, 0.0);
+  // In drehenden Galaxien (und einem Rand von 25 %) keine Schichten: dort
+  // gilt die starre Drehung des Fotos - gleitendes Grund-Leuchten oder
+  // schwebender Staub wuerden ihr widersprechen und am Rand reissen
+  float lay = uGalN > 0 ? smoothstep(1.0, 1.25, galRmin(qF)) : 1.0;
+  vec3 eF = emission(uvF);
+  vec3 col = max(eF + lay * (texture(uVolB, uvB).rgb - texture(uVolB, uvF).rgb), 0.0);
+  // Abtastungen ohne Verzweigung (definierte Ableitungen an Staubraendern)
+  vec4 DF = texture(uVolD, uvF), Dt = texture(uVolD, uvT);
+  vec3 iT = textureGrad(uColor, uvT, gDx, gDy).rgb, iF = textureGrad(uColor, uvF, gDx, gDy).rgb;
+  vec3 eT = mix(iT, max(iT, Dt.rgb), dustW(Dt.a));
+  vec3 eFb = mix(iF, max(iF, DF.rgb), dustW(DF.a));
+  vec3 rT = clamp(iT / max(eT, vec3(1.5 / 255.0)), 0.0, 1.0);
+  vec3 rF = clamp(iF / max(eFb, vec3(1.5 / 255.0)), 0.0, 1.0);
+  return col * mix(rF, rT, lay);
 }
 
 void main() {
@@ -448,11 +479,13 @@ void main() {
   // "Objekt in echte Tiefe" (uObjFar): das Bild verhaelt sich wie ein
   // fernes, starres Objekt - alle Sterne ziehen davor vorbei
   vec2 q;
-  vec2 uv = solveUv(pr, 0.0, 0.0, q);
+  vec2 uv = solveUv(pr, 0.0, 0.0, q, 1.0);
+  gDx = dFdx(imgUv(q));
+  gDy = dFdy(imgUv(q));
 
   vec3 col;
   if (uVol > 0.5 && uObjFar < 0.5 && uMoonMode < 0.5) {
-    col = volumetric(pr, uv);
+    col = volumetric(pr, uv, q);
   } else {
     col = sampleCol(uv);
   }
@@ -460,16 +493,18 @@ void main() {
   // Quelle) auf den stehenden Himmel am Zielpunkt. Im Ruhebild exakt das
   // Foto. Im aeussersten Ring (85-100 %) weich zum ungedrehten Bild - dort
   // ist das Galaxienlicht praktisch null, eine Scherzone gibt es nicht
+  // WICHTIG: alle Abtastungen AUSSERHALB der Verzweigung - innerhalb waeren
+  // die Ableitungen fuer die Mipmap-Wahl an der Ellipsengrenze undefiniert
+  // (falsche Pixel als gestrichelte Linie genau auf dem Rand)
   if (uGalN > 0) {
     float rg; vec2 eg;
     int kg = galAt(q, rg, eg);
-    if (kg >= 0) {
-      vec2 uvQ = imgUv(q);
-      vec3 rot = col + texture(uGalBk, uvQ).rgb - texture(uGalBk, uv).rgb;
-      float al = 1.0 - smoothstep(0.85, 1.0, rg);
-      col = al >= 0.999 ? rot : mix(sampleCol(uvQ), rot, al);
-      col = max(col, 0.0);
-    }
+    vec2 uvQ = imgUv(q);
+    vec3 cQ = sampleCol(uvQ);
+    vec3 bkQ = texture(uGalBk, uvQ).rgb, bkS = texture(uGalBk, uv).rgb;
+    float al = 1.0 - smoothstep(0.85, 1.0, rg);
+    vec3 comp = max(mix(cQ, col + bkQ - bkS, al), 0.0);
+    col = kg >= 0 ? comp : col;
   }
   // Nebelfarben: HII-/OIII-/SII-artige Farbbereiche gezielt anpassen.
   // Arbeitet auf dem Farbton (Rot, Türkis, Gold) - wirkt damit auf RGB-
