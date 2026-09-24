@@ -42,12 +42,12 @@ const state = {
   spinDiff: 40,          // 0 = starr, 100 = innen deutlich schneller
   spinFlat: 0,           // Ellipsen-Stauchung für geneigte Galaxien 0..100
   spinTilt: 0,           // Ellipsen-Winkel in Grad
-  spinCenter: { x: 0, y: 0 }, // Rotationszentrum in Ebenen-Einheiten
+  spinCenter: { x: 0, y: 0 }, // Rotationszentrum in Ebenen-Einheiten (= ausgewaehlte Galaxie)
+  galaxies: [],          // Galaxien-Rotation v2: [{ x, y, rad, flat, tilt, twist, dir, name, auto }]
+  galSel: 0,             // ausgewaehlte Galaxie (Regler bearbeiten diese)
   spinPick: false,       // nächster Klick setzt das Rotationszentrum
   labelPick: false,      // nächster Klick setzt ein eigenes Objekt-Label
   spinShow: false,       // Rotationsbereich als rote Maske einblenden
-  spinMaskAmt: 0,        // Helligkeitsmaske einbeziehen 0..100 (0 = nur Kreis/Ellipse)
-  spinMaskSmooth: 6,     // eigene Glättung der Spin-Helligkeitsmaske
   spinStars: false,      // Sterne im Rotationsbereich mitdrehen
   tiltX: 0,              // -100..100
   tiltY: 0,
@@ -210,6 +210,7 @@ const u1f = (p, n, v) => gl.uniform1f(loc(p, n), v);
 const u1i = (p, n, v) => gl.uniform1i(loc(p, n), v);
 const u2f = (p, n, x, y) => gl.uniform2f(loc(p, n), x, y);
 const u3f = (p, n, x, y, z) => gl.uniform3f(loc(p, n), x, y, z);
+const u4fv = (p, n, arr) => gl.uniform4fv(loc(p, n), arr);
 
 // Maximale Texturkante: hochskalierte Bilder dürfen bis 8192 px nutzen
 const MAX_TEX = Math.min(8192, gl.getParameter(gl.MAX_TEXTURE_SIZE));
@@ -247,14 +248,13 @@ uniform float uCover;       // Grundskalierung, damit Bild das Format füllt
 uniform vec2 uCenter;       // Kameraziel in Bildebenen-Einheiten
 uniform vec2 uTilt;         // Kipp-Parallaxe in Bildebenen-Einheiten
 uniform float uDepthRange;  // Räumlichkeit: Spreizung der Tiefen-Zoomraten
-uniform vec2 uSpinCenter;   // Galaxien-Rotation: Zentrum (Ebenen-Einheiten)
-uniform float uSpinAngle;   // aktueller Drehwinkel im Kern (rad)
-uniform float uSpinRadius;  // Wirkradius in Ebenen-Einheiten
-uniform float uSpinDiff;    // 0 = starre Rotation, 1 = innen deutlich schneller
-uniform vec3 uSpinEll;      // Ellipse: (cos Neigung, sin Neigung, Stauchung)
-uniform float uSpinShow;    // 1 = Rotationsbereich als rote Maske einblenden
-uniform sampler2D uSpinMask; // Helligkeitsmaske (eigene Glättung)
-uniform float uSpinMaskAmt;  // 0 = ignorieren, 1 = voll gewichten
+// Galaxien-Rotation v2: bis zu 8 Galaxien, je eine Ellipse (Scheibenebene)
+uniform int uGalN;          // Anzahl der Galaxien (0 = aus)
+uniform vec4 uGalA[8];      // Zentrum x, y (Ebene), grosse Halbachse, Stauchung b/a
+uniform vec4 uGalB[8];      // cos/sin der Ellipsenlage, Drehwinkel (rad), Wirbel innen (rad)
+uniform sampler2D uGalBk;   // Himmel hinter den Galaxien (aus der Umgebung aufgefuellt)
+uniform float uSpinShow;    // 1 = Galaxien-Ellipsen einblenden
+uniform float uGalSel;      // ausgewaehlte Galaxie (Vorschau hervorheben)
 uniform vec3 uBandSat;      // Nebelfarben: Sättigung je Band (HII, OIII, SII)
 uniform vec3 uBandHue;      // Nebelfarben: Farbton-Shift je Band (Kreisanteil)
 uniform vec3 uBandCen;      // Erkennungs-Farbton je Band (Kreisanteil, einstellbar)
@@ -297,41 +297,52 @@ float bandW(float h, float center, float width) {
   return 0.5 + 0.5 * cos(3.14159265 * t);
 }
 
-// Gewicht der Helligkeitsmaske an einem Ebenen-Punkt (1 = volle Drehung)
-float spinMaskW(vec2 q) {
-  if (uSpinMaskAmt == 0.0) return 1.0;
-  float m = texture(uSpinMask, vec2(q.x / uImgAspect, q.y) + 0.5).r;
-  return mix(1.0, m, uSpinMaskAmt);
+// Galaxien-Rotation v2 - warum nichts mehr verzerrt oder doppelt erscheint:
+// Spiralarme sind Dichtewellen, deren MUSTER sich starr dreht. Deshalb dreht
+// sich jede Galaxie starr in ihrer (geneigten) Scheibenebene - eine reine
+// Drehung verzerrt nie. Dazu kommt ein kleiner, BEGRENZTER Wirbel (innen
+// etwas voraus), der mit dem Winkel waechst, aber bei ~11 Grad sattigt:
+// das wirkt organisch, wickelt sich aber nie auf. Der Winkel haengt nur vom
+// Ellipsenradius ab - jeder Ring dreht in sich, die Abbildung bleibt
+// eindeutig (keine Doppelbilder; die alte Helligkeitsmaske verletzte das).
+// Gedreht wird nur das Licht der Galaxie UEBER dem Himmel; der Himmel
+// dahinter (aufgefuellt) bleibt stehen - keine Scherzone am Rand
+vec2 galE(vec2 q, int k) {
+  vec2 d = q - uGalA[k].xy;
+  float c = uGalB[k].x, s = uGalB[k].y;
+  vec2 e = vec2(c * d.x + s * d.y, -s * d.x + c * d.y);
+  e.y /= uGalA[k].w;
+  return e;
 }
-
-// Radius eines Ebenen-Punkts im (elliptischen) Spin-Raum, 1 = Maskenrand
-float spinR(vec2 q) {
-  vec2 d = q - uSpinCenter;
-  float c = uSpinEll.x, s = uSpinEll.y;
-  vec2 e = mat2(c, -s, s, c) * d;
-  e.y /= uSpinEll.z;
-  return length(e) / uSpinRadius;
+vec2 galBack(vec2 e, int k) {
+  float c = uGalB[k].x, s = uGalB[k].y;
+  e.y *= uGalA[k].w;
+  return uGalA[k].xy + vec2(c * e.x - s * e.y, s * e.x + c * e.y);
 }
-
-// Galaxien-Rotation: dreht die Bildabtastung nur innerhalb des Wirkradius um
-// das gesetzte Zentrum. Zum Rand hin läuft die Drehung weich auf null aus
-// (keine sichtbare Kante); der Differenzial-Anteil lässt den Kern schneller
-// rotieren als die Außenbereiche – wie bei einer echten Galaxie.
+// Galaxie, in deren Ellipse q liegt (-1 = keine); r = Ellipsenradius 0..1
+int galAt(vec2 q, out float rOut, out vec2 eOut) {
+  int best = -1;
+  float rb = 1.0;
+  eOut = vec2(0.0);
+  for (int k = 0; k < 8; k++) {
+    if (k >= uGalN) break;
+    vec2 e = galE(q, k);
+    float r = length(e) / uGalA[k].z;
+    if (r < rb) { rb = r; best = k; eOut = e; }
+  }
+  rOut = rb;
+  return best;
+}
+// Abtast-Drehung (der Inhalt dreht um +Winkel): starr + Wirbel innen
 vec2 spinWarp(vec2 q) {
-  if (uSpinAngle == 0.0) return q;
-  vec2 d = q - uSpinCenter;
-  float c = uSpinEll.x, s = uSpinEll.y;
-  vec2 e = mat2(c, -s, s, c) * d;   // in die Achsenlage der Ellipse drehen
-  e.y /= uSpinEll.z;                // Stauchung aufheben -> Kreisraum
-  float r = length(e) / uSpinRadius;
-  if (r >= 1.0) return q;
-  float fall = smoothstep(1.0, 0.55, r);
-  float diffW = mix(1.0, 0.25 / (0.25 + 0.75 * r), uSpinDiff);
-  float a = uSpinAngle * fall * diffW * spinMaskW(q);
+  if (uGalN == 0) return q;
+  float r; vec2 e;
+  int k = galAt(q, r, e);
+  if (k < 0) return q;
+  float t = 1.0 - r;
+  float a = uGalB[k].z + uGalB[k].w * t * t;
   float ca = cos(a), sa = sin(a);
-  e = mat2(ca, -sa, sa, ca) * e;
-  e.y *= uSpinEll.z;                // zurück in die Bildlage
-  return uSpinCenter + mat2(c, s, -s, c) * e;
+  return galBack(vec2(ca * e.x + sa * e.y, -sa * e.x + ca * e.y), k);
 }
 
 // Farbabtastung: beim Hineinzoomen bikubisch (Catmull-Rom, 9 bilineare
@@ -445,6 +456,21 @@ void main() {
   } else {
     col = sampleCol(uv);
   }
+  // Galaxien-Rotation: gedrehtes Galaxienlicht (Bild minus Himmel an der
+  // Quelle) auf den stehenden Himmel am Zielpunkt. Im Ruhebild exakt das
+  // Foto. Im aeussersten Ring (85-100 %) weich zum ungedrehten Bild - dort
+  // ist das Galaxienlicht praktisch null, eine Scherzone gibt es nicht
+  if (uGalN > 0) {
+    float rg; vec2 eg;
+    int kg = galAt(q, rg, eg);
+    if (kg >= 0) {
+      vec2 uvQ = imgUv(q);
+      vec3 rot = col + texture(uGalBk, uvQ).rgb - texture(uGalBk, uv).rgb;
+      float al = 1.0 - smoothstep(0.85, 1.0, rg);
+      col = al >= 0.999 ? rot : mix(sampleCol(uvQ), rot, al);
+      col = max(col, 0.0);
+    }
+  }
   // Nebelfarben: HII-/OIII-/SII-artige Farbbereiche gezielt anpassen.
   // Arbeitet auf dem Farbton (Rot, Türkis, Gold) - wirkt damit auf RGB-
   // wie auf Schmalband-Paletten; Graues bleibt unangetastet
@@ -477,14 +503,19 @@ void main() {
       col = col * 0.15 + wSel * (col + vec3(0.10, 0.32, 0.12));
     }
   }
-  // Masken-Vorschau: rote Einfärbung entspricht exakt der Drehstärke
-  // (gleiche Falloff-Kurve), plus dünner Ring am Maskenrand
-  if (uSpinShow > 0.5) {
-    float r = spinR(q);
-    float w = smoothstep(1.0, 0.55, r) * spinMaskW(q);
-    col = mix(col, vec3(1.0, 0.15, 0.1), w * 0.4);
-    float ring = smoothstep(0.05, 0.0, abs(r - 1.0));
-    col = mix(col, vec3(1.0, 0.35, 0.25), ring * 0.85);
+  // Vorschau der Galaxien: Ellipsen als Ringe (Auswahl gelb), Innenflaeche
+  // rot getoent, der weiche Randring schwaecher
+  if (uSpinShow > 0.5 && uGalN > 0) {
+    for (int j = 0; j < 8; j++) {
+      if (j >= uGalN) break;
+      float rj = length(galE(q, j)) / uGalA[j].z;
+      float ring = smoothstep(0.035, 0.0, abs(rj - 1.0));
+      vec3 rc = float(j) == uGalSel ? vec3(1.0, 0.82, 0.25) : vec3(1.0, 0.35, 0.25);
+      col = mix(col, rc, ring * 0.85);
+    }
+    float rs; vec2 es;
+    int ks = galAt(q, rs, es);
+    if (ks >= 0) col = mix(col, vec3(1.0, 0.15, 0.1), (1.0 - smoothstep(0.85, 1.0, rs)) * (float(ks) == uGalSel ? 0.3 : 0.18));
   }
   // Mond-Modus: alles ausserhalb der erkannten Scheibe ist Himmel - schwarz.
   // Ohne diese Maske sampeln Hintergrund-Pixel (ferne Tiefe) mit anderem
@@ -544,14 +575,10 @@ uniform float uGaiaOnly;  // 1 = Wissenschafts-Modus: nur Sterne mit Gaia-Tiefe
 // Sterne rotieren mit der Galaxie (gleiche Formeln wie spinWarp im Hintergrund;
 // Vorzeichen invertiert, weil dort die Abtastung statt des Inhalts gedreht wird)
 uniform float uSpinStars;   // 1 = Sterne im Rotationsbereich mitdrehen
-uniform float uSpinAngleS;  // akkumulierter Winkel zum Zeitpunkt t
-uniform float uSpinAngleS2; // Winkel kurz danach (für die Streifen)
-uniform vec2 uSpinCenterS;
-uniform float uSpinRadiusS;
-uniform float uSpinDiffS;
-uniform vec3 uSpinEllS;
-uniform sampler2D uSpinMaskS;
-uniform float uSpinMaskAmtS;
+uniform int uGalNS;         // Galaxien wie im Hintergrund-Shader
+uniform vec4 uGalAS[8];     // Zentrum, Halbachse, Stauchung
+uniform vec4 uGalBS[8];     // cos/sin Lage, Winkel und Wirbel zum Zeitpunkt t
+uniform vec4 uGalCS[8];     // Winkel und Wirbel kurz danach (Streifen)
 uniform float uImgAspectS;
 uniform float uPmYears;   // Zeitraffer: verstrichene Jahre zum Zeitpunkt t
 uniform float uPmYears2;  // ... und kurz danach (für die Streifen)
@@ -582,28 +609,33 @@ out float vPatchHalf; // halbe Patch-Groesse auf dem Bildschirm in px
 out float vSpike;     // Laenge der Beugungsspikes in px (0 = keine)
 out vec4 vOrgP;       // Sternbibliothek: Staerke, Radius px, Kachel (+16 = gespiegelt), Drehung
 
-// Sternposition mit der Galaxien-Rotation mitdrehen (identische Falloff-,
-// Differenzial- und Masken-Logik wie im Hintergrund-Shader)
-vec2 spinStar(vec2 p, float angle) {
-  if (uSpinStars < 0.5 || angle == 0.0) return p;
-  vec2 d = p - uSpinCenterS;
-  float c = uSpinEllS.x, s = uSpinEllS.y;
-  vec2 e = mat2(c, -s, s, c) * d;
-  e.y /= uSpinEllS.z;
-  float r = length(e) / uSpinRadiusS;
-  if (r >= 1.0) return p;
-  float fall = smoothstep(1.0, 0.55, r);
-  float diffW = mix(1.0, 0.25 / (0.25 + 0.75 * r), uSpinDiffS);
-  float mw = 1.0;
-  if (uSpinMaskAmtS > 0.0) {
-    float m = textureLod(uSpinMaskS, vec2(p.x / uImgAspectS, p.y) + 0.5, 0.0).r;
-    mw = mix(1.0, m, uSpinMaskAmtS);
+// Sternposition mit der Galaxien-Rotation mitdrehen (gleiche Ellipsen, Winkel
+// und Wirbel wie im Hintergrund; der Inhalt dreht um +Winkel). Am Ellipsen-
+// rand laeuft die Drehung weich aus - Sterne sind Punkte, eine Scherung
+// dort verschmiert nichts
+vec2 spinStar(vec2 p, float second) {
+  if (uSpinStars < 0.5 || uGalNS == 0) return p;
+  int best = -1;
+  float rb = 1.0;
+  vec2 eb = vec2(0.0);
+  for (int k = 0; k < 8; k++) {
+    if (k >= uGalNS) break;
+    vec2 d = p - uGalAS[k].xy;
+    float c = uGalBS[k].x, s = uGalBS[k].y;
+    vec2 e = vec2(c * d.x + s * d.y, -s * d.x + c * d.y);
+    e.y /= uGalAS[k].w;
+    float r = length(e) / uGalAS[k].z;
+    if (r < rb) { rb = r; best = k; eb = e; }
   }
-  float a = -angle * fall * diffW * mw; // Inhalt dreht entgegen der Abtastung
+  if (best < 0) return p;
+  vec2 aw = second > 0.5 ? uGalCS[best].xy : uGalBS[best].zw;
+  float t = 1.0 - rb;
+  float a = (aw.x + aw.y * t * t) * smoothstep(1.0, 0.85, rb);
   float ca = cos(a), sa = sin(a);
-  e = mat2(ca, -sa, sa, ca) * e;
-  e.y *= uSpinEllS.z;
-  return uSpinCenterS + mat2(c, s, -s, c) * e;
+  vec2 e = vec2(ca * eb.x - sa * eb.y, sa * eb.x + ca * eb.y);
+  e.y *= uGalAS[best].w;
+  float c = uGalBS[best].x, s = uGalBS[best].y;
+  return uGalAS[best].xy + vec2(c * e.x - s * e.y, s * e.x + c * e.y);
 }
 
 void main() {
@@ -676,7 +708,7 @@ void main() {
   // Wer bewusst Bewegung will, zieht die Stern-Parallaxe ueber 100 %
   if (uMoonMode > 0.5) ex = 0.3 * max(0.0, uStarPar - 1.0);
   float scale = uCover * pow(uZoom, ex);
-  vec2 sp1 = spinStar(aPos + aPm * uPmYears, uSpinAngleS);
+  vec2 sp1 = spinStar(aPos + aPm * uPmYears, 0.0);
   vec2 tOff = mix(uTilt * (depth - 0.45), uTiltB * (dNA - 0.45), anchorW);
   vec2 pr = (sp1 - uCenter - tOff) * scale;
   depth = mix(depth, dNA, anchorW);
@@ -747,7 +779,7 @@ void main() {
   if (uStreak > 0.0) {
     float scale2 = uCover * pow(uZoom2, ex);
     vec2 tOff2 = mix(uTilt2 * (depth - 0.45), uTiltB2 * (dNA - 0.45), anchorW);
-    vec2 pr2 = (spinStar(aPos + aPm * uPmYears2, uSpinAngleS2) - uCenter2 - tOff2) * scale2;
+    vec2 pr2 = (spinStar(aPos + aPm * uPmYears2, 1.0) - uCenter2 - tOff2) * scale2;
     float c2 = cos(uAngle2), s2 = sin(uAngle2);
     vec2 p2 = mat2(c2, s2, -s2, c2) * pr2;
     vec2 clip2 = vec2(p2.x * 2.0 / uViewAspect, p2.y * 2.0);
@@ -1267,7 +1299,8 @@ const starBuf = gl.createBuffer();
 
 let texColor = null;
 let texDepth = null;
-let texSpinMask = null;
+let texGalBk = null;      // Himmel hinter den Galaxien (aufgefuellt, Float)
+let galBkTex = null, galBkSig = "", galBkTimer = 0;
 let texVolL = [];                   // Volumetrischer Nebel: [entstaubt + Staubmaske, Grund-Leuchten]
 let volBuiltN = 0;                  // 1 = Volumetrik-Texturen vorhanden
 let volBuiltTex = null;             // Farbtextur, fuer die sie gebaut wurden (neues/gespiegeltes Bild -> neu)
@@ -2168,22 +2201,135 @@ function checkDepthFlightSig() {
 }
 
 /**
- * Eigene Helligkeitsmaske für die Galaxien-Rotation: unabhängig von der
- * Parallaxe-Tiefenkarte, mit eigener (typisch geringerer) Glättung – so
- * folgt die Drehung der Galaxienstruktur statt dem groben Tiefenverlauf.
+ * Galaxien-Rotation v2: Himmel hinter den Galaxien. Innerhalb aller
+ * Ellipsen wird der Himmel aus der Umgebung aufgefuellt (Push-Pull auf einer
+ * geoeffneten Fassung ohne Sterne/Sternreste); gedreht wird im Shader nur
+ * das Licht der Galaxie ueber diesem Himmel. 512 px reichen - der Himmel ist
+ * glatt. Aufrufer beim Bild- oder Spiegelwechsel markieren nur als veraltet,
+ * gebaut wird entprellt im Renderer (auch bei Ellipsen-Aenderungen)
  */
-function buildSpinMask() {
+function buildSpinMask() { galBkTex = null; }
+
+function galGeomSig() {
+  return JSON.stringify(state.galaxies.map((g) => [g.x, g.y, g.rad, g.flat, g.tilt].map((v) => +(+v).toFixed(4))));
+}
+
+function buildGalaxyBg() {
   if (!state.starless) return;
-  const m = computeLuminanceMap(state.spinMaskSmooth, false);
-  if (texSpinMask) gl.deleteTexture(texSpinMask);
-  texSpinMask = makeTexture(m.canvas);
-  // CPU-Kopie für die Marker-Projektion (spinMaskAtPlane)
-  const g = m.canvas.getContext("2d");
-  state.spinMaskData = {
-    w: m.canvas.width,
-    h: m.canvas.height,
-    data: g.getImageData(0, 0, m.canvas.width, m.canvas.height).data,
-  };
+  const src = downscale(state.starless, 512);
+  const w = src.width, h = src.height, n = w * h;
+  const px = src.getContext("2d").getImageData(0, 0, w, h).data;
+  const imgAspect = state.starless.width / state.starless.height;
+  const rgbO = new Float32Array(n * 3), chn = new Float32Array(n);
+  const ro = Math.max(2, Math.round(w * 0.006));
+  for (let c = 0; c < 3; c++) {
+    for (let i = 0; i < n; i++) chn[i] = px[i * 4 + c] / 255;
+    const o = openChannel(chn, w, h, ro);
+    for (let i = 0; i < n; i++) rgbO[i * 3 + c] = o[i];
+  }
+  const valid = new Float32Array(n).fill(1);
+  for (const g of state.galaxies) {
+    const t = g.tilt * Math.PI / 180, cs = Math.cos(t), sn = Math.sin(t);
+    for (let y = 0; y < h; y++) {
+      const qy = 0.5 - (y + 0.5) / h;
+      for (let x = 0; x < w; x++) {
+        const qx = ((x + 0.5) / w - 0.5) * imgAspect;
+        const dx = qx - g.x, dy = qy - g.y;
+        const ex = cs * dx + sn * dy, ey = (-sn * dx + cs * dy) / g.flat;
+        // etwas Rand dazu: der Himmel darf die aeusseren Halo-Reste nicht
+        // als "Himmel" uebernehmen
+        if (Math.hypot(ex, ey) < g.rad * 1.04) valid[y * w + x] = 0;
+      }
+    }
+  }
+  const fill = pushPullFill(rgbO, valid, w, h);
+  const rgba = new Float32Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    rgba[i * 4] = fill[i * 3]; rgba[i * 4 + 1] = fill[i * 3 + 1]; rgba[i * 4 + 2] = fill[i * 3 + 2]; rgba[i * 4 + 3] = 1;
+  }
+  if (texGalBk) gl.deleteTexture(texGalBk);
+  texGalBk = makeTextureFloat(w, h, rgba);
+  galBkTex = texColor;
+  galBkSig = galGeomSig();
+}
+
+// Ausgewaehlte Galaxie <-> Regler: die bisherigen Regler (Zentrum, Radius,
+// Ellipse, Lage, Wirbel) bearbeiten immer die ausgewaehlte Galaxie. Ohne
+// Liste entsteht Galaxie 1 aus den Reglern (alte Projekte, Presets)
+function galEnsure() {
+  if (!Array.isArray(state.galaxies)) state.galaxies = [];
+  if (!state.galaxies.length) {
+    state.galaxies.push({ x: state.spinCenter.x, y: state.spinCenter.y,
+      rad: Math.max(0.0075, (state.spinRadius / 100) * 0.75), flat: 1 - (state.spinFlat / 100) * 0.7,
+      tilt: state.spinTilt, twist: state.spinDiff, dir: 1, name: "", auto: false });
+    state.galSel = 0;
+  }
+  if (!(state.galSel >= 0 && state.galSel < state.galaxies.length)) state.galSel = 0;
+}
+function galSyncFromState() {
+  galEnsure();
+  if (galSelecting) return;
+  const key = galSliderKey();
+  if (key === galSyncedKey) return;
+  galSyncedKey = key;
+  const g = state.galaxies[state.galSel];
+  g.x = state.spinCenter.x; g.y = state.spinCenter.y;
+  g.rad = Math.max(0.0075, (state.spinRadius / 100) * 0.75);
+  g.flat = 1 - (state.spinFlat / 100) * 0.7;
+  g.tilt = state.spinTilt;
+  g.twist = state.spinDiff;
+}
+// Waehrend der Auswahl setzen wir die Regler nacheinander - der Abgleich
+// Regler -> Galaxie darf dabei nicht laufen (sonst ueberschreibt der erste
+// Regler die noch alten Werte der anderen)
+let galSelecting = false;
+function galSelect(i) {
+  galEnsure();
+  state.galSel = Math.max(0, Math.min(state.galaxies.length - 1, i));
+  const g = { ...state.galaxies[state.galSel] };
+  galSelecting = true;
+  try {
+    state.spinCenter = { x: g.x, y: g.y };
+    setCtl("ctlSpinRadius", Math.max(1, Math.min(100, +(g.rad / 0.75 * 100).toFixed(1))));
+    setCtl("ctlSpinFlat", Math.max(0, Math.min(100, Math.round((1 - g.flat) / 0.7 * 100))));
+    setCtl("ctlSpinTilt", Math.round(((g.tilt % 180) + 180) % 180));
+    setCtl("ctlSpinDiff", Math.round(g.twist));
+  } finally {
+    galSelecting = false;
+  }
+  // Exakte Werte der Galaxie behalten (Regler runden auf ihre Schrittweite)
+  Object.assign(state.galaxies[state.galSel], { rad: g.rad, flat: g.flat, tilt: g.tilt, twist: g.twist });
+  galSyncedKey = galSliderKey();
+  if (typeof rebuildGalList === "function") rebuildGalList();
+}
+// Regler-Stand, mit dem die Auswahl zuletzt abgeglichen wurde: nur wenn sich
+// ein Regler wirklich bewegt, gehen seine (gerundeten) Werte in die Galaxie
+let galSyncedKey = "";
+function galSliderKey() {
+  return [state.spinCenter.x, state.spinCenter.y, state.spinRadius, state.spinFlat, state.spinTilt, state.spinDiff].join("|");
+}
+// Winkel je Galaxie zum Flugzeitpunkt te: starr (global in Grad/s, Richtung
+// je Galaxie) + begrenzter Wirbel innen (waechst mit dem Winkel, sattigt bei
+// 0,2 rad = 11,5 Grad - organisch, wickelt sich aber nie auf)
+function galAngles(te) {
+  const base = state.spinSpeed * Math.PI / 180 * te;
+  return state.galaxies.map((g) => {
+    const a = base * (g.dir === undefined ? 1 : g.dir);
+    const tw = (g.twist / 100) * Math.max(-0.2, Math.min(0.2, 0.35 * a));
+    return { a, tw };
+  });
+}
+function galUniforms(te, te2) {
+  const N = Math.min(8, state.galaxies.length);
+  const A = new Float32Array(32), B = new Float32Array(32), C = new Float32Array(32);
+  const g1 = galAngles(te), g2 = galAngles(te2 === undefined ? te : te2);
+  for (let k = 0; k < N; k++) {
+    const g = state.galaxies[k], t = g.tilt * Math.PI / 180;
+    A.set([g.x, g.y, g.rad, Math.max(0.05, g.flat)], k * 4);
+    B.set([Math.cos(t), Math.sin(t), g1[k].a, g1[k].tw], k * 4);
+    C.set([g2[k].a, g2[k].tw, 0, 0], k * 4);
+  }
+  return { N, A, B, C };
 }
 
 function boxBlurH(src, dst, w, h, r) {
@@ -3199,9 +3345,9 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
   const bgTiltY = (state.tiltY / 100) * 0.08 + cam.tiltAddY + cam.driftTY * drK;
   // Galaxien-Rotation: Objekte im Spin-Bereich wandern im Bild mit -
   // die Marker müssen dieselbe Verschiebung mitmachen wie der Hintergrund
-  const spinAngle = state.spinSpeed * Math.PI / 180 * cam.te;
+  const spinTe = cam.te;
   const toScreen = (P) => {
-    const S = spinDisplace(P.x, P.y, spinAngle);
+    const S = spinDisplace(P.x, P.y, spinTe, false);
     const d = state.objFar ? 0.02 : depthAtPlane(S.x, S.y, imgAspect);
     const ex = 1 + parallax * (d - 0.45) * depthRange;
     const scaleD = cover * Math.pow(cam.zoom, ex);
@@ -3253,7 +3399,7 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
   const toScreenStar = (L) => {
     const sd = starLabelDepth(L);
     if (!sd) return toScreen(L); // kein Maskenstern gefunden -> wie Nebel
-    const S = state.spinStars ? spinDisplace(L.x, L.y, spinAngle) : { x: L.x, y: L.y };
+    const S = state.spinStars ? spinDisplace(L.x, L.y, spinTe, true) : { x: L.x, y: L.y };
     const dN = state.objFar ? 0.02 : depthAtPlane(L.x, L.y, imgAspect);
     let w = 0;
     if (state.anchorStars > 0) {
@@ -4156,11 +4302,11 @@ function render(forcedT) {
   gl.activeTexture(gl.TEXTURE1);
   gl.bindTexture(gl.TEXTURE_2D, texDepth);
   gl.activeTexture(gl.TEXTURE2);
-  gl.bindTexture(gl.TEXTURE_2D, texSpinMask || texBlack);
+  gl.bindTexture(gl.TEXTURE_2D, texGalBk || texBlack);
   gl.activeTexture(gl.TEXTURE0);
   u1i(bgProg, "uColor", 0);
   u1i(bgProg, "uDepth", 1);
-  u1i(bgProg, "uSpinMask", 2);
+  u1i(bgProg, "uGalBk", 2);
   u1f(bgProg, "uViewAspect", viewAspect);
   u1f(bgProg, "uImgAspect", imgAspect);
   u1f(bgProg, "uZoom", cam.zoom);
@@ -4176,20 +4322,26 @@ function render(forcedT) {
   u2f(bgProg, "uColorTexel", 1 / (state.texColorW || 2048), 1 / texH);
   u1f(bgProg, "uBicubic", magnify > 1.05 ? 1 : 0);
   u1f(bgProg, "uObjFar", state.objFar ? 1 : 0);
-  // Galaxien-Rotation (te-basiert -> im Loop-Modus nahtlos hin & zurück)
-  u1f(bgProg, "uSpinAngle", state.spinSpeed * Math.PI / 180 * cam.te);
-  u2f(bgProg, "uSpinCenter", state.spinCenter.x, state.spinCenter.y);
+  // Galaxien-Rotation v2 (te-basiert -> im Loop-Modus nahtlos hin & zurueck).
+  // Aktiv bei Drehung oder zum Einrichten (Ellipsen-Vorschau)
+  galSyncFromState();
+  const galShow = (state.spinShow || state.spinPick) && !state.exporting;
+  const galOn = state.spinSpeed !== 0 || galShow;
+  if (galOn && state.starless && (galBkTex !== texColor || galBkSig !== galGeomSig())) {
+    if (state.exporting || !texGalBk) { clearTimeout(galBkTimer); galBkTimer = 0; buildGalaxyBg(); }
+    else if (!galBkTimer) galBkTimer = setTimeout(() => { galBkTimer = 0; buildGalaxyBg(); }, 250);
+  }
+  const GU = galUniforms(cam.te);
+  u1i(bgProg, "uGalN", galOn ? GU.N : 0);
+  u4fv(bgProg, "uGalA", GU.A);
+  u4fv(bgProg, "uGalB", GU.B);
+  u1f(bgProg, "uGalSel", state.galSel);
   const mdU = state.moonMode && state.moonDisk ? state.moonDisk : null;
   u1f(bgProg, "uMoonMode", mdU ? 1 : 0);
   u2f(bgProg, "uMoonC", mdU ? mdU.cx : 0, mdU ? 1 - mdU.cy : 0);
   u1f(bgProg, "uMoonR", mdU ? mdU.r : 1);
-  u1f(bgProg, "uSpinRadius", Math.max(0.02, (state.spinRadius / 100) * 0.75));
-  u1f(bgProg, "uSpinDiff", state.spinDiff / 100);
-  const spinTiltRad = state.spinTilt * Math.PI / 180;
-  u3f(bgProg, "uSpinEll", Math.cos(spinTiltRad), Math.sin(spinTiltRad), 1 - (state.spinFlat / 100) * 0.7);
-  // Masken-Vorschau nie im Export; im "Zentrum setzen"-Modus automatisch an
-  u1f(bgProg, "uSpinShow", (state.spinShow || state.spinPick) && !state.exporting ? 1 : 0);
-  u1f(bgProg, "uSpinMaskAmt", texSpinMask ? state.spinMaskAmt / 100 : 0);
+  // Ellipsen-Vorschau nie im Export; beim Setzen/Hinzufuegen automatisch an
+  u1f(bgProg, "uSpinShow", galShow ? 1 : 0);
   // Nebelfarben (HII/OIII/SII): Sättigung als Faktor, Farbton als Kreisanteil
   const bandSat = [state.h2Sat / 100, state.o3Sat / 100, state.s2Sat / 100];
   const bandHue = [state.h2Hue / 360, state.o3Hue / 360, state.s2Hue / 360];
@@ -4313,19 +4465,13 @@ function render(forcedT) {
     u1f(starProg, "uGaiaAmt", state.gaiaAmt / 100);
     u1f(starProg, "uGaiaOnly", state.gaiaOnly && state.gaiaDepth ? 1 : 0);
     // Sterne mit der Galaxien-Rotation mitdrehen (gleiche Parameter wie bgFS)
-    u1f(starProg, "uSpinStars", state.spinStars ? 1 : 0);
-    u1f(starProg, "uSpinAngleS", state.spinSpeed * Math.PI / 180 * cam.te);
-    u1f(starProg, "uSpinAngleS2", state.spinSpeed * Math.PI / 180 * cam2.te);
-    u2f(starProg, "uSpinCenterS", state.spinCenter.x, state.spinCenter.y);
-    u1f(starProg, "uSpinRadiusS", Math.max(0.02, (state.spinRadius / 100) * 0.75));
-    u1f(starProg, "uSpinDiffS", state.spinDiff / 100);
-    u3f(starProg, "uSpinEllS", Math.cos(spinTiltRad), Math.sin(spinTiltRad), 1 - (state.spinFlat / 100) * 0.7);
-    u1f(starProg, "uSpinMaskAmtS", texSpinMask ? state.spinMaskAmt / 100 : 0);
+    u1f(starProg, "uSpinStars", state.spinStars && state.spinSpeed !== 0 ? 1 : 0);
+    const GS = galUniforms(cam.te, cam2.te);
+    u1i(starProg, "uGalNS", state.spinSpeed !== 0 ? GS.N : 0);
+    u4fv(starProg, "uGalAS", GS.A);
+    u4fv(starProg, "uGalBS", GS.B);
+    u4fv(starProg, "uGalCS", GS.C);
     u1f(starProg, "uImgAspectS", imgAspect);
-    gl.activeTexture(gl.TEXTURE5);
-    gl.bindTexture(gl.TEXTURE_2D, texSpinMask || texBlack);
-    gl.activeTexture(gl.TEXTURE0);
-    u1i(starProg, "uSpinMaskS", 5);
     // Eigenbewegungs-Zeitraffer: Jahre wachsen mit der Flugzeit (loop-sicher)
     const pmSpan = state.duration * (state.loopMode ? 0.5 : 1);
     u1f(starProg, "uPmYears", state.gaiaPmYears * (cam.te / pmSpan));
@@ -4662,19 +4808,10 @@ bindSlider("ctlOrient", "outOrient", "orientation", (v) => v + "°");
 bindSlider("ctlFrameX", "outFrameX", "frameX", asInt);
 bindSlider("ctlFrameY", "outFrameY", "frameY", asInt);
 bindSlider("ctlSpinSpeed", "outSpinSpeed", "spinSpeed", (v) => ctlNum(v, 1) + " °/s");
-bindSlider("ctlSpinRadius", "outSpinRadius", "spinRadius", asInt);
+bindSlider("ctlSpinRadius", "outSpinRadius", "spinRadius", (v) => ctlNum(v, 1));
 bindSlider("ctlSpinDiff", "outSpinDiff", "spinDiff", asInt);
 bindSlider("ctlSpinFlat", "outSpinFlat", "spinFlat", asInt);
 bindSlider("ctlSpinTilt", "outSpinTilt", "spinTilt", (v) => v + "°");
-bindSlider("ctlSpinMaskAmt", "outSpinMaskAmt", "spinMaskAmt", asInt);
-
-let spinMaskTimer = null;
-$("ctlSpinMaskSmooth").addEventListener("input", () => {
-  state.spinMaskSmooth = parseInt($("ctlSpinMaskSmooth").value, 10);
-  $("outSpinMaskSmooth").textContent = state.spinMaskSmooth;
-  clearTimeout(spinMaskTimer);
-  spinMaskTimer = setTimeout(buildSpinMask, 200);
-});
 bindSlider("ctlTiltX", "outTiltX", "tiltX", asInt);
 bindSlider("ctlTiltY", "outTiltY", "tiltY", asInt);
 bindSlider("ctlSwayAmp", "outSwayAmp", "swayAmp", asInt);
@@ -4780,9 +4917,307 @@ $("ctlSpinShow").addEventListener("change", () => {
 });
 
 $("btnSpinCenter").addEventListener("click", () => {
-  state.spinPick = !state.spinPick;
-  $("btnSpinCenter").classList.toggle("active", state.spinPick);
+  state.spinPick = state.spinPick === "add" ? false : "add";
+  $("btnSpinCenter").classList.toggle("active", state.spinPick === "add");
+  $("btnGalMove").classList.remove("active");
 });
+$("btnGalMove").addEventListener("click", () => {
+  state.spinPick = state.spinPick === "move" ? false : "move";
+  $("btnGalMove").classList.toggle("active", state.spinPick === "move");
+  $("btnSpinCenter").classList.remove("active");
+});
+$("btnGalDetect").addEventListener("click", () => {
+  const st = $("galStatus");
+  if (!state.starless) { st.hidden = false; st.textContent = t("galNeedImg"); return; }
+  const found = detectGalaxies();
+  st.hidden = false;
+  if (!found.length) { st.textContent = t("galNone"); return; }
+  state.galaxies = found;
+  galSelect(0);
+  const spirals = found.filter((g) => g.chir).length;
+  st.textContent = t("galFound", found.length, spirals);
+  if (!state.spinSpeed) setCtl("ctlSpinSpeed", 1);
+  galBkTex = null;
+});
+
+// Liste der Galaxien: Auswahl (Regler bearbeiten sie), Richtung, Entfernen
+const GAL_TYPES = /^(G|GiG|GiC|GiP|BiC|SBG|SyG|Sy1|Sy2|Sy|LIN|AGN|EmG|IG|PaG|LSB|H2G|bCG|rG|SBc|Sc|Sb|E)$/;
+function galDisplayName(g, i) {
+  if (g.name) return g.name;
+  // SIMBAD-Beschriftung innerhalb der Ellipse, falls vorhanden
+  for (const L of state.labels || []) {
+    if (!GAL_TYPES.test(L.otype || "")) continue;
+    const t2 = g.tilt * Math.PI / 180, c = Math.cos(t2), s2 = Math.sin(t2);
+    const dx = L.x - g.x, dy = L.y - g.y;
+    const r = Math.hypot(c * dx + s2 * dy, (-s2 * dx + c * dy) / Math.max(0.05, g.flat)) / g.rad;
+    if (r < 0.6) return L.id;
+  }
+  return t("galName", i + 1);
+}
+function rebuildGalList() {
+  const box = $("galList");
+  if (!box) return;
+  galEnsure();
+  box.innerHTML = "";
+  state.galaxies.forEach((g, i) => {
+    const row = document.createElement("div");
+    row.className = "galrow" + (i === state.galSel ? " sel" : "");
+    const nm = document.createElement("span");
+    nm.className = "galname";
+    nm.textContent = galDisplayName(g, i);
+    const meta = document.createElement("span");
+    meta.className = "galmeta";
+    meta.textContent = `R ${Math.round(g.rad / 0.75 * 100)} %` + (g.edge ? ` · ${t("galEdge")}` : (g.flat < 0.95 ? ` · ${Math.round(g.flat * 100)} %` : ""));
+    const dir = document.createElement("button");
+    dir.type = "button";
+    dir.className = "galdir";
+    const dv = g.dir === undefined ? 1 : g.dir;
+    dir.textContent = dv > 0 ? "↺" : (dv < 0 ? "↻" : "⏸");
+    dir.title = t(dv === 0 ? "galDirStop" : (g.chir ? "galDirAuto" : "galDirTip"));
+    // Reihum: gegen den Uhrzeigersinn -> im Uhrzeigersinn -> steht still
+    dir.addEventListener("click", (e) => { e.stopPropagation(); g.dir = dv > 0 ? -1 : (dv < 0 ? 0 : 1); g.chir = false; rebuildGalList(); });
+    row.append(nm, meta, dir);
+    if (state.galaxies.length > 1) {
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "galdel";
+      del.textContent = "✕";
+      del.title = t("galDel");
+      del.addEventListener("click", (e) => {
+        e.stopPropagation();
+        galSyncFromState();
+        const cur = state.galSel;
+        state.galaxies.splice(i, 1);
+        galSelect(cur > i ? cur - 1 : (cur === i ? Math.max(0, i - 1) : cur));
+        galBkTex = null;
+      });
+      row.append(del);
+    }
+    row.addEventListener("click", () => { galSyncFromState(); galSelect(i); });
+    box.append(row);
+  });
+}
+
+// Regler der ausgewaehlten Galaxie -> Liste sofort aktualisieren
+for (const id of ["ctlSpinRadius", "ctlSpinFlat", "ctlSpinTilt", "ctlSpinDiff"]) {
+  $(id).addEventListener("input", () => { galSyncFromState(); rebuildGalList(); });
+}
+rebuildGalList();
+
+/**
+ * Galaxien automatisch finden: ausgedehnte, helle Objekte ueber dem Himmel.
+ * Sterne und Sternreste werden per morphologischer Oeffnung entfernt, der
+ * Himmel per grosser Oeffnung geschaetzt; Komponenten ueber der Schwelle
+ * ergeben je eine Ellipse (Momente der Flaeche: a = 2 sigma), mit Rand fuer
+ * den schwachen Halo. Die Drehrichtung kommt aus den Spiralarmen: Arme
+ * schleppen der Drehung nach - winden sie sich nach aussen gegen den
+ * Uhrzeigersinn, dreht die Galaxie im Uhrzeigersinn (und umgekehrt)
+ */
+function detectGalaxies() {
+  const src = downscale(state.starless, 640);
+  const w = src.width, h = src.height, n = w * h;
+  const px = src.getContext("2d").getImageData(0, 0, w, h).data;
+  const imgAspect = state.starless.width / state.starless.height;
+  const L = new Float32Array(n);
+  for (let i = 0, j = 0; i < n; i++, j += 4) L[i] = (0.299 * px[j] + 0.587 * px[j + 1] + 0.114 * px[j + 2]) / 255;
+  const Lo = openChannel(L, w, h, Math.max(2, Math.round(w * 0.006)));
+  const sky = openChannel(Lo, w, h, Math.max(6, Math.round(w * 0.06)));
+  const tmp = new Float32Array(n);
+  { const r = Math.max(4, Math.round(w * 0.05)); for (let k = 0; k < 2; k++) { boxBlurH(sky, tmp, w, h, r); boxBlurV(tmp, sky, w, h, r); } }
+  const X = new Float32Array(n);
+  let xmax = 0;
+  for (let i = 0; i < n; i++) { X[i] = Lo[i] - sky[i]; if (X[i] > xmax) xmax = X[i]; }
+  const absd = Float32Array.from(X, (v) => Math.abs(v)).sort();
+  const sigma = 1.4826 * absd[Math.floor(n * 0.5)];
+  // Staerker glaetten, bevor geschwellt wird: Spiralarme haengen dann ueber
+  // die schwache Scheibe mit dem Kern zusammen (sonst zerfaellt eine grosse
+  // Spirale in einzelne "Galaxien")
+  const Xs = Float32Array.from(X);
+  { const r = Math.max(2, Math.round(w * 0.01)); for (let k = 0; k < 2; k++) { boxBlurH(Xs, tmp, w, h, r); boxBlurV(tmp, Xs, w, h, r); } }
+  let xsmax = 0;
+  for (let i = 0; i < n; i++) if (Xs[i] > xsmax) xsmax = Xs[i];
+  const th = Math.max(3 * sigma, 0.05 * xsmax, 0.01);
+  const lab = new Int32Array(n).fill(-1);
+  const comps = [];
+  const stack = new Int32Array(n);
+  for (let i0 = 0; i0 < n; i0++) {
+    if (lab[i0] >= 0 || Xs[i0] <= th) continue;
+    const id = comps.length;
+    // Helligkeitsgewichtete Momente (Galaxienlicht dominiert, schwache
+    // Sternhoefe und Rauschen am Rand ziehen die Form kaum)
+    let sp = 0, cnt = 0, f = 0, fx = 0, fy = 0, fxx = 0, fyy = 0, fxy = 0;
+    stack[sp++] = i0; lab[i0] = id;
+    while (sp) {
+      const i = stack[--sp], x = i % w, y = (i / w) | 0;
+      const v = Math.max(0, X[i]);
+      cnt++; f += v; fx += v * x; fy += v * y; fxx += v * x * x; fyy += v * y * y; fxy += v * x * y;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const xx = x + dx, yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+        const k = yy * w + xx;
+        if (lab[k] < 0 && Xs[k] > th) { lab[k] = id; stack[sp++] = k; }
+      }
+    }
+    if (f > 0) comps.push({ cnt, f, fx, fy, fxx, fyy, fxy });
+  }
+  // Ellipse aus den Momenten: fuer eine exponentielle Scheibe liegt der
+  // sichtbare Rand bei ~2,6 sigma (+10 % Rand fuer den Halo)
+  const ell = (c) => {
+    const mx = c.fx / c.f, my = c.fy / c.f;
+    const vxx = c.fxx / c.f - mx * mx, vyy = c.fyy / c.f - my * my, vxy = c.fxy / c.f - mx * my;
+    const tr = (vxx + vyy) / 2, dd = Math.sqrt(Math.max(0, ((vxx - vyy) / 2) ** 2 + vxy * vxy));
+    const l1 = Math.max(1e-6, tr + dd), l2 = Math.max(1e-6, tr - dd);
+    const phi = 0.5 * Math.atan2(2 * vxy, vxx - vyy);
+    return { mx, my, a: 2.9 * Math.sqrt(l1), flat: Math.max(0.3, Math.min(1, Math.sqrt(l2 / l1))), phi };
+  };
+  const inside = (E, x, y, k) => {
+    const dx = x - E.mx, dy = y - E.my, c = Math.cos(E.phi), s = Math.sin(E.phi);
+    return Math.hypot(c * dx + s * dy, (-s * dx + c * dy) / E.flat) / E.a < k;
+  };
+  const minA = Math.max(12, n * 0.00012);
+  let cand = comps.filter((c) => c.cnt >= minA).sort((p, q) => q.f - p.f);
+  // Bruchstuecke (Arme, Knoten), deren Zentrum in einer helleren Galaxie
+  // liegt, gehoeren zu ihr: Momente zusammenfuehren, bis nichts mehr wandert
+  for (let pass = 0; pass < 6; pass++) {
+    let merged = false;
+    const acc = [];
+    for (const c of cand) {
+      const E = ell(c);
+      // schwache Stuecke (unter 30 % des Lichts) auch weiter draussen: aeussere
+      // Armboegen einer grossen Spirale; helle Nachbarn bleiben eigenstaendig
+      const host = acc.find((A) => inside(ell(A), E.mx, E.my, c.f < 0.3 * A.f ? 1.7 : 1.1));
+      if (host) { for (const k of ["cnt", "f", "fx", "fy", "fxx", "fyy", "fxy"]) host[k] += c[k]; merged = true; }
+      else acc.push({ ...c });
+    }
+    cand = acc.sort((p, q) => q.f - p.f);
+    if (!merged) break;
+  }
+  // Form verfeinern: Die Momente des Lichts werden vom Armmuster verzerrt
+  // (ein frontales Zweiarm-Muster wirkt "geneigt"). Stark geglaettet sind
+  // die Arme ausgemittelt; die aeusseren Isophoten (8-30 % des geglaetteten
+  // Maximums) liefern dann Neigung, Lage und Rand der Scheibe
+  const refine = (E) => {
+    const R = E.a * 1.3, rs = Math.max(2, Math.round(E.a * 0.15));
+    const x0 = Math.max(0, Math.floor(E.mx - R)), x1 = Math.min(w - 1, Math.ceil(E.mx + R));
+    const y0 = Math.max(0, Math.floor(E.my - R)), y1 = Math.min(h - 1, Math.ceil(E.my + R));
+    const ww = x1 - x0 + 1, hh = y1 - y0 + 1;
+    if (ww < 8 || hh < 8) return E;
+    const win = new Float32Array(ww * hh), tw = new Float32Array(ww * hh);
+    for (let y = 0; y < hh; y++) for (let x = 0; x < ww; x++) win[y * ww + x] = Math.max(0, X[(y + y0) * w + x + x0]);
+    for (let k = 0; k < 3; k++) { boxBlurH(win, tw, ww, hh, rs); boxBlurV(tw, win, ww, hh, rs); }
+    let peak = 0;
+    for (let y = 0; y < hh; y++) for (let x = 0; x < ww; x++) {
+      if (inside({ ...E, a: E.a * 1.3 }, x + x0, y + y0, 1) && win[y * ww + x] > peak) peak = win[y * ww + x];
+    }
+    if (peak <= 0) return E;
+    // Isophoten-Ringe von innen nach aussen: Momente um das Zentrum je Ring.
+    // Eine geneigte Scheibe ist in ALLEN Ringen gleich gerichtet gestreckt;
+    // Spiralarme strecken je Ring in eine andere Richtung (die Richtung
+    // dreht mit dem Radius). Nur der gleichgerichtete Anteil zaehlt als
+    // Neigung - frontale Spiralen bleiben rund
+    const bands = [[0.6, 0.9], [0.45, 0.6], [0.33, 0.45], [0.24, 0.33], [0.17, 0.24], [0.11, 0.17], [0.06, 0.11]];
+    const res = [];
+    const pts = [];
+    for (const [lo, hi] of bands) {
+      let c = 0, sxx = 0, syy = 0, sxy = 0;
+      for (let y = 0; y < hh; y++) for (let x = 0; x < ww; x++) {
+        const v = win[y * ww + x] / peak, X0 = x + x0, Y0 = y + y0;
+        if (v < lo || v >= hi || !inside({ ...E, a: E.a * 1.3 }, X0, Y0, 1)) continue;
+        const dx = X0 - E.mx, dy = Y0 - E.my;
+        c++; sxx += dx * dx; syy += dy * dy; sxy += dx * dy;
+        if (lo < 0.3) pts.push(X0, Y0);
+      }
+      if (c < 20) continue;
+      const vxx = sxx / c, vyy = syy / c, vxy = sxy / c;
+      const tr = (vxx + vyy) / 2, dd = Math.sqrt(Math.max(0, ((vxx - vyy) / 2) ** 2 + vxy * vxy));
+      const f = Math.sqrt(Math.max(1e-6, tr - dd) / Math.max(1e-6, tr + dd));
+      res.push({ f, phi: 0.5 * Math.atan2(2 * vxy, vxx - vyy), c, outer: lo < 0.3 });
+    }
+    if (!res.length || pts.length < 40) return E;
+    let vx = 0, vy = 0, se = 0, fo = 0, co = 0;
+    for (const r of res) {
+      const e = 1 - r.f, wgt = r.c * e;
+      vx += wgt * Math.cos(2 * r.phi); vy += wgt * Math.sin(2 * r.phi); se += wgt;
+      if (r.outer) { fo += r.f * r.c; co += r.c; }
+    }
+    const coh = se > 0 ? Math.hypot(vx, vy) / se : 1;
+    const fOuter = co ? fo / co : res[res.length - 1].f;
+    const phi = 0.5 * Math.atan2(vy, vx);
+    let flat = Math.max(0.3, Math.min(1, 1 - (1 - fOuter) * coh * coh));
+    // fast rund = frontal: eine kleine Rest-Streckung aus dem Armmuster wuerde
+    // das Muster beim Drehen sonst "atmen" lassen
+    if (flat >= 0.85) flat = 1;
+    // Rand: 97 % der aeusseren Isophoten-Punkte liegen innerhalb, +15 % Halo
+    const cs = Math.cos(phi), sn = Math.sin(phi), rr = [];
+    for (let k = 0; k < pts.length; k += 2) {
+      const dx = pts[k] - E.mx, dy = pts[k + 1] - E.my;
+      rr.push(Math.hypot(cs * dx + sn * dy, (-sn * dx + cs * dy) / flat));
+    }
+    rr.sort((p, q) => p - q);
+    const a = Math.max(E.a * 0.6, rr[Math.floor(rr.length * 0.97)] * 1.15);
+    return { mx: E.mx, my: E.my, a, flat, phi };
+  };
+  const out = [];
+  for (const c of cand) {
+    const E = refine(ell(c));
+    let tilt = -E.phi * 180 / Math.PI;
+    tilt = ((tilt % 180) + 180) % 180;
+    out.push({
+      x: (E.mx / w - 0.5) * imgAspect, y: 0.5 - E.my / h,
+      rad: Math.max(0.0075, Math.min(0.75, E.a / h)),
+      flat: E.flat, tilt, twist: 40, dir: 1, name: "", auto: true, flux: c.f,
+    });
+  }
+  out.sort((p, q) => q.flux - p.flux);
+  const sel = out.slice(0, 8);
+  for (const g of sel) {
+    const ch = galChirality(g, Lo, w, h, imgAspect);
+    g.dir = ch.dir; g.chir = ch.sure;
+    // Nahezu Kantenlage: die Rotation laeuft entlang der Sichtlinie und ist
+    // in Wahrheit unsichtbar - als flache Scheibe gedreht wuerde die
+    // "Zigarre" zum Klumpen. Solche Galaxien stehen standardmaessig still
+    if (g.flat < 0.5) { g.dir = 0; g.edge = true; }
+    delete g.flux;
+  }
+  return sel;
+}
+
+// Windungssinn der Spiralarme in der entzerrten Scheibe: Strukturtensor des
+// Hochpasses; (t . r)(t . phi) > 0 heisst "nach aussen gegen den
+// Uhrzeigersinn". Die Galaxie dreht entgegen (Arme schleppen nach)
+function galChirality(g, Lo, w, h, imgAspect) {
+  const G = 128;
+  const t2 = g.tilt * Math.PI / 180, c = Math.cos(t2), s2 = Math.sin(t2);
+  const grid = new Float32Array(G * G);
+  for (let j = 0; j < G; j++) for (let i = 0; i < G; i++) {
+    const u = (i + 0.5) / G * 2 - 1, v = 1 - (j + 0.5) / G * 2;   // Kreisraum, y nach oben
+    const ex = u * g.rad, ey = v * g.rad * g.flat;
+    const qx = g.x + c * ex - s2 * ey, qy = g.y + s2 * ex + c * ey;
+    const fx = (qx / imgAspect + 0.5) * w - 0.5, fy = (0.5 - qy) * h - 0.5;
+    const x0 = Math.max(0, Math.min(w - 2, Math.floor(fx))), y0 = Math.max(0, Math.min(h - 2, Math.floor(fy)));
+    const ax = Math.min(1, Math.max(0, fx - x0)), ay = Math.min(1, Math.max(0, fy - y0));
+    const at = (x, y) => Lo[y * w + x];
+    grid[j * G + i] = (at(x0, y0) * (1 - ax) + at(x0 + 1, y0) * ax) * (1 - ay) + (at(x0, y0 + 1) * (1 - ax) + at(x0 + 1, y0 + 1) * ax) * ay;
+  }
+  const bl = Float32Array.from(grid), tmp = new Float32Array(G * G);
+  for (let k = 0; k < 2; k++) { boxBlurH(bl, tmp, G, G, 5); boxBlurV(tmp, bl, G, G, 5); }
+  let S = 0, W = 0;
+  for (let j = 1; j < G - 1; j++) for (let i = 1; i < G - 1; i++) {
+    const u = (i + 0.5) / G * 2 - 1, v = 1 - (j + 0.5) / G * 2, r = Math.hypot(u, v);
+    if (r < 0.15 || r > 0.9) continue;
+    const hp = (a, b) => grid[b * G + a] - bl[b * G + a];
+    const gx = (hp(i + 1, j) - hp(i - 1, j)) / 2, gy = -(hp(i, j + 1) - hp(i, j - 1)) / 2; // y nach oben
+    const ru = u / r, rv = v / r, pu = -rv, pv = ru;
+    const gr = gx * ru + gy * rv, gp = gx * pu + gy * pv;
+    S += -gp * gr;
+    W += gx * gx + gy * gy;
+  }
+  const q = W > 0 ? S / W : 0;
+  // q > 0: Arme winden sich nach aussen gegen den Uhrzeigersinn -> Drehung im
+  // Uhrzeigersinn (Inhalt dreht um -Winkel -> dir = -1)
+  return { dir: q > 0 ? -1 : 1, sure: Math.abs(q) > 0.04 };
+}
+
 
 $("ctlLoop").addEventListener("change", () => {
   state.loopMode = $("ctlLoop").checked;
@@ -4836,8 +5271,7 @@ const SIMPLE_DEFAULTS = {
   ctlRotation: 0, ctlOrient: 0, ctlFrameX: 0, ctlFrameY: 0, ctlTiltX: 0,
   ctlTiltY: 0, ctlSwayAmp: 0, ctlSwayTempo: 40, ctlSwayDir: 0, ctlSwayRandom: 0,
   ctlTiltRamp: 0, ctlTiltRampDir: 0, ctlFade: 0, ctlDriftDir: 90,
-  ctlSpinSpeed: 0, ctlSpinRadius: 40, ctlSpinDiff: 40, ctlSpinFlat: 0,
-  ctlSpinTilt: 0, ctlSpinMaskAmt: 0,
+  ctlSpinSpeed: 0, ctlSpinDiff: 40,
   ctlSpread: 70, ctlStarDist: 55, ctlLayers: 0, ctlStarPar: 100,
   ctlTwinkle: 25, ctlTwinkleSpeed: 100, ctlStarSize: 100, ctlStarBright: 100,
   ctlStarSat: 100, ctlGenStars: 0, ctlStarCull: 0,
@@ -4852,7 +5286,7 @@ const FLIGHT_PRESETS = {
   nebDrift:       { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.35, ctlSpeed: 55, ctlStarPar: 260, ctlGenStars: 1000, ctlMblur: 18, ctlBloom: 15 }, checks: { ctlMblurStars: true } },
   nebHyper:       { look: "hyper", set: { ctlSpeed: 65, ctlStarPar: 300, ctlTwinkleSpeed: 150 } },
   galMajestic:    { look: "neutral", set: { ctlSpeed: 25, ctlParallax: 40, ctlDepthBoost: 30, ctlStarPar: 300, ctlTiltRamp: 12, ctlBloom: 15 } },
-  galSpin:        { look: "neutral", set: { ctlSpeed: 15, ctlSpinSpeed: 0.8, ctlSpinRadius: 65, ctlSpinDiff: 40, ctlSpinMaskAmt: 50, ctlBloom: 12 } },
+  galSpin:        { look: "neutral", set: { ctlSpeed: 15, ctlSpinSpeed: 0.8, ctlSpinDiff: 40, ctlBloom: 12 } },
   galFlyby:       { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.35, ctlSpeed: 55, ctlTiltRamp: 15, ctlTiltRampDir: 90, ctlStarPar: 280, ctlMblur: 18, ctlBloom: 15 }, checks: { ctlMblurStars: true } },
   clusterDive:    { look: "neutral", set: { ctlSpeed: 50, ctlSpread: 90, ctlStarPar: 380, ctlTwinkle: 35, ctlBloom: 25 } },
   clusterSparkle: { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.3, ctlSpeed: 30, ctlTwinkle: 45, ctlTwinkleSpeed: 160, ctlSwayAmp: 20, ctlSwayRandom: 40, ctlBloom: 20 } },
@@ -5613,6 +6047,7 @@ function histSnapshot() {
     asp: aspBtn ? aspBtn.dataset.aspect : "16:9",
     tgt: state.target,
     spin: state.spinCenter,
+    gal: state.galaxies, galSel: state.galSel,
     scen: state.scenarioOn,
   });
 }
@@ -5625,6 +6060,8 @@ function histApply(str) {
     if (aspBtn && !aspBtn.classList.contains("active")) aspBtn.click();
     state.target = snap.tgt || { x: 0, y: 0 };
     state.spinCenter = snap.spin || { x: 0, y: 0 };
+    state.galaxies = (snap.gal || []).map((g) => ({ ...g }));
+    state.galSel = snap.galSel || 0;
     state.waypoints = (snap.w || []).map((w) => ({ ...w }));
     applyControls(snap.c || {});
     state.scenarioOn = !!snap.scen;
@@ -6545,9 +6982,19 @@ canvas.addEventListener("click", (e) => {
     $("objStatus").textContent = "";
     addUserLabel(clampedX, clampedY);
   } else if (state.spinPick) {
-    state.spinCenter = { x: clampedX, y: clampedY };
+    galEnsure();
+    if (state.spinPick === "add" && state.galaxies.length < 8) {
+      // neue Galaxie mit Standard-Ellipse; Zentrum = Klick
+      galSyncFromState();
+      state.galaxies.push({ x: clampedX, y: clampedY, rad: 0.12, flat: 1, tilt: 0, twist: 40, dir: 1, name: "", auto: false });
+      galSelect(state.galaxies.length - 1);
+    } else {
+      state.spinCenter = { x: clampedX, y: clampedY };
+    }
     state.spinPick = false;
     $("btnSpinCenter").classList.remove("active");
+    $("btnGalMove").classList.remove("active");
+    rebuildGalList();
   } else {
     state.target.x = clampedX;
     state.target.y = clampedY;
@@ -6693,6 +7140,8 @@ async function loadFile(which, file) {
     const img = await decodeFile(file);
     if (which === "starless") {
       state.starless = img;
+      state.galaxies = []; state.galSel = 0;
+      if (typeof rebuildGalList === "function") setTimeout(rebuildGalList, 0);
       clearWpThumbCache();
       state.srcFiles.starless = file;
       if (state.flipH || state.flipV) flipImage(state.starless, state.flipH, state.flipV);
@@ -6785,8 +7234,7 @@ const USER_PRESET_GROUPS = {
     "ctlFrameX", "ctlFrameY", "ctlTiltX", "ctlTiltY", "ctlSwayAmp",
     "ctlSwayTempo", "ctlSwayDir", "ctlSwayRandom", "ctlTiltRamp",
     "ctlTiltRampDir", "ctlFade", "ctlDuration", "ctlLoop", "ctlSpinSpeed",
-    "ctlSpinRadius", "ctlSpinDiff", "ctlSpinFlat", "ctlSpinTilt",
-    "ctlSpinMaskAmt", "ctlSpinStars"],
+    "ctlSpinDiff", "ctlSpinStars"],
   stars: ["ctlSpread", "ctlStarDist", "ctlLayers", "ctlStarPar", "ctlTwinkle",
     "ctlTwinkleSpeed", "ctlStarSize", "ctlStarBright", "ctlStarSat",
     "ctlGenStars", "ctlOcclude", "ctlStarCull", "ctlAnchor", "ctlAiry",
@@ -7052,6 +7500,7 @@ async function saveProject() {
       target: { ...S.target },
       seed: S.seed,
       spinCenter: S.spinCenter ? { ...S.spinCenter } : null,
+      galaxies: (S.galaxies || []).map((g) => ({ ...g })), galSel: S.galSel || 0,
       wcs: S.wcs, wcsFit: S.wcsFit, wcsFlip: S.wcsFlip,
       gaiaCatalog: S.gaiaCatalog, gaiaDepth: S.gaiaDepth, gaiaColorRGB: S.gaiaColorRGB,
       gaiaPM: S.gaiaPM, gaiaInfo: S.gaiaInfo,
@@ -7127,6 +7576,10 @@ async function loadProject(id) {
     state.target = X.target || { x: 0, y: 0 };
     state.seed = X.seed || state.seed;
     if (X.spinCenter) state.spinCenter = X.spinCenter;
+    state.galaxies = Array.isArray(X.galaxies) ? X.galaxies.map((g) => ({ ...g })) : [];
+    state.galSel = X.galSel || 0;
+    if (state.galaxies.length) galSelect(state.galSel); else rebuildGalList();
+    galBkTex = null;
     state.wcs = X.wcs || null;
     state.wcsFit = X.wcsFit || null;
     state.wcsFlip = X.wcsFlip;
@@ -8402,48 +8855,29 @@ $("btnFeedbackMail").addEventListener("click", () => {
 
 /** Tiefe (0..1) an einem Punkt der Bildebene, aus der CPU-Kopie der Tiefenkarte. */
 /**
- * Wohin verschiebt die Galaxien-Rotation einen Ebenen-Punkt? Umkehrung von
- * spinWarp aus dem Hintergrund-Shader: Dort wird für den Anzeige-Punkt die
- * Bildquelle bei +a gesucht, ein Bildpunkt erscheint also um -a gedreht.
- * Der Winkel hängt nur vom drehinvarianten Radius ab; die Helligkeitsmaske
- * wertet der Shader am Anzeige-Punkt aus, deshalb hier die Fixpunkt-Iteration.
+ * Wohin verschiebt die Galaxien-Rotation einen Ebenen-Punkt? Gleiche Ellipsen,
+ * Winkel und Wirbel wie im Shader (der Inhalt dreht um +Winkel). Fuer Sterne
+ * laeuft die Drehung am Ellipsenrand aus wie im Stern-Shader
  */
-function spinDisplace(px, py, spinAngle) {
-  if (!spinAngle) return { x: px, y: py };
-  const cx = state.spinCenter.x, cy = state.spinCenter.y;
-  const rad = Math.max(0.02, (state.spinRadius / 100) * 0.75);
-  const tilt = state.spinTilt * Math.PI / 180;
-  const c = Math.cos(tilt), s = Math.sin(tilt);
-  const flat = 1 - (state.spinFlat / 100) * 0.7;
-  const dx = px - cx, dy = py - cy;
-  const ex = c * dx + s * dy, ey = (-s * dx + c * dy) / flat;
-  const r = Math.hypot(ex, ey) / rad;
-  if (r >= 1) return { x: px, y: py };
-  const ft = Math.min(1, Math.max(0, (r - 1) / (0.55 - 1)));
-  const fall = ft * ft * (3 - 2 * ft);
-  const diffW = 1 + (0.25 / (0.25 + 0.75 * r) - 1) * (state.spinDiff / 100);
-  let out = { x: px, y: py };
-  for (let i = 0; i < 2; i++) {
-    const a = -spinAngle * fall * diffW * spinMaskAtPlane(out.x, out.y);
-    const ca = Math.cos(a), sa = Math.sin(a);
-    const rx = ca * ex + sa * ey, ry = (-sa * ex + ca * ey) * flat;
-    out = { x: cx + c * rx - s * ry, y: cy + s * rx + c * ry };
-    if (!state.spinMaskAmt || !state.spinMaskData) break;
-  }
-  return out;
-}
-
-/** Gewicht der Spin-Helligkeitsmaske an einem Ebenen-Punkt (wie spinMaskW im Shader). */
-function spinMaskAtPlane(qx, qy) {
-  const md = state.spinMaskData;
-  if (!md || !state.spinMaskAmt || !state.starless) return 1;
-  const imgAspect = state.starless.width / state.starless.height;
-  const u = Math.min(1, Math.max(0, qx / imgAspect + 0.5));
-  const v = Math.min(1, Math.max(0, qy + 0.5)); // Ebene ist y-up
-  const col = Math.round(u * (md.w - 1));
-  const row = Math.round((1 - v) * (md.h - 1));
-  const m = md.data[(row * md.w + col) * 4] / 255;
-  return 1 + (m - 1) * (state.spinMaskAmt / 100);
+function spinDisplace(px, py, te, star) {
+  if (!state.spinSpeed || !state.galaxies || !state.galaxies.length) return { x: px, y: py };
+  const ang = galAngles(te);
+  let best = -1, rb = 1, eb = null;
+  state.galaxies.slice(0, 8).forEach((g, k) => {
+    const t = g.tilt * Math.PI / 180, c = Math.cos(t), s = Math.sin(t);
+    const dx = px - g.x, dy = py - g.y;
+    const ex = c * dx + s * dy, ey = (-s * dx + c * dy) / Math.max(0.05, g.flat);
+    const r = Math.hypot(ex, ey) / g.rad;
+    if (r < rb) { rb = r; best = k; eb = [ex, ey]; }
+  });
+  if (best < 0) return { x: px, y: py };
+  const g = state.galaxies[best], t = 1 - rb;
+  let a = ang[best].a + ang[best].tw * t * t;
+  if (star) { const u = Math.min(1, Math.max(0, (rb - 1) / (0.85 - 1))); a *= u * u * (3 - 2 * u); }
+  const ca = Math.cos(a), sa = Math.sin(a);
+  const rx = ca * eb[0] - sa * eb[1], ry = (sa * eb[0] + ca * eb[1]) * Math.max(0.05, g.flat);
+  const tl = g.tilt * Math.PI / 180, c = Math.cos(tl), s = Math.sin(tl);
+  return { x: g.x + c * rx - s * ry, y: g.y + s * rx + c * ry };
 }
 
 function depthAtPlane(qx, qy, imgAspect) {
