@@ -297,6 +297,8 @@
         <button class="pcard" data-preset="cineHandheld"><b data-i18n="pCineHandheld">Handheld</b><small data-i18n="pCineHandheldD">documentary feel, organic shake</small></button>
         <button class="pcard" data-preset="cineCrane"><b data-i18n="pCineCrane">Crane shot</b><small data-i18n="pCineCraneD">the camera rises over the subject</small></button>
         <button class="pcard" data-preset="cineSpiral"><b data-i18n="pCineSpiral">Spiral dive</b><small data-i18n="pCineSpiralD">accelerating plunge with a roll</small></button>
+        <button class="pcard" data-preset="cineDiagLeft"><b data-i18n="pCineDiagLeft">Diagonal from the left</b><small data-i18n="pCineDiagLeftD">slight zoom + drift, evenly from the start</small></button>
+        <button class="pcard" data-preset="cineDiagRight"><b data-i18n="pCineDiagRight">Diagonal from the right</b><small data-i18n="pCineDiagRightD">slight zoom + drift, evenly from the start</small></button>
         <button class="pcard" data-preset="cineArc"><b data-i18n="pCineArc">Arc shot</b><small data-i18n="pCineArcD">the camera circles the galaxy</small></button>
       </div>
       <details class="adv" open>
@@ -368,6 +370,8 @@
         <button class="pcard" data-preset="cineHandheld"><b data-i18n="pCineHandheld">Handheld</b><small data-i18n="pCineHandheldD">documentary feel, organic shake</small></button>
         <button class="pcard" data-preset="cineCrane"><b data-i18n="pCineCrane">Crane shot</b><small data-i18n="pCineCraneD">the camera rises over the subject</small></button>
         <button class="pcard" data-preset="cineSpiral"><b data-i18n="pCineSpiral">Spiral dive</b><small data-i18n="pCineSpiralD">accelerating plunge with a roll</small></button>
+        <button class="pcard" data-preset="cineDiagLeft"><b data-i18n="pCineDiagLeft">Diagonal from the left</b><small data-i18n="pCineDiagLeftD">slight zoom + drift, evenly from the start</small></button>
+        <button class="pcard" data-preset="cineDiagRight"><b data-i18n="pCineDiagRight">Diagonal from the right</b><small data-i18n="pCineDiagRightD">slight zoom + drift, evenly from the start</small></button>
         <button class="pcard" data-preset="cineArc"><b data-i18n="pCineArc">Arc shot</b><small data-i18n="pCineArcD">the camera circles the galaxy</small></button>
       </div>
       <div class="pgroup" id="userPresetGroupHead" hidden data-i18n="upHead">My presets</div>
@@ -505,6 +509,7 @@
           <option value="zoom" selected data-i18n="flightZoom">Toward the nebula (zoom in)</option>
           <option value="lateral" data-i18n="flightLateral">Lateral drift (glide across)</option>
           <option value="orbit" data-i18n="flightOrbit">Orbit around the galaxy</option>
+          <option value="diagonal" data-i18n="flightDiagonal">Diagonal flight (from the edge, zoom + drift)</option>
         </select>
       </label>
       <div id="driftRow" hidden>
@@ -515,6 +520,10 @@
         <p class="tip" id="orbitHintP" hidden data-i18n="orbitHint">The camera frames the selected galaxy
         (Galaxy tab) and circles it on an arc: the near side of the 3D disc and the core swing more than
         the far side. Speed sets the arc and the swing, flight direction the start angle, zoom the framing.</p>
+        <p class="tip" id="diagonalHintP" hidden data-i18n="diagonalHint">The camera starts at the image
+        edge and flies straight to the opposite side while zooming in slightly - evenly from the very first
+        frame. Flight direction 0° = start at the left edge, 180° = start at the right edge (in between:
+        diagonal). Speed sets how much it zooms, a click shifts the path.</p>
         <p class="tip" id="lateralHintP" data-i18n="lateralHint">The camera glides across the image at constant zoom –
         near regions and stars drift past faster (parallax). Speed sets the travel distance,
         a click sets the path center. Increase zoom for a longer travel range.</p>
@@ -1237,8 +1246,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-09-28-88"></script>
+<script src="i18n.js?v=2026-09-28-89"></script>
 <script src="objectinfo.js?v=2026-08-16-67"></script>
-<script src="app.js?v=2026-09-28-88"></script>
+<script src="app.js?v=2026-09-28-89"></script>
 </body>
 </html>
