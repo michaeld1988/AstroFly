@@ -710,7 +710,10 @@ void main() {
   // Reproduzierbare Zufalls-Tiefe pro Stern; "Neu mischen" ändert den Seed
   float h = fract(sin(aPos.x * 127.1 + aPos.y * 311.7 + uSeed * 17.0) * 43758.5453);
   // Optional in diskrete Ebenen einrasten (gleichmäßig verteilt)
-  if (aBright < uCullBright) {
+  // Scheibensterne ohne laufende Drehung (Drehung eben auf 0 gestellt, der
+  // entprellte Neuaufbau steht noch aus) nicht als gewoehnliche Sterne zeigen
+  bool discIdle = aAtlas.x < 0.0 && aAtlas.y > 9.5 && uGalNS == 0;
+  if (aBright < uCullBright || discIdle) {
     // Ausgeblendeter Stern: aus dem Clip-Volumen schieben und alle
     // Varyings neutral setzen (undefinierte Varyings sind UB)
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 1.0;
@@ -789,6 +792,11 @@ void main() {
   vec2 sp1 = disc ? posNow : spinStar(aPos + aPm * uPmYears, 0.0);
   vec2 tOff = mix(uTilt * (depth - 0.45), uTiltB * (dNA - 0.45), anchorW);
   vec2 pr = (sp1 - uCenter - tOff) * scale;
+  // Tiefe VOR der Verankerung merken: die zweite Kamera (Streifen) muss
+  // denselben Versatz rechnen wie die erste - sonst wuchs der Streifen mit
+  // dem seitlichen Versatz statt mit der Geschwindigkeit (lange Striche an
+  // Flug-Anfang und -Ende)
+  float depthT = depth;
   depth = mix(depth, dNA, anchorW);
   float c = cos(uAngle), s = sin(uAngle);
   // Inverse der Hintergrund-Rotation, damit Sterne auf dem Bild liegen bleiben
@@ -856,7 +864,7 @@ void main() {
   vec2 clipMid = clip;
   if (uStreak > 0.0) {
     float scale2 = uCover * pow(uZoom2, ex);
-    vec2 tOff2 = mix(uTilt2 * (depth - 0.45), uTiltB2 * (dNA - 0.45), anchorW);
+    vec2 tOff2 = mix(uTilt2 * (depthT - 0.45), uTiltB2 * (dNA - 0.45), anchorW);
     vec2 pr2 = ((disc ? discStar(aPos, 1.0, dk, aAtlas.z) : spinStar(aPos + aPm * uPmYears2, 1.0)) - uCenter2 - tOff2) * scale2;
     float c2 = cos(uAngle2), s2 = sin(uAngle2);
     vec2 p2 = mat2(c2, s2, -s2, c2) * pr2;
@@ -1412,6 +1420,7 @@ function makeTexture(source) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.MIRRORED_REPEAT);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.MIRRORED_REPEAT);
+  requestRender(); // neue Textur sofort zeigen, auch im Leerlauf
   return t;
 }
 
@@ -1841,6 +1850,7 @@ function makeTextureRaw(w, h, data) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.MIRRORED_REPEAT);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.MIRRORED_REPEAT);
+  requestRender(); // neue Textur sofort zeigen, auch im Leerlauf
   return t;
 }
 
@@ -2231,6 +2241,7 @@ function makeTextureFloat(w, h, rgba) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.MIRRORED_REPEAT);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.MIRRORED_REPEAT);
+  requestRender(); // neue Textur sofort zeigen, auch im Leerlauf
   return t;
 }
 
@@ -2306,6 +2317,7 @@ function finalizeDepthMap() {
   const pv = $("depthPreview");
   pv.height = Math.round(160 * h / w) || 107;
   pv.getContext("2d").drawImage(c, 0, 0, pv.width, pv.height);
+  requestRender();
 }
 
 // Mittlere Tiefe der Scheibenebene (Ring 0,3-0,6 der Ellipse: Neigung
@@ -3541,6 +3553,7 @@ let galStarsKey = "", galStarsTex = null, galStarTimer = 0;
  * gaia = echte Tiefe 0..1 (aus state.gaiaDepth) oder -1, wenn nicht zugeordnet.
  */
 function uploadStars() {
+  requestRender();
   const mask = state.maskStarFloats || new Float32Array(0);
   const gen = generateStars();
   const gst = generateGalaxyStars();
@@ -4247,8 +4260,8 @@ function coverBase(viewAspect, imgAspect) {
   let cover = base;
   for (let i = 0; i < 6; i++) {
     let tx = T0, ty = T0;
-    if (state.flightMode === "lateral") {
-      const sc = cover * state.zoomBase;
+    if (state.flightMode === "lateral" || state.flightMode === "diagonal") {
+      const sc = cover * (state.flightMode === "diagonal" ? diagStartZoom() : state.zoomBase);
       const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.92;
       const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.92;
       tx += drK * 0.55 * freeX;
@@ -4421,6 +4434,12 @@ function dollyPivotDepth() {
   return v;
 }
 
+// Startzoom des Schraegflugs: mindestens 1,25x, damit vom Bildrand aus
+// ueberhaupt eine Fahrstrecke frei ist
+function diagStartZoom() {
+  return Math.max(state.zoomBase, 1.25);
+}
+
 function camAt(loopT) {
   // Flugplan-Einrichtung: feste Kamera aus dem Steuerkreuz statt Animation
   if (state.scenEdit) {
@@ -4494,6 +4513,42 @@ function camAt(loopT) {
     const fy = Math.max(0, Math.max(0, 0.5 - 0.5 / sc0) * 0.98 - comp);
     cx = Math.min(freeX, Math.max(-freeX, Math.min(fx, Math.max(-fx, g.x)) - driftTX * kG));
     cy = Math.min(freeY, Math.max(-freeY, Math.min(fy, Math.max(-fy, g.y)) - driftTY * kG));
+  } else if (state.flightMode === "diagonal") {
+    // Schraegflug: Start am Bildrand, gerade Bahn zur Gegenseite, dabei ein
+    // leichter Zoom. Von der ersten Sekunde an gleichmaessig:
+    //  - Zoom exponentiell (konstante Zoomrate, wie beim Zoom-Flug)
+    //  - Seitfahrt mit konstanter Geschwindigkeit AUF DEM BILDSCHIRM: in
+    //    Bildkoordinaten wird sie im Mass des Zooms langsamer
+    //    (Anteil g = (1 - e^-k*pe) / (1 - e^-k)), sonst wuerde der Drift mit
+    //    wachsendem Zoom immer schneller
+    //  - die ganze Bahn liegt im freien Bereich des START-Ausschnitts (der
+    //    kleinste des Flugs), damit nie eine Randklemme die Fahrt festhaelt.
+    //    Genau das liess beim Zoom-Flug mit Randziel die Sterne erst
+    //    "einschwenken" und erst ab der Mitte gleichmaessig ziehen
+    const viewAspect = state.aspect;
+    const imgAspect = state.starless ? state.starless.width / state.starless.height : 16 / 9;
+    const cover = coverBase(viewAspect, imgAspect);
+    const z0 = diagStartZoom();
+    const kz = Math.log(1 + 0.6 * Math.max(0, state.speed) / 100);
+    zoom = z0 * Math.exp(kz * pe);
+    const sc0 = cover * z0;
+    const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc0) * 0.97;
+    const freeY = Math.max(0, 0.5 - 0.5 / sc0) * 0.97;
+    const dir = state.driftDir * Math.PI / 180;
+    const ux = Math.cos(dir), uy = Math.sin(dir);
+    // Bahnmitte: Klickziel (quer zur Fahrt verschiebbar), sonst Bildmitte
+    const tx = Math.min(freeX, Math.max(-freeX, state.target.x));
+    const ty = Math.min(freeY, Math.max(-freeY, state.target.y));
+    let half = Infinity;
+    if (Math.abs(ux) > 1e-6) half = Math.min(half, (freeX - Math.abs(tx)) / Math.abs(ux));
+    if (Math.abs(uy) > 1e-6) half = Math.min(half, (freeY - Math.abs(ty)) / Math.abs(uy));
+    if (!isFinite(half)) half = 0;
+    const g = kz > 1e-6 ? (1 - Math.exp(-kz * pe)) / (1 - Math.exp(-kz)) : pe;
+    const off = (g - 0.5) * 2 * half;
+    cx = tx + off * ux;
+    cy = ty + off * uy;
+    driftTX = off * ux;
+    driftTY = off * uy;
   } else if (state.flightMode === "lateral") {
     // Konstanter Zoom; die Kamera fährt entlang der eingestellten Richtung
     // durch das Ziel (Klickpunkt). Die Strecke ist so begrenzt, dass der
@@ -4569,7 +4624,7 @@ function camAt(loopT) {
   // die Bildflaeche schrumpfen, startet die Kamera um genau den noetigen
   // Rand naeher (lensMargin)
   let lens = 1;
-  if (state.dolly > 0 && state.flightMode !== "lateral" && state.flightMode !== "orbit" && !scenarioActive()) {
+  if (state.dolly > 0 && state.flightMode === "zoom" && !scenarioActive()) {
     const P = (state.parallax / 100) * 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
     const exS = 1 + P * (dollyPivotDepth() - 0.45);
     const ex0 = 1 - P * 0.45;
@@ -4595,7 +4650,7 @@ function camAt(loopT) {
   // Loop-Modus nahtlos hin & zurück). Startpunkt ist der per Regler
   // verschiebbare Ausschnitt; beides wird an die Bildkanten geklemmt, damit
   // nie über den Bildrand hinaus geschwenkt wird.
-  if (state.flightMode !== "lateral" && state.flightMode !== "orbit" && !scenarioActive()) {
+  if (state.flightMode === "zoom" && !scenarioActive()) {
     const viewAspect = state.aspect;
     const imgAspect = state.starless
       ? state.starless.width / state.starless.height : 16 / 9;
@@ -4624,6 +4679,24 @@ function camAt(loopT) {
     }
   }
   return { zoom, angle, rate, te, tiltAddX, tiltAddY, cx, cy, driftTX, driftTY, lens };
+}
+
+// Kamera um dt voraus (fuer Bewegungsunschaerfe und Stern-Streifen). Am
+// Flugende gibt es kein "danach": frueher wurde dort auf die Endposition
+// geklemmt - Bewegung 0, das letzte Bild war ploetzlich scharf und sprang
+// sichtbar. Stattdessen die letzte Bewegung fortschreiben
+function camAhead(loopT, cam, dt) {
+  const D = state.duration;
+  if (loopT + dt <= D || state.loopMode) return camAt(Math.min(loopT + dt, D));
+  const a = camAt(Math.max(0, D - dt)), b = camAt(D);
+  const out = {};
+  for (const k in cam) {
+    const v = cam[k];
+    if (typeof v !== "number") { out[k] = v; continue; }
+    if ((k === "zoom" || k === "lens") && a[k] > 0) out[k] = v * b[k] / a[k];
+    else out[k] = v + (b[k] - a[k]);
+  }
+  return out;
 }
 
 function animParams(t) {
@@ -4784,7 +4857,7 @@ function render(forcedT) {
   // Bewegungsgrößen numerisch aus der Kamerakurve ableiten (für die
   // Geschwindigkeits-Streifen der Sterne und die Composite-Unschärfe)
   const dt = 0.05;
-  const cam2 = camAt(Math.min(loopT + dt, state.duration));
+  const cam2 = camAhead(loopT, cam, dt);
 
   // "Nur Sterne"-Unschärfe: Sterne als Geschwindigkeits-Streifen in eine
   // eigene Ebene rendern – Streifenlänge pro Stern nach seiner echten
@@ -5102,7 +5175,9 @@ function render(forcedT) {
 // sofort; zusaetzlich alle 250 ms ein Bild, damit asynchron fertig
 // gewordene Texturen (KI-Tiefe, Gaia, Bild laden) und entprellte
 // Neuberechnungen auch ohne eigenes Signal erscheinen
-let renderWanted = true, lastRenderAt = 0, lastRenderT = -1;
+// var statt let: requestRender() wird schon beim Start aus makeTexture()
+// gerufen, bevor diese Zeile erreicht ist
+var renderWanted = true, lastRenderAt = 0, lastRenderT = -1;
 function requestRender() { renderWanted = true; }
 for (const ev of ["input", "change", "click", "pointerdown", "pointermove", "pointerup", "wheel", "keydown", "resize"]) {
   window.addEventListener(ev, requestRender, { capture: true, passive: true });
@@ -5291,8 +5366,9 @@ $("ctlEaseMode").addEventListener("change", () => {
 
 $("ctlFlightMode").addEventListener("change", () => {
   state.flightMode = $("ctlFlightMode").value;
-  $("driftRow").hidden = state.flightMode !== "lateral" && state.flightMode !== "orbit";
+  $("driftRow").hidden = state.flightMode === "zoom";
   $("lateralHintP").hidden = state.flightMode !== "lateral";
+  $("diagonalHintP").hidden = state.flightMode !== "diagonal";
   $("orbitHintP").hidden = state.flightMode !== "orbit";
   state.t0 = performance.now();
   state.pausedAt = 0;
@@ -5780,6 +5856,10 @@ const FLIGHT_PRESETS = {
   // Spiral-Dive: beschleunigter Sturzflug mit Rolle (Contact/Interstellar)
   cineSpiral:      { look: "kino", ease: "in", set: { ctlSpeed: 55, ctlEase: 80, ctlRotation: 2.5, ctlParallax: 70, ctlStarPar: 300, ctlMblur: 25, ctlBloom: 15, ctlExposure: -5 }, checks: { ctlMblurStars: true } },
   // Arc-Shot: die Kamera kreist um die Galaxie (3D-Scheibe)
+  // Schraegflug vom linken/rechten Bildrand: leichter Zoom + Seitfahrt,
+  // gleichmaessig ab dem ersten Bild
+  cineDiagLeft:    { look: "kino", flightMode: "diagonal", set: { ctlDriftDir: 0, ctlSpeed: 40, ctlParallax: 75, ctlDepthBoost: 45, ctlStarPar: 240, ctlBloom: 15, ctlMblur: 10 }, checks: { ctlMblurStars: true } },
+  cineDiagRight:   { look: "kino", flightMode: "diagonal", set: { ctlDriftDir: 180, ctlSpeed: 40, ctlParallax: 75, ctlDepthBoost: 45, ctlStarPar: 240, ctlBloom: 15, ctlMblur: 10 }, checks: { ctlMblurStars: true } },
   cineArc:         { look: "kino", flightMode: "orbit", ease: "inout", set: { ctlSpeed: 45, ctlEase: 65, ctlParallax: 80, ctlDepthBoost: 50, ctlStarPar: 220, ctlBloom: 18 } },
 };
 
