@@ -5877,8 +5877,11 @@ const FLIGHT_PRESETS = {
   // Arc-Shot: die Kamera kreist um die Galaxie (3D-Scheibe)
   // Schraegflug vom linken/rechten Bildrand: leichter Zoom + Seitfahrt,
   // gleichmaessig ab dem ersten Bild
-  cineDiagLeft:    { look: "kino", flightMode: "diagonal", set: { ctlDriftDir: 0, ctlSpeed: 100, ctlZoomDrift: 35, ctlParallax: 75, ctlDepthBoost: 45, ctlStarPar: 240, ctlBloom: 15 } },
-  cineDiagRight:   { look: "kino", flightMode: "diagonal", set: { ctlDriftDir: 180, ctlSpeed: 100, ctlZoomDrift: 35, ctlParallax: 75, ctlDepthBoost: 45, ctlStarPar: 240, ctlBloom: 15 } },
+  // Stil von Michael (Stil-Code): Seitflug mit Zoom-Fahrt nach links, dazu
+  // gespiegelt nach rechts. fixedDir: die Richtung gehoert zum Stil (der
+  // Richtungsregler des Einfach-Modus ueberschreibt sie nicht)
+  cineDiagLeft:    { look: "neutral", flightMode: "lateral", fixedDir: true, set: { ctlDriftDir: 180, ctlSpread: 50, ctlStarDist: 57, ctlStarPar: 530, ctlStarBright: 140, ctlZoomDrift: 49, ctlBloom: 41, ctlSaturation: 8, ctlClarity: 14, ctlStructure: 10, ctlSharpen: 25, ctlFilmic: 70 }, checks: { ctlRealStars: false } },
+  cineDiagRight:   { look: "neutral", flightMode: "lateral", fixedDir: true, set: { ctlDriftDir: 0, ctlSpread: 50, ctlStarDist: 57, ctlStarPar: 530, ctlStarBright: 140, ctlZoomDrift: 49, ctlBloom: 41, ctlSaturation: 8, ctlClarity: 14, ctlStructure: 10, ctlSharpen: 25, ctlFilmic: 70 }, checks: { ctlRealStars: false } },
   cineArc:         { look: "kino", flightMode: "orbit", ease: "inout", set: { ctlSpeed: 45, ctlEase: 65, ctlParallax: 80, ctlDepthBoost: 50, ctlStarPar: 220, ctlBloom: 18 } },
 };
 
@@ -5923,7 +5926,7 @@ function applyFlightPreset(name) {
     $(id).dispatchEvent(new Event("change"));
   }
   // Richtungswahl nur bei seitlichen Flügen anbieten und anwenden
-  const lateral = p.flightMode === "lateral";
+  const lateral = p.flightMode === "lateral" && !p.fixedDir;
   $("simpleDirRow").hidden = !lateral;
   if (lateral) setCtl("ctlDriftDir", $("ctlSimpleDir").value);
   state.activePreset = name;
