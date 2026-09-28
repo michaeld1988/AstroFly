@@ -2606,92 +2606,91 @@ function buildStarLib() {
   return makeTexture(c);
 }
 
-function buildStarAtlas(list, srcCanvas, srcData) {
+function buildStarAtlas(list, srcCanvas, srcData, labels) {
   const A = 2048;
   const c = document.createElement("canvas");
   c.width = A; c.height = A;
   const g = c.getContext("2d");
   const entries = new Float32Array(list.length * 4).fill(-1);
-  const h = srcCanvas.height;
-  // Nachbarsuche ueber ein grobes Raster: fremde Sternkerne muessen aus
-  // jedem Patch entfernt werden - sonst rendert ein enges Paar den Partner
-  // DOPPELT (eigenes Sprite + Abbild im Patch des Nachbarn) und leuchtet
-  // beim additiven Blending viel zu hell (Anthonys Doppelstern-Report)
-  const CELL = 64;
-  const gw = Math.ceil(srcCanvas.width / CELL), gh = Math.ceil(srcCanvas.height / CELL);
-  const grid = new Map();
-  list.forEach((st, i) => {
-    const key = ((st.x / CELL) | 0) + ((st.y / CELL) | 0) * gw;
-    if (!grid.has(key)) grid.set(key, []);
-    grid.get(key).push(i);
-  });
+  const W = srcCanvas.width, h = srcCanvas.height;
+  const img = g.createImageData(A, A), out = img.data;
   const coreR = (st) => Math.sqrt(st.area / Math.PI) * 0.9 + 2.5;
-  // Enge Paare: ueberlappen sich die Kerne, wird der schwaechere Stern vom
-  // helleren "absorbiert" - er bleibt im Patch des Partners sichtbar, sein
-  // eigenes Partikel wird im Echtbild-Modus ausgeblendet (Marke -2). Ein
-  // Ausradieren wuerde sonst den eigenen Kern mit treffen (Anthonys Paar)
-  const absorbed = new Uint8Array(list.length);
+  // Jeder Ausschnitt enthaelt NUR den eigenen Stern: Pixel, die laut
+  // Wasserscheide zu einem anderen Stern gehoeren, werden durch das
+  // radiale Profil des eigenen Sterns ersetzt (azimutaler Median - Spikes
+  // und Nachbarn verschieben ihn nicht). So schweben keine fremden Sterne
+  // mehr als Klumpen im Patch mit; jeder Nachbar wird mit seiner eigenen
+  // Tiefe gerendert. Die Naht liegt auf der Wasserscheide, wo beide Sterne
+  // ohnehin gleich hell sind - kein Loch, kein Rand
+  const px = (x, y, k) => (x < 0 || y < 0 || x >= W || y >= h) ? 0 : srcData[(y * W + x) * 4 + k];
   let x = 0, y = 0, rowH = 0, packed = 0;
   const N = Math.min(list.length, 2500);
   for (let i = 0; i < N; i++) {
-    if (absorbed[i]) continue;
     const st = list[i];
-    // Ausschnitt grosszuegig: 2,4x der Kernradius nimmt Halo und Spikes mit.
-    // Die hellsten Sterne bekommen deutlich groessere Ausschnitte - lange
-    // Newton-Spikes wurden sonst am Patchrand gekappt
+    // Groesse aus der tatsaechlichen Ausdehnung des Sterns (weitester
+    // eigener Pixel, Spikes eingeschlossen) plus Saum fuer den Halo unter
+    // der Schwelle. Die hellsten Sterne duerfen fuer lange Spikes groesser
+    // werden
     const cap = i < 4 ? 200 : i < 24 ? 120 : 90;
-    const rPx = Math.min(cap, Math.max(4, Math.ceil(coreR(st) * 2.4)));
+    const rPx = Math.min(cap, Math.max(4, Math.ceil(Math.max(st.ext * 1.5 + 3, coreR(st) * 1.6))));
     const s = 2 * rPx + 2;
     if (x + s > A) { x = 0; y += rowH + 1; rowH = 0; }
     if (y + s > A) break;
-    g.drawImage(srcCanvas, st.x - rPx, st.y - rPx, 2 * rPx, 2 * rPx, x + 1, y + 1, 2 * rPx, 2 * rPx);
-    // Fremde Sternkerne im Patch weich ausradieren (schwarz = additiv nichts)
-    const c0x = ((st.x - rPx) / CELL | 0) - 1, c1x = ((st.x + rPx) / CELL | 0) + 1;
-    const c0y = ((st.y - rPx) / CELL | 0) - 1, c1y = ((st.y + rPx) / CELL | 0) + 1;
-    for (let cy = c0y; cy <= c1y; cy++) {
-      for (let cx = c0x; cx <= c1x; cx++) {
-        const cell = grid.get(cx + cy * gw);
-        if (!cell) continue;
-        for (const j of cell) {
-          if (j === i || absorbed[j]) continue;
-          const nb = list[j];
-          const dx = nb.x - st.x, dy = nb.y - st.y;
-          const dist = Math.hypot(dx, dy);
-          if (dist > rPx + coreR(nb) * 2) continue;
-          if (j > i && dist < (coreR(st) + coreR(nb)) * 0.95) {
-            // Kerne ueberlappen: Partner absorbieren statt radieren
-            absorbed[j] = 1;
-            entries[j * 4] = -2;
-            continue;
-          }
-          // Schwache Nachbarn im Saum NICHT ausradieren: ihr doppelter
-          // Beitrag ist unsichtbar, ein Loch im Saum faellt dagegen auf
-          if (nb.flux < st.flux * 0.03) continue;
-          // Hellere Nachbarn weich ausradieren - Radius so begrenzen, dass
-          // der EIGENE Kern nie mit getroffen wird
-          const eraseR = Math.min(coreR(nb) * 2.0, Math.max(0, dist - coreR(st) * 0.8));
-          if (eraseR < 1.5) continue;
-          const px = x + 1 + rPx + dx, py = y + 1 + rPx + dy;
-          // Loch mit der Saumfarbe fuellen statt schwarz: der Saum eines
-          // Sterns ist radialsymmetrisch - die Farbe an der gespiegelten
-          // Stelle (gleicher Abstand, gegenueber) ist ein sauberer Ersatz
-          // Direkt aus dem ImageData der Erkennung lesen (getImageData auf
-          // dem Atlas erzwang tausende langsame Canvas-Synchronisationen)
-          let fill = "rgba(0,0,0,1)";
-          const mx = Math.round(st.x - dx), my = Math.round(st.y - dy);
-          if (srcData && mx >= 0 && my >= 0 && mx < srcCanvas.width && my < srcCanvas.height) {
-            const mi = (my * srcCanvas.width + mx) * 4;
-            fill = `rgba(${srcData[mi]},${srcData[mi + 1]},${srcData[mi + 2]},1)`;
-          }
-          const grad = g.createRadialGradient(px, py, 0, px, py, eraseR);
-          grad.addColorStop(0, fill);
-          grad.addColorStop(0.6, fill.replace(",1)", ",0.9)"));
-          grad.addColorStop(1, fill.replace(",1)", ",0)"));
-          g.fillStyle = grad;
-          g.beginPath();
-          g.arc(px, py, eraseR, 0, Math.PI * 2);
-          g.fill();
+    const sx = st.x - rPx, sy = st.y - rPx;
+    const ix0 = Math.floor(sx) - 1, iy0 = Math.floor(sy) - 1, span = 2 * rPx + 3;
+    // Radialprofil (Median je Ring) aus eigenen und Hintergrund-Pixeln
+    const bins = [];
+    for (let r = 0; r <= rPx + 2; r++) bins.push([]);
+    for (let yy = iy0; yy < iy0 + span; yy++) {
+      if (yy < 0 || yy >= h) continue;
+      for (let xx = ix0; xx < ix0 + span; xx++) {
+        if (xx < 0 || xx >= W) continue;
+        const l = labels[yy * W + xx];
+        if (l >= 0 && l !== st.lab) continue;
+        const r = Math.round(Math.hypot(xx - st.x, yy - st.y));
+        if (r < bins.length) bins[r].push(yy * W + xx);
+      }
+    }
+    const prof = new Float32Array(bins.length * 3);
+    let lastR = 0, lastG = 0, lastB = 0;
+    for (let r = 0; r < bins.length; r++) {
+      const b = bins[r];
+      if (b.length) {
+        const lumOf = (q) => srcData[q * 4] * 77 + srcData[q * 4 + 1] * 150 + srcData[q * 4 + 2] * 29;
+        b.sort((p, q) => lumOf(p) - lumOf(q));
+        const q = b[b.length >> 1] * 4;
+        lastR = srcData[q]; lastG = srcData[q + 1]; lastB = srcData[q + 2];
+        // Sternprofil faellt nach aussen: Ausreisser nach oben kappen
+        if (r > 0) {
+          lastR = Math.min(lastR, prof[(r - 1) * 3]); lastG = Math.min(lastG, prof[(r - 1) * 3 + 1]); lastB = Math.min(lastB, prof[(r - 1) * 3 + 2]);
         }
+      }
+      prof[r * 3] = lastR; prof[r * 3 + 1] = lastG; prof[r * 3 + 2] = lastB;
+    }
+    // Pixelwert mit Fremd-Ersatz (fuer bilineares Abtasten)
+    const val = (xx, yy, k) => {
+      if (xx < 0 || yy < 0 || xx >= W || yy >= h) return 0;
+      const l = labels[yy * W + xx];
+      if (l >= 0 && l !== st.lab) {
+        const rr = Math.hypot(xx - st.x, yy - st.y), r0 = Math.min(bins.length - 1, Math.floor(rr));
+        const r1 = Math.min(bins.length - 1, r0 + 1), f = rr - Math.floor(rr);
+        return prof[r0 * 3 + k] * (1 - f) + prof[r1 * 3 + k] * f;
+      }
+      return px(xx, yy, k);
+    };
+    // Patch schreiben: Zielpixel k liegt ueber Quellkoordinate sx + k
+    // (wie drawImage(src, sx, sy, 2r, 2r, ...) im Pixelraster)
+    for (let ky = 0; ky < 2 * rPx; ky++) {
+      const fy = sy + ky, y0 = Math.floor(fy), ty = fy - y0;
+      for (let kx = 0; kx < 2 * rPx; kx++) {
+        const fx = sx + kx, x0 = Math.floor(fx), tx = fx - x0;
+        const o = ((y + 1 + ky) * A + (x + 1 + kx)) * 4;
+        for (let k = 0; k < 3; k++) {
+          const top = val(x0, y0, k) * (1 - tx) + val(x0 + 1, y0, k) * tx;
+          const bot = val(x0, y0 + 1, k) * (1 - tx) + val(x0 + 1, y0 + 1, k) * tx;
+          out[o + k] = top * (1 - ty) + bot * ty;
+        }
+        out[o + 3] = 255;
       }
     }
     entries[i * 4]     = (x + 1 + rPx) / A;       // Zentrum u
@@ -2701,6 +2700,7 @@ function buildStarAtlas(list, srcCanvas, srcData) {
     x += s; rowH = Math.max(rowH, s);
     packed++;
   }
+  g.putImageData(img, 0, 0);
   return { canvas: c, entries, packed };
 }
 
@@ -2741,74 +2741,130 @@ function refreshStarCullOut() {
 }
 
 /**
- * Trennt eine Zusammenhangskomponente mit mehreren Helligkeitsgipfeln in
- * einzelne Sterne (vereinfachtes Deblending wie in SExtractor): lokale
- * Maxima suchen, nahe/unechte Gipfel verwerfen (Talprobe auf halbem Weg),
- * dann jedes Pixel dem naechsten Gipfel zuschlagen. Liefert null, wenn der
- * Fleck ein einzelner Stern ist.
+ * Sterne in der Maske trennen (Wasserscheide wie in SExtractor/photutils):
+ * Jedes Pixel ueber der Grundschwelle "klettert" zum hellsten Nachbarn, bis
+ * es auf einem Gipfel ankommt - so gehoeren Halo und Spikes eines Sterns zu
+ * seinem eigenen Gipfel, ein schwacher Stern im Saum eines hellen bekommt
+ * dagegen sein eigenes Gebiet. Gipfel ohne echte Prominenz (Rauschhoecker
+ * auf Spikes, Plateaus gesaettigter Kerne, Buckel unter der Sternschwelle)
+ * verschmelzen ueber ihren Sattel mit dem Nachbarn. Liefert die Sterne und
+ * je Pixel das Gebiet (labels, -1 = Hintergrund) - der Atlas nimmt damit
+ * nur die eigenen Pixel eines Sterns in seinen Ausschnitt.
  */
-function deblendStar(pix, lum, data, w, peak) {
-  const need = Math.max(60, peak * 0.22); // Gipfel muessen deutlich hell sein
-  const maxima = [];
-  for (const idx of pix) {
-    const v = lum[idx];
-    if (v < need) continue;
-    const x = idx % w;
-    // 8er-Nachbarschaft: nur echte lokale Maxima (Plateaus zaehlen einmal,
-    // deshalb ">" nach rechts/unten und ">=" nach links/oben)
-    const L = x > 0, R = x < w - 1;
-    if (L && lum[idx - 1] > v) continue;
-    if (R && lum[idx + 1] > v) continue;
-    if (lum[idx - w] > v) continue;
-    if (lum[idx + w] > v) continue;
-    if (L && lum[idx - w - 1] > v) continue;
-    if (R && lum[idx - w + 1] > v) continue;
-    if (L && lum[idx + w - 1] > v) continue;
-    if (R && lum[idx + w + 1] > v) continue;
-    maxima.push({ idx, x, y: (idx / w) | 0, v });
-  }
-  if (maxima.length < 2) return null;
-  maxima.sort((a, b) => b.v - a.v);
-  // Gipfel ausduennen: Mindestabstand + Talprobe (liegt auf halbem Weg kaum
-  // ein Einschnitt, ist es derselbe Stern - z. B. ein Plateau im Kern)
-  const kept = [];
-  for (const m of maxima) {
-    if (kept.length >= 6) break;
-    let ok = true;
-    for (const k of kept) {
-      const d = Math.hypot(m.x - k.x, m.y - k.y);
-      if (d < 3) { ok = false; break; }
-      const mi = ((m.y + k.y) >> 1) * w + ((m.x + k.x) >> 1);
-      if (lum[mi] > 0.75 * Math.min(m.v, k.v)) { ok = false; break; }
+function segmentStars(lum, data, w, h, THRESH) {
+  const LOW = Math.max(8, THRESH >> 1);
+  const PROM_ABS = 12, PROM_REL = 0.18;
+  const n = w * h;
+  const par = new Int32Array(n).fill(-1);
+  // 1) Bergauf-Zeiger: hellster 8er-Nachbar (Gleichstand -> kleinerer
+  // Index, damit Plateaus eindeutig ablaufen)
+  for (let y = 0; y < h; y++) {
+    const y0 = y > 0 ? -1 : 0, y1 = y < h - 1 ? 1 : 0;
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x, v = lum[i];
+      if (v < LOW) continue;
+      const x0 = x > 0 ? -1 : 0, x1 = x < w - 1 ? 1 : 0;
+      let best = i, bv = v;
+      for (let dy = y0; dy <= y1; dy++) {
+        for (let dx = x0; dx <= x1; dx++) {
+          const j = i + dy * w + dx, lj = lum[j];
+          if (lj > bv || (lj === bv && j < best)) { best = j; bv = lj; }
+        }
+      }
+      par[i] = best;
     }
-    if (ok) kept.push(m);
   }
-  if (kept.length < 2) return null;
-  // Pixel dem naechsten Gipfel zuschlagen und Teil-Sterne aufsummieren
-  const acc = kept.map(() => ({ flux: 0, cx: 0, cy: 0, area: 0, peak: 0, sr: 0, sg: 0, sb: 0 }));
-  for (const idx of pix) {
-    const v = lum[idx];
-    const x = idx % w, y = (idx / w) | 0;
-    let bi = 0, bd = Infinity;
-    for (let k = 0; k < kept.length; k++) {
-      const dx = x - kept[k].x, dy = y - kept[k].y;
-      const d = dx * dx + dy * dy;
-      if (d < bd) { bd = d; bi = k; }
+  // 2) Gipfel aufloesen (Pfadkompression) und Gebiete nummerieren
+  const regOf = new Int32Array(n).fill(-1);
+  const peakV = [];
+  for (let i = 0; i < n; i++) {
+    if (par[i] < 0) continue;
+    let r = i;
+    while (par[r] !== r) r = par[r];
+    let k = i;
+    while (par[k] !== r) { const nx = par[k]; par[k] = r; k = nx; }
+    if (regOf[r] < 0) { regOf[r] = peakV.length; peakV.push(lum[r]); }
+  }
+  const R = peakV.length;
+  // 3) Saettel zwischen benachbarten Gebieten (hoechster Uebergang)
+  const sad = new Map();
+  const lab = new Int32Array(n).fill(-1);
+  for (let i = 0; i < n; i++) if (par[i] >= 0) lab[i] = regOf[par[i]];
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x, a = lab[i];
+      if (a < 0) continue;
+      const nb = [x < w - 1 ? i + 1 : -1, y < h - 1 ? i + w : -1,
+        x < w - 1 && y < h - 1 ? i + w + 1 : -1, x > 0 && y < h - 1 ? i + w - 1 : -1];
+      for (const j of nb) {
+        if (j < 0) continue;
+        const b = lab[j];
+        if (b < 0 || b === a) continue;
+        const sv = Math.min(lum[i], lum[j]);
+        const key = a < b ? a * R + b : b * R + a;
+        const old = sad.get(key);
+        if (old === undefined || sv > old) sad.set(key, sv);
+      }
     }
-    const a = acc[bi], j = idx * 4;
-    a.flux += v; a.cx += x * v; a.cy += y * v; a.area++;
-    if (v > a.peak) a.peak = v;
-    a.sr += data[j] * v; a.sg += data[j + 1] * v; a.sb += data[j + 2] * v;
   }
-  return acc.filter((a) => a.flux > 0).map((a) => ({
-    x: a.cx / a.flux, y: a.cy / a.flux,
-    flux: a.flux, area: a.area, peak: a.peak,
-    r: a.sr / a.flux, g: a.sg / a.flux, b: a.sb / a.flux,
+  // 4) Unechte Gipfel ueber den hoechsten Sattel zuerst verschmelzen
+  const uf = new Int32Array(R);
+  for (let r = 0; r < R; r++) uf[r] = r;
+  const find = (r) => { while (uf[r] !== r) { uf[r] = uf[uf[r]]; r = uf[r]; } return r; };
+  const pairs = [];
+  for (const [key, sv] of sad) pairs.push(sv, Math.floor(key / R), key % R);
+  const order = [];
+  for (let k = 0; k < pairs.length; k += 3) order.push(k);
+  order.sort((p, q) => pairs[q] - pairs[p]);
+  for (const k of order) {
+    const sv = pairs[k];
+    let ra = find(pairs[k + 1]), rb = find(pairs[k + 2]);
+    if (ra === rb) continue;
+    if (peakV[ra] < peakV[rb]) { const t = ra; ra = rb; rb = t; }
+    // Buckel unter der Sternschwelle gehen immer im Nachbarn auf; zwei
+    // Sterne, die sich erst unter der Schwelle beruehren, bleiben getrennt
+    // (sie waren schon als eigene Flecken erkennbar)
+    const low = peakV[rb];
+    if (low < THRESH || (sv >= THRESH && low - sv < Math.max(PROM_ABS, PROM_REL * low))) uf[rb] = ra;
+  }
+  // 5) Sterne = Gebiete mit Gipfel ueber der Sternschwelle; Kennzahlen nur
+  // aus Pixeln ueber der Schwelle (wie bisher), Ausdehnung fuer den Atlas
+  const starOf = new Int32Array(R).fill(-1);
+  const acc = [];
+  for (let i = 0; i < n; i++) {
+    let a = lab[i];
+    if (a < 0) continue;
+    a = find(a);
+    if (peakV[a] < THRESH) { lab[i] = -1; continue; }
+    if (starOf[a] < 0) { starOf[a] = acc.length; acc.push({ flux: 0, cx: 0, cy: 0, area: 0, peak: 0, sr: 0, sg: 0, sb: 0, d2: 0 }); }
+    const si = starOf[a];
+    lab[i] = si;
+    const v = lum[i];
+    if (v < THRESH) continue;
+    const st = acc[si], x = i % w, y = (i / w) | 0, j = i * 4;
+    st.flux += v; st.cx += x * v; st.cy += y * v; st.area++;
+    if (v > st.peak) st.peak = v;
+    st.sr += data[j] * v; st.sg += data[j + 1] * v; st.sb += data[j + 2] * v;
+  }
+  const found = acc.map((a, k) => ({
+    x: a.flux > 0 ? a.cx / a.flux : 0, y: a.flux > 0 ? a.cy / a.flux : 0,
+    flux: a.flux, area: a.area, peak: a.peak, lab: k, ext: 0,
+    r: a.flux > 0 ? a.sr / a.flux : 0, g: a.flux > 0 ? a.sg / a.flux : 0, b: a.flux > 0 ? a.sb / a.flux : 0,
   }));
+  // Ausdehnung: weitester eigener Pixel ueber der Schwelle (Spikes zaehlen mit)
+  for (let i = 0; i < n; i++) {
+    const si = lab[i];
+    if (si < 0 || lum[i] < THRESH) continue;
+    const st = found[si], dx = (i % w) - st.x, dy = ((i / w) | 0) - st.y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 > st.ext) st.ext = d2;
+  }
+  for (const st of found) st.ext = Math.sqrt(st.ext);
+  return { found: found.filter((st) => st.flux > 0), labels: lab };
 }
 
 /**
- * Findet Sterne in der Maske über Zusammenhangskomponenten und baut den
+ * Findet Sterne in der Maske (Wasserscheide, segmentStars) und baut den
  * GPU-Puffer: pro Stern [x, y, helligkeit, größe, r, g, b] in Ebenen-Einheiten.
  * Die Tiefen-Ebene wird erst im Vertexshader aus Seed/Streuung/Abstand bestimmt.
  */
@@ -2829,51 +2885,7 @@ function buildStarBuffer() {
   }
 
   const THRESH = 24;
-  const visited = new Uint8Array(w * h);
-  const stack = new Int32Array(1 << 16);
-  const found = [];
-
-  for (let i = 0; i < lum.length; i++) {
-    if (visited[i] || lum[i] < THRESH) continue;
-    let sp = 0;
-    stack[sp++] = i;
-    visited[i] = 1;
-    let flux = 0, cx = 0, cy = 0, area = 0, peak = 0;
-    let sr = 0, sg = 0, sb = 0;
-    const pix = [];
-    while (sp > 0) {
-      const idx = stack[--sp];
-      const v = lum[idx];
-      const x = idx % w, y = (idx / w) | 0;
-      flux += v; cx += x * v; cy += y * v; area++;
-      pix.push(idx);
-      if (v > peak) peak = v;
-      const j = idx * 4;
-      sr += data[j] * v; sg += data[j + 1] * v; sb += data[j + 2] * v;
-      // Ausreißer (Nebelreste in der Maske) begrenzen. Grosszuegig genug, dass
-      // ein sehr heller Stern samt Halo vollstaendig eingesammelt wird - sonst
-      // wird sein Schwerpunkt aus dem abgebrochenen Teil gemittelt
-      if (area > 12000) break;
-      if (x > 0     && !visited[idx - 1] && lum[idx - 1] >= THRESH && sp < stack.length) { visited[idx - 1] = 1; stack[sp++] = idx - 1; }
-      if (x < w - 1 && !visited[idx + 1] && lum[idx + 1] >= THRESH && sp < stack.length) { visited[idx + 1] = 1; stack[sp++] = idx + 1; }
-      if (y > 0     && !visited[idx - w] && lum[idx - w] >= THRESH && sp < stack.length) { visited[idx - w] = 1; stack[sp++] = idx - w; }
-      if (y < h - 1 && !visited[idx + w] && lum[idx + w] >= THRESH && sp < stack.length) { visited[idx + w] = 1; stack[sp++] = idx + w; }
-    }
-    if (flux <= 0) continue;
-    // Verschmolzene Sterne trennen: dicht beieinander stehende Sterne bilden
-    // EINE Zusammenhangskomponente und wurden bisher als ein grosser Klumpen
-    // gerendert. Mehrere getrennte Helligkeitsgipfel im Fleck -> aufteilen.
-    const parts = area >= 14 ? deblendStar(pix, lum, data, w, peak) : null;
-    if (parts) {
-      for (const p of parts) found.push(p);
-    } else {
-      found.push({
-        x: cx / flux, y: cy / flux,
-        flux, area, peak,
-        r: sr / flux, g: sg / flux, b: sb / flux,
-      });
-    }
-  }
+  const { found, labels } = segmentStars(lum, data, w, h, THRESH);
 
   found.sort((p, q) => q.flux - p.flux);
   // Obergrenze für Masken-Sterne: moderne GPUs schaffen das locker, das
@@ -2924,7 +2936,7 @@ function buildStarBuffer() {
   }
   refreshStarCullOut();
   // Echte Sternabbilder: Atlas aus demselben Arbeits-Canvas wie die Erkennung
-  state.starAtlas = buildStarAtlas(list, src, data);
+  state.starAtlas = buildStarAtlas(list, src, data, labels);
   if (texStarAtlas) gl.deleteTexture(texStarAtlas);
   texStarAtlas = makeTexture(state.starAtlas.canvas);
   // Neue Maske -> alte Gaia-Zuordnung passt nicht mehr. Wenn der Katalog
