@@ -66,6 +66,7 @@ const state = {
   loopMode: false,       // hin & zurück, nahtlos
   reverse: false,        // Flug rueckwaerts: vom Ziel zurueck ins Gesamtbild (Reveal / Pull-out)
   dolly: 0,              // Dolly-Zoom (Vertigo) 0..100: Objektiv zoomt gegen die Fahrt
+  zoomDrift: 30,         // Seit-/Schraegflug: langsam heranzoomen 0..100 (100 = 2x ueber den Flug)
   smooth: 18,
   depthRes: 768,        // Kantenlaenge der Tiefenkarte (768/1536/2048)
   customDepth: null,     // eigene, importierte Tiefenkarte { canvas, width, height }
@@ -2187,7 +2188,7 @@ function depthFlightSig() {
     s.driftDir, s.loopMode, s.ease, s.easeMode, s.tiltX, s.tiltY, s.swayAmp,
     s.swayTempo, s.swayDir, s.swayRandom, s.tiltRampAmp, s.tiltRampDir, s.aspect,
     s.frameX, s.frameY, s.target.x, s.target.y, s.rotationSpeed, s.strictEdges,
-    s.scenarioOn, JSON.stringify(s.waypoints), s.dolly, s.reverse, gal3dActive() ? "g3:" + s.gal3dAmt + galGeomSig() + (s.galaxies || []).map((g) => g.near || 1).join("") : "",
+    s.scenarioOn, JSON.stringify(s.waypoints), s.dolly, s.reverse, s.zoomDrift, gal3dActive() ? "g3:" + s.gal3dAmt + galGeomSig() + (s.galaxies || []).map((g) => g.near || 1).join("") : "",
     s.starless ? s.starless.width + "x" + s.starless.height : ""].join("|");
 }
 
@@ -4412,6 +4413,14 @@ function scenarioAt(p) {
 function scenarioActive() {
   return state.scenarioOn && state.waypoints.length >= 2;
 }
+// Sobald der Flugplan eingeschaltet ist, fuehrt NUR er die Kamera: ohne
+// Wegpunkt steht das Bild still (keine Bewegungsinformation), mit einem
+// Wegpunkt steht die Kamera auf diesem Wegpunkt - vorher lief bis zum
+// zweiten Wegpunkt die alte Preset-Animation weiter und Aenderungen am
+// ersten Wegpunkt blieben unsichtbar
+function scenarioCam() {
+  return state.scenarioOn;
+}
 
 // Tiefe des Dolly-Ziels: Mittel der Tiefenkarte um das Zoomziel (bzw. die
 // Bildmitte), gemerkt je Tiefenkarte und Ziel
@@ -4470,8 +4479,8 @@ function camAt(loopT) {
 
   // Flugmodus: entweder in den Nebel zoomen oder seitlich übers Bild gleiten
   let zoom, cx, cy, driftTX = 0, driftTY = 0;
-  if (scenarioActive()) {
-    const sp = scenarioAt(p);
+  if (scenarioCam()) {
+    const sp = state.waypoints.length ? scenarioAt(p) : { zoom: state.zoomBase, angle: 0, cx: 0, cy: 0 };
     zoom = sp.zoom; cx = sp.cx; cy = sp.cy;
     angle = (state.orientation + sp.angle) * Math.PI / 180;
   } else if (state.flightMode === "orbit") {
@@ -4529,7 +4538,7 @@ function camAt(loopT) {
     const imgAspect = state.starless ? state.starless.width / state.starless.height : 16 / 9;
     const cover = coverBase(viewAspect, imgAspect);
     const z0 = diagStartZoom();
-    const kz = Math.log(1 + 0.6 * Math.max(0, state.speed) / 100);
+    const kz = Math.log(1 + Math.max(0, state.zoomDrift) / 100);
     zoom = z0 * Math.exp(kz * pe);
     const sc0 = cover * z0;
     const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc0) * 0.97;
@@ -4544,21 +4553,28 @@ function camAt(loopT) {
     if (Math.abs(uy) > 1e-6) half = Math.min(half, (freeY - Math.abs(ty)) / Math.abs(uy));
     if (!isFinite(half)) half = 0;
     const g = kz > 1e-6 ? (1 - Math.exp(-kz * pe)) / (1 - Math.exp(-kz)) : pe;
-    const off = (g - 0.5) * 2 * half;
+    // Start immer am Rand; die Geschwindigkeit bestimmt, wie weit die
+    // Kamera Richtung Gegenseite kommt (100 = ganz hinueber)
+    const off = -half + 2 * half * (Math.max(0, state.speed) / 100) * g;
     cx = tx + off * ux;
     cy = ty + off * uy;
     driftTX = off * ux;
     driftTY = off * uy;
   } else if (state.flightMode === "lateral") {
-    // Konstanter Zoom; die Kamera fährt entlang der eingestellten Richtung
-    // durch das Ziel (Klickpunkt). Die Strecke ist so begrenzt, dass der
-    // Bildausschnitt nicht über den Rand hinausläuft.
-    zoom = state.zoomBase;
+    // Die Kamera fährt entlang der eingestellten Richtung durch das Ziel
+    // (Klickpunkt) und zoomt dabei langsam heran ("Zoom-Fahrt", 0 = fester
+    // Zoom). Die Strecke ist auf den Startausschnitt begrenzt (der kleinste
+    // des Flugs), damit nie eine Randklemme greift; mit Zoom laeuft die
+    // Seitfahrt bildschirm-gleichmaessig (wie beim Schraegflug)
+    const kzL = Math.log(1 + Math.max(0, state.zoomDrift) / 100);
+    zoom = state.zoomBase * Math.exp(kzL * pe);
     const viewAspect = state.aspect;
     const imgAspect = state.starless
       ? state.starless.width / state.starless.height : 16 / 9;
     const cover = coverBase(viewAspect, imgAspect);
-    const sc = cover * zoom;
+    // Freier Bereich des Startausschnitts (kleinster Zoom des Flugs) - mit
+    // dem aktuellen Zoom wuerde die Bahn waehrend des Flugs wachsen
+    const sc = cover * state.zoomBase;
     const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.92;
     const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.92;
     const tx = Math.min(freeX, Math.max(-freeX, state.target.x + (state.frameX / 100) * freeX));
@@ -4570,7 +4586,8 @@ function camAt(loopT) {
     if (Math.abs(uy) > 1e-6) half = Math.min(half, (freeY - Math.abs(ty)) / Math.abs(uy));
     if (!isFinite(half)) half = 0;
     half *= state.speed / 100;
-    const off = (pe - 0.5) * 2 * half;
+    const gL = kzL > 1e-6 ? (1 - Math.exp(-kzL * pe)) / (1 - Math.exp(-kzL)) : pe;
+    const off = (gL - 0.5) * 2 * half;
     cx = tx + off * ux;
     cy = ty + off * uy;
     // Fahrt-Parallaxe: wirkt wie ein animiertes Kippen – nahe Bereiche und
@@ -4584,7 +4601,7 @@ function camAt(loopT) {
   // Schwenk-Animation: langsame elliptische Kippbewegung (Funktion von te,
   // dadurch im Loop-Modus automatisch nahtlos)
   let tiltAddX = 0, tiltAddY = 0;
-  const swayA = scenarioActive() ? 0 : (state.swayAmp / 100) * 0.06;
+  const swayA = scenarioCam() ? 0 : (state.swayAmp / 100) * 0.06;
   if (swayA > 0) {
     // Kreisende Kippbewegung statt Hin-und-her-Pendeln: Der Kipp-Vektor
     // läuft auf einer flachen Ellipse (Hauptachse = eingestellte Richtung).
@@ -4608,7 +4625,7 @@ function camAt(loopT) {
   // langsam in eine Richtung (folgt der Beschleunigungskurve; basiert auf pe,
   // das im Loop-Modus hin & zurück läuft -> nahtlos). Volle Stärke entspricht
   // einer Fahrt des Kipp-Reglers von -100 nach +100, mittig neutral.
-  const rampA = scenarioActive() ? 0 : (state.tiltRampAmp / 100) * 0.08;
+  const rampA = scenarioCam() ? 0 : (state.tiltRampAmp / 100) * 0.08;
   if (rampA > 0) {
     const rdir = state.tiltRampDir * Math.PI / 180;
     const q = (pe - 0.5) * 2; // -1 .. +1 über die Flugdauer
@@ -4624,7 +4641,7 @@ function camAt(loopT) {
   // die Bildflaeche schrumpfen, startet die Kamera um genau den noetigen
   // Rand naeher (lensMargin)
   let lens = 1;
-  if (state.dolly > 0 && state.flightMode === "zoom" && !scenarioActive()) {
+  if (state.dolly > 0 && state.flightMode === "zoom" && !scenarioCam()) {
     const P = (state.parallax / 100) * 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
     const exS = 1 + P * (dollyPivotDepth() - 0.45);
     const ex0 = 1 - P * 0.45;
@@ -4650,7 +4667,7 @@ function camAt(loopT) {
   // Loop-Modus nahtlos hin & zurück). Startpunkt ist der per Regler
   // verschiebbare Ausschnitt; beides wird an die Bildkanten geklemmt, damit
   // nie über den Bildrand hinaus geschwenkt wird.
-  if (state.flightMode === "zoom" && !scenarioActive()) {
+  if (state.flightMode === "zoom" && !scenarioCam()) {
     const viewAspect = state.aspect;
     const imgAspect = state.starless
       ? state.starless.width / state.starless.height : 16 / 9;
@@ -5318,6 +5335,7 @@ bindSlider("ctlGal3dAmt", "outGal3dAmt", "gal3dAmt", asInt);
 bindSlider("ctlGalStars", "outGalStars", "galStars", asInt);
 bindSlider("ctlGalGlow", "outGalGlow", "galGlow", asInt);
 bindSlider("ctlDolly", "outDolly", "dolly", asInt);
+bindSlider("ctlZoomDrift", "outZoomDrift", "zoomDrift", asInt);
 $("ctlReverse").addEventListener("change", () => { state.reverse = $("ctlReverse").checked; });
 $("ctlGal3d").addEventListener("change", () => { state.gal3d = $("ctlGal3d").checked; });
 bindSlider("ctlSpinRadius", "outSpinRadius", "spinRadius", (v) => ctlNum(v, 1));
@@ -5369,6 +5387,7 @@ $("ctlFlightMode").addEventListener("change", () => {
   $("driftRow").hidden = state.flightMode === "zoom";
   $("lateralHintP").hidden = state.flightMode !== "lateral";
   $("diagonalHintP").hidden = state.flightMode !== "diagonal";
+  $("zoomDriftRow").hidden = state.flightMode !== "lateral" && state.flightMode !== "diagonal";
   $("orbitHintP").hidden = state.flightMode !== "orbit";
   state.t0 = performance.now();
   state.pausedAt = 0;
@@ -5783,18 +5802,18 @@ const PRESET_SLIDERS = {
 
 const PRESETS = {
   // alles neutral / aus
-  neutral:   { bloom: 0,  mblur: 0,  warp: 0,  vignette: 0,  exposure: 0,   contrast: 0,  saturation: 0,    clarity: 0,   structure: 0,  sharpen: 0, grain: 0, filmic: 0 },
+  neutral:   { bloom: 0,  mblur: 0, warp: 0,  vignette: 0,  exposure: 0,   contrast: 0,  saturation: 0,    clarity: 0,   structure: 0,  sharpen: 0, grain: 0, filmic: 0 },
   // klassischer Kino-Look: sanfter Glow, Filmkorn-freier Kontrast, Vignette
-  kino:      { bloom: 35, mblur: 35, warp: 0,  vignette: 35, exposure: 5,   contrast: 18, saturation: 8,    clarity: 15,  structure: 10, sharpen: 10, grain: 12, filmic: 35 },
+  kino:      { bloom: 35, mblur: 0, warp: 0,  vignette: 35, exposure: 5,   contrast: 18, saturation: 8,    clarity: 15,  structure: 10, sharpen: 10, grain: 12, filmic: 35 },
   // dunkel, entsättigt, hoher Kontrast – bedrohlich-episch
-  deepspace: { bloom: 25, mblur: 20, warp: 0,  vignette: 50, exposure: -12, contrast: 28, saturation: -18,  clarity: 25,  structure: 20, sharpen: 10, grain: 18, filmic: 30 },
+  deepspace: { bloom: 25, mblur: 0, warp: 0,  vignette: 50, exposure: -12, contrast: 28, saturation: -18,  clarity: 25,  structure: 20, sharpen: 10, grain: 18, filmic: 30 },
   // träumerischer Orton-Glow, weiche Nebel, kräftige Farben
-  glow:      { bloom: 75, mblur: 30, warp: 0,  vignette: 25, exposure: 8,   contrast: -8, saturation: 15,   clarity: -35, structure: -10, sharpen: 0, grain: 0, filmic: 20 },
+  glow:      { bloom: 75, mblur: 0, warp: 0,  vignette: 25, exposure: 8,   contrast: -8, saturation: 15,   clarity: -35, structure: -10, sharpen: 0, grain: 0, filmic: 20 },
   // dramatisches Schwarzweiß
-  mono:      { bloom: 30, mblur: 25, warp: 0,  vignette: 45, exposure: 0,   contrast: 30, saturation: -100, clarity: 35,  structure: 25, sharpen: 15, grain: 22, filmic: 30 },
+  mono:      { bloom: 30, mblur: 0, warp: 0,  vignette: 45, exposure: 0,   contrast: 30, saturation: -100, clarity: 35,  structure: 25, sharpen: 15, grain: 22, filmic: 30 },
   // Hyperraum: Warp + Streifen nur auf den Sternen (mblurStars) - der Nebel
   // bleibt scharf, sonst brennt das Bild bei hellen Kernen komplett aus
-  hyper:     { bloom: 28, mblur: 50, warp: 45, vignette: 30, exposure: 5,   contrast: 12, saturation: 10,   clarity: 10,  structure: 5,  sharpen: 0, mblurStars: true, grain: 0, filmic: 20 },
+  hyper:     { bloom: 28, mblur: 0, warp: 45, vignette: 30, exposure: 5,   contrast: 12, saturation: 10,   clarity: 10,  structure: 5,  sharpen: 0, grain: 0, filmic: 20 },
 };
 
 $("ctlPreset").addEventListener("change", () => {
@@ -5820,7 +5839,7 @@ const SIMPLE_DEFAULTS = {
   ctlSpinSpeed: 0, ctlSpinDiff: 40,
   ctlSpread: 70, ctlStarDist: 55, ctlLayers: 0, ctlStarPar: 100,
   ctlTwinkle: 25, ctlTwinkleSpeed: 100, ctlStarSize: 100, ctlStarBright: 100,
-  ctlStarSat: 100, ctlGenStars: 0, ctlStarCull: 0, ctlDolly: 0,
+  ctlStarSat: 100, ctlGenStars: 0, ctlStarCull: 0, ctlDolly: 0, ctlZoomDrift: 30,
 };
 
 // 8 Objekt-Presets: 3 Nebel, 3 Galaxien, 2 Sternhaufen. "look" wählt den
@@ -5829,11 +5848,11 @@ const SIMPLE_DEFAULTS = {
 // die Bewegungs-Parameter zusätzlich (50 = wie hier definiert)
 const FLIGHT_PRESETS = {
   nebGentle:      { look: "neutral", set: { ctlSpeed: 30, ctlParallax: 60, ctlDepthBoost: 40, ctlStarPar: 250, ctlBloom: 15 } },
-  nebDrift:       { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.35, ctlSpeed: 55, ctlStarPar: 260, ctlGenStars: 1000, ctlMblur: 18, ctlBloom: 15 }, checks: { ctlMblurStars: true } },
+  nebDrift:       { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.35, ctlSpeed: 55, ctlStarPar: 260, ctlGenStars: 1000, ctlBloom: 15 } },
   nebHyper:       { look: "hyper", set: { ctlSpeed: 65, ctlStarPar: 300, ctlTwinkleSpeed: 150 } },
   galMajestic:    { look: "neutral", set: { ctlSpeed: 25, ctlParallax: 40, ctlDepthBoost: 30, ctlStarPar: 300, ctlTiltRamp: 12, ctlBloom: 15 } },
   galSpin:        { look: "neutral", set: { ctlSpeed: 15, ctlSpinSpeed: 0.8, ctlSpinDiff: 40, ctlBloom: 12 } },
-  galFlyby:       { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.35, ctlSpeed: 55, ctlTiltRamp: 15, ctlTiltRampDir: 90, ctlStarPar: 280, ctlMblur: 18, ctlBloom: 15 }, checks: { ctlMblurStars: true } },
+  galFlyby:       { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.35, ctlSpeed: 55, ctlTiltRamp: 15, ctlTiltRampDir: 90, ctlStarPar: 280, ctlBloom: 15 } },
   clusterDive:    { look: "neutral", set: { ctlSpeed: 50, ctlSpread: 90, ctlStarPar: 380, ctlTwinkle: 35, ctlBloom: 25 } },
   clusterSparkle: { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.3, ctlSpeed: 30, ctlTwinkle: 45, ctlTwinkleSpeed: 160, ctlSwayAmp: 20, ctlSwayRandom: 40, ctlBloom: 20 } },
   // Kino-Kamerafahrten nach Film-Vorbildern (Recherche: StudioBinder-
@@ -5854,18 +5873,18 @@ const FLIGHT_PRESETS = {
   // Kranfahrt: die Kamera hebt sich ueber das Motiv, dabei langsamer Anflug
   cineCrane:       { look: "kino", ease: "inout", set: { ctlSpeed: 25, ctlEase: 70, ctlParallax: 80, ctlDepthBoost: 50, ctlStarPar: 240, ctlTiltRamp: 40, ctlTiltRampDir: 90, ctlBloom: 18 } },
   // Spiral-Dive: beschleunigter Sturzflug mit Rolle (Contact/Interstellar)
-  cineSpiral:      { look: "kino", ease: "in", set: { ctlSpeed: 55, ctlEase: 80, ctlRotation: 2.5, ctlParallax: 70, ctlStarPar: 300, ctlMblur: 25, ctlBloom: 15, ctlExposure: -5 }, checks: { ctlMblurStars: true } },
+  cineSpiral:      { look: "kino", ease: "in", set: { ctlSpeed: 55, ctlEase: 80, ctlRotation: 2.5, ctlParallax: 70, ctlStarPar: 300, ctlBloom: 15, ctlExposure: -5 } },
   // Arc-Shot: die Kamera kreist um die Galaxie (3D-Scheibe)
   // Schraegflug vom linken/rechten Bildrand: leichter Zoom + Seitfahrt,
   // gleichmaessig ab dem ersten Bild
-  cineDiagLeft:    { look: "kino", flightMode: "diagonal", set: { ctlDriftDir: 0, ctlSpeed: 40, ctlParallax: 75, ctlDepthBoost: 45, ctlStarPar: 240, ctlBloom: 15, ctlMblur: 10 }, checks: { ctlMblurStars: true } },
-  cineDiagRight:   { look: "kino", flightMode: "diagonal", set: { ctlDriftDir: 180, ctlSpeed: 40, ctlParallax: 75, ctlDepthBoost: 45, ctlStarPar: 240, ctlBloom: 15, ctlMblur: 10 }, checks: { ctlMblurStars: true } },
+  cineDiagLeft:    { look: "kino", flightMode: "diagonal", set: { ctlDriftDir: 0, ctlSpeed: 100, ctlZoomDrift: 35, ctlParallax: 75, ctlDepthBoost: 45, ctlStarPar: 240, ctlBloom: 15 } },
+  cineDiagRight:   { look: "kino", flightMode: "diagonal", set: { ctlDriftDir: 180, ctlSpeed: 100, ctlZoomDrift: 35, ctlParallax: 75, ctlDepthBoost: 45, ctlStarPar: 240, ctlBloom: 15 } },
   cineArc:         { look: "kino", flightMode: "orbit", ease: "inout", set: { ctlSpeed: 45, ctlEase: 65, ctlParallax: 80, ctlDepthBoost: 50, ctlStarPar: 220, ctlBloom: 18 } },
 };
 
 // Effektstärke im Einfach-Modus: skaliert die Bewegungs-Parameter eines
 // Presets um ihre Neutralwerte herum (50 = Preset wie definiert)
-const FX_SCALED = { ctlSpeed: 40, ctlTiltRamp: 0, ctlSwayAmp: 0, ctlMblur: 0, ctlWarp: 0, ctlSpinSpeed: 0, ctlStarPar: 100, ctlDolly: 0, ctlRotation: 0 };
+const FX_SCALED = { ctlSpeed: 40, ctlTiltRamp: 0, ctlSwayAmp: 0, ctlWarp: 0, ctlSpinSpeed: 0, ctlStarPar: 100, ctlDolly: 0, ctlRotation: 0 };
 state.simpleFx = (() => {
   const v = parseInt(localStorage.getItem("astrofly-simplefx"), 10);
   return v >= 10 && v <= 100 ? v : 50;
@@ -7811,7 +7830,7 @@ const USER_PRESET_GROUPS = {
     "ctlVolDust", "ctlRotation", "ctlOrient",
     "ctlFrameX", "ctlFrameY", "ctlTiltX", "ctlTiltY", "ctlSwayAmp",
     "ctlSwayTempo", "ctlSwayDir", "ctlSwayRandom", "ctlTiltRamp",
-    "ctlTiltRampDir", "ctlFade", "ctlDuration", "ctlLoop", "ctlReverse", "ctlDolly", "ctlSpinSpeed",
+    "ctlTiltRampDir", "ctlFade", "ctlDuration", "ctlLoop", "ctlReverse", "ctlDolly", "ctlZoomDrift", "ctlSpinSpeed",
     "ctlSpinDiff", "ctlSpinStars", "ctlGal3d", "ctlGal3dAmt", "ctlGalStars", "ctlGalGlow"],
   stars: ["ctlSpread", "ctlStarDist", "ctlLayers", "ctlStarPar", "ctlTwinkle",
     "ctlTwinkleSpeed", "ctlStarSize", "ctlStarBright", "ctlStarSat",
@@ -8360,12 +8379,13 @@ function updateScenarioUi() {
   if (typeof histSchedule === "function") histSchedule();
   const on = scenarioActive();
   if (typeof rebuildTimelineWps === "function") rebuildTimelineWps();
+  const camLocked = state.scenarioOn;
   if (typeof refreshRenderFoot === "function") refreshRenderFoot();
   for (const id of ["ctlFlightMode", "ctlDriftDir", "ctlZoom", "ctlSpeed",
     "ctlEaseMode", "ctlEase", "ctlDuration",
     "ctlRotation", "ctlSwayAmp", "ctlTiltRamp"]) {
     const el = $(id);
-    if (el) el.disabled = on;
+    if (el) el.disabled = id === "ctlDuration" ? on : camLocked;
   }
   if (on) {
     const total = scenarioTotal();
@@ -8455,6 +8475,12 @@ function rebuildWaypointList() {
     row.addEventListener("click", (e) => {
       if (e.target.closest("input, select, button")) return;
       selectWaypoint(i);
+      // Zeile anklicken = diesen Wegpunkt in der Einrichtung zeigen
+      if (state.scenEdit) {
+        state.scenView = { x: wp.x, y: wp.y, zoom: wp.zoom, angle: wp.angle || 0 };
+        scenClampView();
+        startWpEdit(i);
+      }
     });
     const pos = `${Math.round(wp.x / imgAspect * 200)} | ${Math.round(wp.y * 200)}`;
     const th = wpThumbSize();
@@ -8486,6 +8512,16 @@ function rebuildWaypointList() {
         const rng = row.querySelector(`input[data-r="${k}"]`);
         if (rng) rng.value = String(Math.min(10, wp[k]));
         updateScenarioUi();
+        // Zoom/Winkel eines Wegpunkts: in der Einrichtung sofort diesen
+        // Wegpunkt zeigen (die Vorschau zeigte sonst weiter die freie
+        // Einrichtungs-Ansicht - die Aenderung schien wirkungslos)
+        if ((k === "zoom" || k === "angle") && state.scenEdit) {
+          state.scenView = { x: wp.x, y: wp.y, zoom: wp.zoom, angle: wp.angle || 0 };
+          scenClampView();
+          selectWaypoint(i);
+          startWpEdit(i);
+        }
+        requestRender();
       });
     });
     row.querySelectorAll("input[data-r]").forEach((el) => {
