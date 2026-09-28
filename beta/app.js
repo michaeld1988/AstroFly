@@ -64,6 +64,8 @@ const state = {
   fade: 0,               // Ein-/Ausblenden in Zehntelsekunden (0 = aus)
   duration: 20,          // s
   loopMode: false,       // hin & zurück, nahtlos
+  reverse: false,        // Flug rueckwaerts: vom Ziel zurueck ins Gesamtbild (Reveal / Pull-out)
+  dolly: 0,              // Dolly-Zoom (Vertigo) 0..100: Objektiv zoomt gegen die Fahrt
   smooth: 18,
   depthRes: 768,        // Kantenlaenge der Tiefenkarte (768/1536/2048)
   customDepth: null,     // eigene, importierte Tiefenkarte { canvas, width, height }
@@ -945,6 +947,9 @@ void main() {
   // Kleine-Sterne-Dimmen nur fuer prozedurale Sprites - echte Sternabbilder
   // bringen ihre Groesse aus dem Atlas-Patch mit
   if (vAtlasUv.x < 0.0) vAlpha *= dimSmall;
+  // Scheibensterne blenden mit der Drehung ein (voll nach ~3,4 Grad): das
+  // Ruhebild bei Drehwinkel 0 bleibt exakt das Original
+  if (disc) vAlpha *= smoothstep(0.0, 0.06, abs(uGalBS[dk].z));
   float lumS = dot(aColor, vec3(0.299, 0.587, 0.114));
   vec3 cS = aColor;
   if (uStarSat > 1.0) {
@@ -1584,14 +1589,39 @@ async function decodeFile(file) {
 }
 
 /** Bild auf maximale Kantenlänge verkleinern (gibt Canvas zurück). */
+// Verkleinerte Arbeitskopien und ihre Pixel werden gemerkt: dasselbe
+// Starless-Bild wird von Tiefe, Volumetrik, Galaxien-Suche, -Hintergrund und
+// -Sternen in wenigen festen Groessen gelesen. willReadFrequently haelt die
+// Kopien im Hauptspeicher - getImageData ist dann ein Kopieren statt eines
+// teuren GPU-Rueckholens. Ein neues oder gespiegeltes Bild ist ein neues
+// Canvas-Objekt und bekommt damit automatisch frische Eintraege. Die Kopien
+// sind nur zum Lesen da (Aufrufer zeichnen nie hinein)
+const downscaleCache = new WeakMap();
+const pixelCache = new WeakMap();
 function downscale(img, maxEdge) {
   const s = Math.min(1, maxEdge / Math.max(img.width, img.height));
   if (s >= 1) return img.canvas;
-  const c = document.createElement("canvas");
-  c.width = Math.max(1, Math.round(img.width * s));
-  c.height = Math.max(1, Math.round(img.height * s));
-  c.getContext("2d").drawImage(img.canvas, 0, 0, c.width, c.height);
+  const w = Math.max(1, Math.round(img.width * s)), h = Math.max(1, Math.round(img.height * s));
+  let m = downscaleCache.get(img.canvas);
+  if (!m) { m = new Map(); downscaleCache.set(img.canvas, m); }
+  const key = w + "x" + h;
+  let c = m.get(key);
+  if (!c) {
+    c = document.createElement("canvas");
+    c.width = w; c.height = h;
+    c.getContext("2d", { willReadFrequently: true }).drawImage(img.canvas, 0, 0, w, h);
+    // Grosse Kopien (Sternmaske bis 3000 px) nicht festhalten - Speicher
+    if (Math.max(w, h) <= 1600) m.set(key, c);
+  }
   return c;
+}
+/** RGBA-Pixel eines (Arbeits-)Canvas, bei kleinen Canvas gemerkt. Nur lesen! */
+function canvasPixels(c) {
+  let d = pixelCache.get(c);
+  if (d) return d;
+  d = c.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
+  if (Math.max(c.width, c.height) <= 1600) pixelCache.set(c, d);
+  return d;
 }
 
 // ---------------------------------------------------------------- Tiefenkarte
@@ -1604,7 +1634,7 @@ function computeLuminanceMap(radius, invert, maxEdge) {
   // damit die Glaettung optisch identisch bleibt
   radius = Math.max(1, Math.round(radius * res / 768));
   const w = src.width, h = src.height;
-  const data = src.getContext("2d").getImageData(0, 0, w, h).data;
+  const data = canvasPixels(src);
 
   // Luminanz
   let lum = new Float32Array(w * h);
@@ -1657,7 +1687,7 @@ function detectMoonDisk() {
   if (!state.starless) return null;
   const src = downscale(state.starless, 512);
   const w = src.width, h = src.height;
-  const data = src.getContext("2d").getImageData(0, 0, w, h).data;
+  const data = canvasPixels(src);
   const lum = new Float32Array(w * h);
   let hi = 0;
   for (let i = 0, j = 0; i < lum.length; i++, j += 4) {
@@ -1772,7 +1802,7 @@ function computeCustomDepthMap(radius, invert, maxEdge) {
   const res = maxEdge || state.depthRes;
   const src = downscale(state.customDepth, res);
   const w = src.width, h = src.height;
-  const data = src.getContext("2d").getImageData(0, 0, w, h).data;
+  const data = canvasPixels(src);
   let a = new Float32Array(w * h);
   for (let i = 0, j = 0; i < a.length; i++, j += 4) {
     a[i] = (0.299 * data[j] + 0.587 * data[j + 1] + 0.114 * data[j + 2]) / 255;
@@ -1885,22 +1915,35 @@ function pushPullFill(rgb, valid, w, h) {
 
 // Laufendes Minimum/Maximum ueber ein Fenster 2r+1 (van Herk / Gil-Werman):
 // O(n) unabhaengig vom Radius. src/dst mit Schrittweite (Zeilen oder Spalten)
+let mmPad = new Float32Array(0), mmG = mmPad, mmH = mmPad;
 function runMinMax(src, dst, n, off, step, r, isMax) {
   const k = 2 * r + 1, m = n + 2 * r;
-  const pad = new Float32Array(m), g = new Float32Array(m), hh = new Float32Array(m);
-  for (let i = 0; i < m; i++) {
-    const j = Math.min(n - 1, Math.max(0, i - r));
-    pad[i] = src[off + j * step];
-  }
-  for (let i = 0; i < m; i++) {
-    g[i] = (i % k === 0) ? pad[i] : (isMax ? Math.max(g[i - 1], pad[i]) : Math.min(g[i - 1], pad[i]));
-  }
-  for (let i = m - 1; i >= 0; i--) {
-    hh[i] = (i === m - 1 || (i + 1) % k === 0) ? pad[i] : (isMax ? Math.max(hh[i + 1], pad[i]) : Math.min(hh[i + 1], pad[i]));
-  }
-  for (let x = 0; x < n; x++) {
-    const a = hh[x], b = g[x + 2 * r];
-    dst[off + x * step] = isMax ? Math.max(a, b) : Math.min(a, b);
+  // Puffer wiederverwenden (vorher drei neue Arrays je Zeile/Spalte)
+  if (mmPad.length < m) { mmPad = new Float32Array(m); mmG = new Float32Array(m); mmH = new Float32Array(m); }
+  const pad = mmPad, g = mmG, hh = mmH;
+  const first = src[off], last = src[off + (n - 1) * step];
+  for (let i = 0; i < r; i++) { pad[i] = first; pad[m - 1 - i] = last; }
+  for (let j = 0, o = off; j < n; j++, o += step) pad[j + r] = src[o];
+  // Bloecke der Laenge k: Praefix-Extrem vorwaerts (g), Suffix-Extrem
+  // rueckwaerts (hh); Fenster [x, x+2r] = Extrem aus hh[x] und g[x+2r]
+  if (isMax) {
+    for (let st = 0; st < m; st += k) {
+      const e = Math.min(m, st + k);
+      let v = pad[st]; g[st] = v;
+      for (let i = st + 1; i < e; i++) { const q = pad[i]; if (q > v) v = q; g[i] = v; }
+      v = pad[e - 1]; hh[e - 1] = v;
+      for (let i = e - 2; i >= st; i--) { const q = pad[i]; if (q > v) v = q; hh[i] = v; }
+    }
+    for (let x = 0, o = off; x < n; x++, o += step) { const a = hh[x], c = g[x + 2 * r]; dst[o] = a > c ? a : c; }
+  } else {
+    for (let st = 0; st < m; st += k) {
+      const e = Math.min(m, st + k);
+      let v = pad[st]; g[st] = v;
+      for (let i = st + 1; i < e; i++) { const q = pad[i]; if (q < v) v = q; g[i] = v; }
+      v = pad[e - 1]; hh[e - 1] = v;
+      for (let i = e - 2; i >= st; i--) { const q = pad[i]; if (q < v) v = q; hh[i] = v; }
+    }
+    for (let x = 0, o = off; x < n; x++, o += step) { const a = hh[x], c = g[x + 2 * r]; dst[o] = a < c ? a : c; }
   }
 }
 // Morphologische Oeffnung (erst Min, dann Max, separabel) eines Kanals:
@@ -1928,7 +1971,7 @@ function buildVolLayers() {
   if (!state.starless || !state.vol) return;
   const src = downscale(state.starless, 1024);
   const w = src.width, h = src.height, n = w * h;
-  const px = src.getContext("2d").getImageData(0, 0, w, h).data;
+  const px = canvasPixels(src);
   const rgb = new Float32Array(n * 3);
   const L = new Float32Array(n);
   for (let i = 0, j = 0; i < n; i++, j += 4) {
@@ -2117,7 +2160,7 @@ function depthFlightGain() {
       const tm = Math.hypot(tx, ty);
       for (let k = 0; k <= DEPTH_GAIN_N; k++) {
         const ex = 1 + PR * (k / DEPTH_GAIN_N - 0.45);
-        const g = rmax / (cover * Math.exp(lz * ex)) * Math.abs(lz) * PR + tm;
+        const g = rmax / (cover * (cam.lens || 1) * Math.exp(lz * ex)) * Math.abs(lz) * PR + tm;
         if (g > G[k]) G[k] = g;
       }
     }
@@ -2134,7 +2177,7 @@ function depthFlightSig() {
     s.driftDir, s.loopMode, s.ease, s.easeMode, s.tiltX, s.tiltY, s.swayAmp,
     s.swayTempo, s.swayDir, s.swayRandom, s.tiltRampAmp, s.tiltRampDir, s.aspect,
     s.frameX, s.frameY, s.target.x, s.target.y, s.rotationSpeed, s.strictEdges,
-    s.scenarioOn, JSON.stringify(s.waypoints), gal3dActive() ? "g3:" + s.gal3dAmt + galGeomSig() + (s.galaxies || []).map((g) => g.near || 1).join("") : "",
+    s.scenarioOn, JSON.stringify(s.waypoints), s.dolly, s.reverse, gal3dActive() ? "g3:" + s.gal3dAmt + galGeomSig() + (s.galaxies || []).map((g) => g.near || 1).join("") : "",
     s.starless ? s.starless.width + "x" + s.starless.height : ""].join("|");
 }
 
@@ -2389,7 +2432,7 @@ function buildGalaxyBg() {
   if (!state.starless) return;
   const src = downscale(state.starless, 512);
   const w = src.width, h = src.height, n = w * h;
-  const px = src.getContext("2d").getImageData(0, 0, w, h).data;
+  const px = canvasPixels(src);
   const imgAspect = state.starless.width / state.starless.height;
   const rgbO = new Float32Array(n * 3), chn = new Float32Array(n);
   const ro = Math.max(2, Math.round(w * 0.006));
@@ -2876,7 +2919,7 @@ function buildStarBuffer() {
   }
   const src = downscale(state.stars, 3000);
   const w = src.width, h = src.height;
-  const data = src.getContext("2d").getImageData(0, 0, w, h).data;
+  const data = canvasPixels(src);
   const imgAspect = state.stars.width / state.stars.height;
 
   const lum = new Uint8Array(w * h);
@@ -3442,7 +3485,7 @@ function generateGalaxyStars() {
   if (!state.starless || !state.spinSpeed || state.galStars <= 0 || !state.galaxies.length) return out;
   const src = downscale(state.starless, 512);
   const w = src.width, h = src.height;
-  const px = src.getContext("2d").getImageData(0, 0, w, h).data;
+  const px = canvasPixels(src);
   const imgAspect = state.starless.width / state.starless.height;
   const rnd = mulberry32(Math.floor(state.seed * 65536) + 911);
   const list = [], gals = [];
@@ -3587,7 +3630,7 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
   const viewAspect = state.aspect;
   const imgAspect = state.starless.width / state.starless.height;
   const cover = coverBase(viewAspect, imgAspect);
-  const scale = cover * cam.zoom;
+  const scale = cover * cam.zoom * (cam.lens || 1);
   const rc = Math.cos(cam.angle), rs = Math.sin(cam.angle);
   // Marker exakt auf das Objekt pinnen: dieselbe tiefenabhängige
   // Transformation wie der Hintergrund-Shader (Parallaxe-Exponent + Kippen).
@@ -4130,15 +4173,26 @@ canvas.parentElement.style.position = "relative";
 canvas.parentElement.appendChild(overlayCanvas);
 const overlayCtx = overlayCanvas.getContext("2d");
 
+let overlaySyncAt = -1e9;
 function drawPreviewOverlay(loopT, cam, fade) {
-  if (overlayCanvas.width !== canvas.width || overlayCanvas.height !== canvas.height) {
+  // Lage des Overlays nur bei Groessenwechsel und sonst hoechstens alle
+  // 200 ms abgleichen: offsetLeft/clientWidth erzwingen bei jedem Lesen ein Layout
+  const resized = overlayCanvas.width !== canvas.width || overlayCanvas.height !== canvas.height;
+  if (resized) {
     overlayCanvas.width = canvas.width;
     overlayCanvas.height = canvas.height;
   }
-  overlayCanvas.style.left = canvas.offsetLeft + "px";
-  overlayCanvas.style.top = canvas.offsetTop + "px";
-  overlayCanvas.style.width = canvas.clientWidth + "px";
-  overlayCanvas.style.height = canvas.clientHeight + "px";
+  const nowMs = performance.now();
+  if (resized || nowMs - overlaySyncAt > 200) {
+    overlaySyncAt = nowMs;
+    const L = canvas.offsetLeft + "px", T = canvas.offsetTop + "px";
+    const W = canvas.clientWidth + "px", H = canvas.clientHeight + "px";
+    const st = overlayCanvas.style;
+    if (st.left !== L) st.left = L;
+    if (st.top !== T) st.top = T;
+    if (st.width !== W) st.width = W;
+    if (st.height !== H) st.height = H;
+  }
   overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
   drawOverlayTo(overlayCtx, overlayCanvas.width, overlayCanvas.height, loopT, cam, fade);
   if (state.scenEdit && state.starless && !state.exporting && state.waypoints.length) {
@@ -4346,16 +4400,40 @@ function scenarioActive() {
   return state.scenarioOn && state.waypoints.length >= 2;
 }
 
+// Tiefe des Dolly-Ziels: Mittel der Tiefenkarte um das Zoomziel (bzw. die
+// Bildmitte), gemerkt je Tiefenkarte und Ziel
+let dollyPivotCache = { dd: null, key: "", v: 0.45 };
+function dollyPivotDepth() {
+  const dd = state.depthData;
+  if (!dd || !dd.f || !state.starless) return 0.45;
+  const key = state.target.x.toFixed(4) + "," + state.target.y.toFixed(4);
+  if (dollyPivotCache.dd === dd && dollyPivotCache.key === key) return dollyPivotCache.v;
+  const { w, h, f } = dd;
+  const imgAspect = state.starless.width / state.starless.height;
+  const px = Math.round((state.target.x / imgAspect + 0.5) * w), py = Math.round((0.5 - state.target.y) * h);
+  const R = Math.max(2, Math.round(h * 0.03));
+  let s = 0, c = 0;
+  for (let y = Math.max(0, py - R); y <= Math.min(h - 1, py + R); y++) {
+    for (let x = Math.max(0, px - R); x <= Math.min(w - 1, px + R); x++) { s += f[y * w + x]; c++; }
+  }
+  const v = c ? s / c : 0.45;
+  dollyPivotCache = { dd, key, v };
+  return v;
+}
+
 function camAt(loopT) {
   // Flugplan-Einrichtung: feste Kamera aus dem Steuerkreuz statt Animation
   if (state.scenEdit) {
     const v = state.scenView;
     return { zoom: v.zoom, angle: (state.orientation + v.angle) * Math.PI / 180,
       rate: 0, te: 0, tiltAddX: 0, tiltAddY: 0,
-      cx: v.x, cy: v.y, driftTX: 0, driftTY: 0 };
+      cx: v.x, cy: v.y, driftTX: 0, driftTY: 0, lens: 1 };
   }
   const D = state.duration;
-  const u = Math.min(1, Math.max(0, loopT / D));
+  // Rueckwaerts: derselbe Flug in umgekehrter Zeit - aus der Naehe
+  // zurueck ins Gesamtbild (Reveal / Pull-out wie am Ende vieler Filme)
+  const u0 = Math.min(1, Math.max(0, loopT / D));
+  const u = state.reverse ? 1 - u0 : u0;
   const p = state.loopMode ? 1 - Math.abs(1 - 2 * u) : u;
   let curve;
   switch (state.easeMode) {
@@ -4483,6 +4561,35 @@ function camAt(loopT) {
     tiltAddY += rampA * Math.sin(rdir) * q;
   }
 
+  // Dolly-Zoom (Vertigo-Effekt, Hitchcock/Spielberg): die Kamera faehrt
+  // heran, das Objektiv zoomt gleichzeitig heraus - das Ziel behaelt seine
+  // Groesse, nahe Schichten wachsen, ferne schrumpfen: der Raum "atmet".
+  // Im 2,5D-Modell ein gemeinsamer Objektivfaktor auf alle Tiefen, der die
+  // Vergroesserung der Zieltiefe aufhebt. Damit ferne Schichten nie unter
+  // die Bildflaeche schrumpfen, startet die Kamera um genau den noetigen
+  // Rand naeher (lensMargin)
+  let lens = 1;
+  if (state.dolly > 0 && state.flightMode !== "lateral" && state.flightMode !== "orbit" && !scenarioActive()) {
+    const P = (state.parallax / 100) * 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
+    const exS = 1 + P * (dollyPivotDepth() - 0.45);
+    const ex0 = 1 - P * 0.45;
+    const zr = zoom / state.zoomBase;
+    const zrEnd = Math.exp(Math.abs(rate) * D * (state.loopMode ? 0.5 : 1));
+    const lzb = ex0 * Math.log(state.zoomBase);
+    // Rand hoechstens 1,4x: liegt das Ziel weit vorn (heller Kern) oder ist
+    // die Fahrt sehr lang, wird der Effekt so weit gedrosselt, dass der
+    // Start nicht zu stark herangezoomt beginnt
+    const DOLLY_MAX_MARGIN = 1.4;
+    let amt = state.dolly / 100;
+    if (zrEnd > 1.0001) {
+      const amtMax = (ex0 + (Math.log(DOLLY_MAX_MARGIN) + lzb) / Math.log(zrEnd)) / exS;
+      amt = Math.max(0, Math.min(amt, amtMax));
+    }
+    const e = ex0 - exS * amt;
+    const margin = Math.max(1, Math.exp(Math.max(0, -e) * Math.log(zrEnd) - lzb));
+    lens = Math.pow(zr, -exS * amt) * margin;
+  }
+
   // Kamerafahrt zum Zoomziel (nur Zoom-Modus): Die Kamera schwenkt über die
   // gesamte Flugdauer langsam zum Ziel (folgt der Beschleunigungskurve, im
   // Loop-Modus nahtlos hin & zurück). Startpunkt ist der per Regler
@@ -4493,7 +4600,7 @@ function camAt(loopT) {
     const imgAspect = state.starless
       ? state.starless.width / state.starless.height : 16 / 9;
     const cover = coverBase(viewAspect, imgAspect);
-    const sc = cover * zoom;
+    const sc = cover * zoom * lens;
     const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.98;
     const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.98;
     const fx = (state.frameX / 100) * freeX;
@@ -4509,14 +4616,14 @@ function camAt(loopT) {
       // Start-Zoom, sonst wandert er mit dem wachsenden Spielraum) -
       // vorher driftete die Kamera stattdessen seitlich zur Bildmitte.
       // Wer diesen Drift-Effekt will, klickt einfach ein Zoomziel an.
-      const sc0 = cover * state.zoomBase;
+      const sc0 = cover * state.zoomBase * (lens > 1 ? lens : 1);
       const freeX0 = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc0) * 0.98;
       const freeY0 = Math.max(0, 0.5 - 0.5 / sc0) * 0.98;
       cx = Math.min(freeX, Math.max(-freeX, (state.frameX / 100) * freeX0));
       cy = Math.min(freeY, Math.max(-freeY, (state.frameY / 100) * freeY0));
     }
   }
-  return { zoom, angle, rate, te, tiltAddX, tiltAddY, cx, cy, driftTX, driftTY };
+  return { zoom, angle, rate, te, tiltAddX, tiltAddY, cx, cy, driftTX, driftTY, lens };
 }
 
 function animParams(t) {
@@ -4567,7 +4674,7 @@ function render(forcedT) {
   const ssc = state.renderScale || 1;
   const viewAspect = state.aspect;
   const imgAspect = state.starless.width / state.starless.height;
-  const cover = coverBase(viewAspect, imgAspect);
+  const cover = coverBase(viewAspect, imgAspect) * (cam.lens || 1);
   const parallax = state.parallax / 100;
   const warp = state.warp / 100;
   const depthRange = 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
@@ -4637,7 +4744,8 @@ function render(forcedT) {
   u1f(bgProg, "uGal3D", gal3dActive() ? 1 : 0);
   // Kern-Gluehen waechst mit dem Anflug (Zoom relativ zum Flugbeginn)
   {
-    const z0 = camAt(0).zoom || 1;
+    // Bezug: kleinster Zoom des Flugs (rueckwaerts liegt er am Ende)
+    const z0 = Math.min(camAt(0).zoom, camAt(state.duration).zoom) || 1;
     const k = Math.min(1, Math.max(0, Math.log(Math.max(1e-3, cam.zoom / z0)) / Math.log(2.5)));
     u1f(bgProg, "uGalGlow", galOn ? (state.galGlow / 100) * 0.45 * k : 0);
   }
@@ -4989,8 +5097,26 @@ function render(forcedT) {
   $("timecode").textContent = loopT.toFixed(1) + " s";
 }
 
-function frame() {
-  if (!state.offlineExport) render();
+// Leerlauf: pausiert und unveraendert muss nicht jedes Bild neu gezeichnet
+// werden (spart GPU und Akku). Jede Eingabe und jeder Zeitsprung weckt
+// sofort; zusaetzlich alle 250 ms ein Bild, damit asynchron fertig
+// gewordene Texturen (KI-Tiefe, Gaia, Bild laden) und entprellte
+// Neuberechnungen auch ohne eigenes Signal erscheinen
+let renderWanted = true, lastRenderAt = 0, lastRenderT = -1;
+function requestRender() { renderWanted = true; }
+for (const ev of ["input", "change", "click", "pointerdown", "pointermove", "pointerup", "wheel", "keydown", "resize"]) {
+  window.addEventListener(ev, requestRender, { capture: true, passive: true });
+}
+function frame(now) {
+  if (!state.offlineExport) {
+    const tNow = currentTime();
+    if (state.playing || state.exporting || renderWanted || tNow !== lastRenderT || now - lastRenderAt > 250) {
+      renderWanted = false;
+      lastRenderAt = now;
+      lastRenderT = tNow;
+      render();
+    }
+  }
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
@@ -5116,6 +5242,8 @@ bindSlider("ctlSpinSpeed", "outSpinSpeed", "spinSpeed", (v) => ctlNum(v, 1) + " 
 bindSlider("ctlGal3dAmt", "outGal3dAmt", "gal3dAmt", asInt);
 bindSlider("ctlGalStars", "outGalStars", "galStars", asInt);
 bindSlider("ctlGalGlow", "outGalGlow", "galGlow", asInt);
+bindSlider("ctlDolly", "outDolly", "dolly", asInt);
+$("ctlReverse").addEventListener("change", () => { state.reverse = $("ctlReverse").checked; });
 $("ctlGal3d").addEventListener("change", () => { state.gal3d = $("ctlGal3d").checked; });
 bindSlider("ctlSpinRadius", "outSpinRadius", "spinRadius", (v) => ctlNum(v, 1));
 bindSlider("ctlSpinDiff", "outSpinDiff", "spinDiff", asInt);
@@ -5336,7 +5464,7 @@ rebuildGalList();
 function detectGalaxies() {
   const src = downscale(state.starless, 640);
   const w = src.width, h = src.height, n = w * h;
-  const px = src.getContext("2d").getImageData(0, 0, w, h).data;
+  const px = canvasPixels(src);
   const imgAspect = state.starless.width / state.starless.height;
   const L = new Float32Array(n);
   for (let i = 0, j = 0; i < n; i++, j += 4) L[i] = (0.299 * px[j] + 0.587 * px[j + 1] + 0.114 * px[j + 2]) / 255;
@@ -5616,7 +5744,7 @@ const SIMPLE_DEFAULTS = {
   ctlSpinSpeed: 0, ctlSpinDiff: 40,
   ctlSpread: 70, ctlStarDist: 55, ctlLayers: 0, ctlStarPar: 100,
   ctlTwinkle: 25, ctlTwinkleSpeed: 100, ctlStarSize: 100, ctlStarBright: 100,
-  ctlStarSat: 100, ctlGenStars: 0, ctlStarCull: 0,
+  ctlStarSat: 100, ctlGenStars: 0, ctlStarCull: 0, ctlDolly: 0,
 };
 
 // 8 Objekt-Presets: 3 Nebel, 3 Galaxien, 2 Sternhaufen. "look" wählt den
@@ -5632,11 +5760,32 @@ const FLIGHT_PRESETS = {
   galFlyby:       { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.35, ctlSpeed: 55, ctlTiltRamp: 15, ctlTiltRampDir: 90, ctlStarPar: 280, ctlMblur: 18, ctlBloom: 15 }, checks: { ctlMblurStars: true } },
   clusterDive:    { look: "neutral", set: { ctlSpeed: 50, ctlSpread: 90, ctlStarPar: 380, ctlTwinkle: 35, ctlBloom: 25 } },
   clusterSparkle: { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.3, ctlSpeed: 30, ctlTwinkle: 45, ctlTwinkleSpeed: 160, ctlSwayAmp: 20, ctlSwayRandom: 40, ctlBloom: 20 } },
+  // Kino-Kamerafahrten nach Film-Vorbildern (Recherche: StudioBinder-
+  // Bewegungsarten, NASA/STScI-Flythroughs, 2001/Interstellar). Motiv-
+  // unabhaengig; "ease" waehlt die Beschleunigungskurve
+  // 2001: extrem ruhiger, symmetrischer Push-in ohne Wackeln
+  cineKubrick:     { look: "kino", ease: "inout", set: { ctlSpeed: 22, ctlEase: 85, ctlParallax: 55, ctlDepthBoost: 40, ctlStarPar: 170, ctlBloom: 22, ctlFade: 12 } },
+  // Pull-out: vom Detail zurueck ins Gesamtbild, kommt sanft zur Ruhe
+  cineReveal:      { look: "kino", ease: "inout", set: { ctlSpeed: 60, ctlEase: 75, ctlParallax: 70, ctlDepthBoost: 45, ctlStarPar: 220, ctlBloom: 20, ctlFade: 15 }, checks: { ctlReverse: true } },
+  // Vertigo: Fahrt hinein, Objektiv heraus - das Ziel bleibt gleich gross
+  cineVertigo:     { look: "kino", ease: "inout", set: { ctlSpeed: 35, ctlEase: 70, ctlDolly: 100, ctlParallax: 80, ctlDepthBoost: 50, ctlStarPar: 200, ctlBloom: 18 } },
+  // STScI-Flythrough: tiefer Anflug mit leichtem Absinken und ruhigem Schweben
+  cineHubble:      { look: "neutral", ease: "inout", set: { ctlSpeed: 45, ctlEase: 60, ctlParallax: 80, ctlDepthBoost: 55, ctlStarPar: 260, ctlTiltRamp: 18, ctlTiltRampDir: 270, ctlSwayAmp: 10, ctlSwayTempo: 20, ctlBloom: 25 } },
+  // Interstellar: langsame Seitfahrt, dunkel und kontrastreich, Filmkorn
+  cineInterstellar:{ look: "deepspace", flightMode: "lateral", ease: "inout", set: { ctlZoom: 1.4, ctlSpeed: 45, ctlEase: 70, ctlParallax: 75, ctlStarPar: 280, ctlSwayAmp: 6, ctlSwayTempo: 15 } },
+  // Doku-Handkamera: leichter Push-in mit organischem Wackeln
+  cineHandheld:    { look: "kino", set: { ctlSpeed: 30, ctlParallax: 65, ctlSwayAmp: 35, ctlSwayTempo: 70, ctlSwayRandom: 85, ctlStarPar: 180, ctlBloom: 15 } },
+  // Kranfahrt: die Kamera hebt sich ueber das Motiv, dabei langsamer Anflug
+  cineCrane:       { look: "kino", ease: "inout", set: { ctlSpeed: 25, ctlEase: 70, ctlParallax: 80, ctlDepthBoost: 50, ctlStarPar: 240, ctlTiltRamp: 40, ctlTiltRampDir: 90, ctlBloom: 18 } },
+  // Spiral-Dive: beschleunigter Sturzflug mit Rolle (Contact/Interstellar)
+  cineSpiral:      { look: "kino", ease: "in", set: { ctlSpeed: 55, ctlEase: 80, ctlRotation: 2.5, ctlParallax: 70, ctlStarPar: 300, ctlMblur: 25, ctlBloom: 15, ctlExposure: -5 }, checks: { ctlMblurStars: true } },
+  // Arc-Shot: die Kamera kreist um die Galaxie (3D-Scheibe)
+  cineArc:         { look: "kino", flightMode: "orbit", ease: "inout", set: { ctlSpeed: 45, ctlEase: 65, ctlParallax: 80, ctlDepthBoost: 50, ctlStarPar: 220, ctlBloom: 18 } },
 };
 
 // Effektstärke im Einfach-Modus: skaliert die Bewegungs-Parameter eines
 // Presets um ihre Neutralwerte herum (50 = Preset wie definiert)
-const FX_SCALED = { ctlSpeed: 40, ctlTiltRamp: 0, ctlSwayAmp: 0, ctlMblur: 0, ctlWarp: 0, ctlSpinSpeed: 0, ctlStarPar: 100 };
+const FX_SCALED = { ctlSpeed: 40, ctlTiltRamp: 0, ctlSwayAmp: 0, ctlMblur: 0, ctlWarp: 0, ctlSpinSpeed: 0, ctlStarPar: 100, ctlDolly: 0, ctlRotation: 0 };
 state.simpleFx = (() => {
   const v = parseInt(localStorage.getItem("astrofly-simplefx"), 10);
   return v >= 10 && v <= 100 ? v : 50;
@@ -5656,10 +5805,12 @@ function applyFlightPreset(name) {
   // Erst alles auf neutral, dann das Preset darüber
   $("ctlFlightMode").value = p.flightMode || "zoom";
   $("ctlFlightMode").dispatchEvent(new Event("change"));
-  $("ctlEaseMode").value = "linear";
+  $("ctlEaseMode").value = p.ease || "linear";
   $("ctlEaseMode").dispatchEvent(new Event("change"));
   $("ctlLoop").checked = false;
   $("ctlLoop").dispatchEvent(new Event("change"));
+  $("ctlReverse").checked = false;
+  $("ctlReverse").dispatchEvent(new Event("change"));
   for (const [id, v] of Object.entries(SIMPLE_DEFAULTS)) setCtl(id, v);
   $("ctlPreset").value = p.look;
   $("ctlPreset").dispatchEvent(new Event("change")); // setzt Look + mblurStars
@@ -5707,7 +5858,7 @@ for (const card of document.querySelectorAll(".pcard")) {
 // eingestellter Stil weitergeben und wieder einspielen, ohne jeden Wert
 // einzeln abzutippen.
 // ---------------------------------------------------------------------------
-const STYLE_CHECKS = ["ctlMblurStars", "ctlLoop", "ctlRealStars", "ctlSpinStars", "ctlStarImg"];
+const STYLE_CHECKS = ["ctlMblurStars", "ctlLoop", "ctlReverse", "ctlRealStars", "ctlSpinStars", "ctlStarImg"];
 
 /**
  * Bezugswert eines Reglers fuer den Stil-Code: Kamera- und Sternregler messen
@@ -5756,6 +5907,7 @@ function buildStyleCode() {
   const name = state.activePreset || "meinStil";
   const parts = [`look: "${look}"`];
   if ($("ctlFlightMode").value !== "zoom") parts.push(`flightMode: "${$("ctlFlightMode").value}"`);
+  if ($("ctlEaseMode").value !== "linear") parts.push(`ease: "${$("ctlEaseMode").value}"`);
   parts.push("set: { " + Object.entries(set).map(([k, v]) => `${k}: ${v}`).join(", ") + " }");
   if (Object.keys(checks).length) {
     parts.push("checks: { " + Object.entries(checks).map(([k, v]) => `${k}: ${v}`).join(", ") + " }");
@@ -5767,11 +5919,13 @@ function buildStyleCode() {
 function parseStyleCode(txt) {
   const out = { name: null, look: "neutral", flightMode: "zoom", set: {}, checks: {} };
   const nm = txt.match(/([A-Za-z][A-Za-z0-9_]*)\s*:\s*\{/);
-  if (nm && !/^(set|checks|look|flightMode)$/.test(nm[1])) out.name = nm[1];
+  if (nm && !/^(set|checks|look|flightMode|ease)$/.test(nm[1])) out.name = nm[1];
   const lk = txt.match(/look\s*:\s*"([a-z0-9_]+)"/i);
   if (lk) out.look = lk[1];
   const fm = txt.match(/flightMode\s*:\s*"([a-z]+)"/i);
   if (fm) out.flightMode = fm[1];
+  const em = txt.match(/ease\s*:\s*"(inout|in|out|linear)"/i);
+  if (em) out.ease = em[1].toLowerCase();
   const chk = txt.match(/checks\s*:\s*\{([^}]*)\}/i);
   if (chk) {
     for (const m of chk[1].matchAll(/(ctl[A-Za-z0-9]+)\s*:\s*(true|false)/g)) {
@@ -5791,10 +5945,12 @@ function parseStyleCode(txt) {
 function applyStyleCode(p) {
   $("ctlFlightMode").value = p.flightMode || "zoom";
   $("ctlFlightMode").dispatchEvent(new Event("change", { bubbles: true }));
-  $("ctlEaseMode").value = "linear";
+  $("ctlEaseMode").value = p.ease || "linear";
   $("ctlEaseMode").dispatchEvent(new Event("change", { bubbles: true }));
   $("ctlLoop").checked = false;
   $("ctlLoop").dispatchEvent(new Event("change", { bubbles: true }));
+  $("ctlReverse").checked = false;
+  $("ctlReverse").dispatchEvent(new Event("change", { bubbles: true }));
   for (const [id, v] of Object.entries(SIMPLE_DEFAULTS)) setCtl(id, v);
   if ($("ctlPreset").querySelector(`option[value="${p.look}"]`)) {
     $("ctlPreset").value = p.look;
@@ -7306,8 +7462,8 @@ canvas.addEventListener("click", (e) => {
   // bestimmt seine effektive Zoomrate, sonst trifft der Klick daneben
   const parallax = state.parallax / 100;
   const depthRange = 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
-  let qx = cam.cx + rx / (cover * cam.zoom);
-  let qy = cam.cy + ry / (cover * cam.zoom);
+  let qx = cam.cx + rx / (cover * cam.zoom * (cam.lens || 1));
+  let qy = cam.cy + ry / (cover * cam.zoom * (cam.lens || 1));
   for (let i = 0; i < 3; i++) {
     const d = depthAtPlane(qx, qy, imgAspect);
     const exD = 1 + parallax * (d - 0.45) * depthRange;
@@ -7575,7 +7731,7 @@ const USER_PRESET_GROUPS = {
     "ctlVolDust", "ctlRotation", "ctlOrient",
     "ctlFrameX", "ctlFrameY", "ctlTiltX", "ctlTiltY", "ctlSwayAmp",
     "ctlSwayTempo", "ctlSwayDir", "ctlSwayRandom", "ctlTiltRamp",
-    "ctlTiltRampDir", "ctlFade", "ctlDuration", "ctlLoop", "ctlSpinSpeed",
+    "ctlTiltRampDir", "ctlFade", "ctlDuration", "ctlLoop", "ctlReverse", "ctlDolly", "ctlSpinSpeed",
     "ctlSpinDiff", "ctlSpinStars", "ctlGal3d", "ctlGal3dAmt", "ctlGalStars", "ctlGalGlow"],
   stars: ["ctlSpread", "ctlStarDist", "ctlLayers", "ctlStarPar", "ctlTwinkle",
     "ctlTwinkleSpeed", "ctlStarSize", "ctlStarBright", "ctlStarSat",
@@ -8640,8 +8796,8 @@ canvas.addEventListener("pointermove", (e) => {
     const cover = coverBase(state.aspect, imgAspect);
     const parallax = state.parallax / 100;
     const depthRange = 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
-    let qx = cam.cx + rx / (cover * cam.zoom);
-    let qy = cam.cy + ry / (cover * cam.zoom);
+    let qx = cam.cx + rx / (cover * cam.zoom * (cam.lens || 1));
+    let qy = cam.cy + ry / (cover * cam.zoom * (cam.lens || 1));
     for (let i = 0; i < 3; i++) {
       const d = depthAtPlane(qx, qy, imgAspect);
       const exD = 1 + parallax * (d - 0.45) * depthRange;

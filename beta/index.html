@@ -287,6 +287,18 @@
         <button class="pcard" data-preset="clusterDive"><b data-i18n="pClusterDive">Into the cluster</b><small data-i18n="pClusterDiveD">deep dive through the stars</small></button>
         <button class="pcard" data-preset="clusterSparkle"><b data-i18n="pClusterSparkle">Sparkling drift</b><small data-i18n="pClusterSparkleD">calm, twinkling – great for loops</small></button>
       </div>
+      <div class="pgroup" data-i18n="pgCine">Cinematic camera moves</div>
+      <div class="pgrid">
+        <button class="pcard" data-preset="cineKubrick"><b data-i18n="pCineKubrick">Kubrick push-in</b><small data-i18n="pCineKubrickD">slow, perfectly steady, like 2001</small></button>
+        <button class="pcard" data-preset="cineReveal"><b data-i18n="pCineReveal">Reveal</b><small data-i18n="pCineRevealD">from the detail out to the whole picture</small></button>
+        <button class="pcard" data-preset="cineVertigo"><b data-i18n="pCineVertigo">Vertigo</b><small data-i18n="pCineVertigoD">dolly zoom - the space stretches</small></button>
+        <button class="pcard" data-preset="cineHubble"><b data-i18n="pCineHubble">Hubble flythrough</b><small data-i18n="pCineHubbleD">deep approach, gently sinking</small></button>
+        <button class="pcard" data-preset="cineInterstellar"><b data-i18n="pCineInterstellar">Interstellar drift</b><small data-i18n="pCineInterstellarD">dark, slow tracking shot</small></button>
+        <button class="pcard" data-preset="cineHandheld"><b data-i18n="pCineHandheld">Handheld</b><small data-i18n="pCineHandheldD">documentary feel, organic shake</small></button>
+        <button class="pcard" data-preset="cineCrane"><b data-i18n="pCineCrane">Crane shot</b><small data-i18n="pCineCraneD">the camera rises over the subject</small></button>
+        <button class="pcard" data-preset="cineSpiral"><b data-i18n="pCineSpiral">Spiral dive</b><small data-i18n="pCineSpiralD">accelerating plunge with a roll</small></button>
+        <button class="pcard" data-preset="cineArc"><b data-i18n="pCineArc">Arc shot</b><small data-i18n="pCineArcD">the camera circles the galaxy</small></button>
+      </div>
       <details class="adv" open>
         <summary data-i18n="upManage">Save current settings as preset</summary>
         <p class="tip" data-i18n="upHint">Save your current settings under a name and reapply
@@ -345,6 +357,18 @@
       <div class="pgrid">
         <button class="pcard" data-preset="clusterDive"><b data-i18n="pClusterDive">Into the cluster</b><small data-i18n="pClusterDiveD">deep dive through the stars</small></button>
         <button class="pcard" data-preset="clusterSparkle"><b data-i18n="pClusterSparkle">Sparkling drift</b><small data-i18n="pClusterSparkleD">calm, twinkling – great for loops</small></button>
+      </div>
+      <div class="pgroup" data-i18n="pgCine">Cinematic camera moves</div>
+      <div class="pgrid">
+        <button class="pcard" data-preset="cineKubrick"><b data-i18n="pCineKubrick">Kubrick push-in</b><small data-i18n="pCineKubrickD">slow, perfectly steady, like 2001</small></button>
+        <button class="pcard" data-preset="cineReveal"><b data-i18n="pCineReveal">Reveal</b><small data-i18n="pCineRevealD">from the detail out to the whole picture</small></button>
+        <button class="pcard" data-preset="cineVertigo"><b data-i18n="pCineVertigo">Vertigo</b><small data-i18n="pCineVertigoD">dolly zoom - the space stretches</small></button>
+        <button class="pcard" data-preset="cineHubble"><b data-i18n="pCineHubble">Hubble flythrough</b><small data-i18n="pCineHubbleD">deep approach, gently sinking</small></button>
+        <button class="pcard" data-preset="cineInterstellar"><b data-i18n="pCineInterstellar">Interstellar drift</b><small data-i18n="pCineInterstellarD">dark, slow tracking shot</small></button>
+        <button class="pcard" data-preset="cineHandheld"><b data-i18n="pCineHandheld">Handheld</b><small data-i18n="pCineHandheldD">documentary feel, organic shake</small></button>
+        <button class="pcard" data-preset="cineCrane"><b data-i18n="pCineCrane">Crane shot</b><small data-i18n="pCineCraneD">the camera rises over the subject</small></button>
+        <button class="pcard" data-preset="cineSpiral"><b data-i18n="pCineSpiral">Spiral dive</b><small data-i18n="pCineSpiralD">accelerating plunge with a roll</small></button>
+        <button class="pcard" data-preset="cineArc"><b data-i18n="pCineArc">Arc shot</b><small data-i18n="pCineArcD">the camera circles the galaxy</small></button>
       </div>
       <div class="pgroup" id="userPresetGroupHead" hidden data-i18n="upHead">My presets</div>
       <div class="pgrid" id="userPresetGrid" hidden></div>
@@ -521,6 +545,18 @@
         <input type="checkbox" id="ctlLoop">
         <span data-i18n="loopMode">Loop mode (there &amp; back, seamless)</span>
       </label>
+      <label class="check">
+        <input type="checkbox" id="ctlReverse">
+        <span data-i18n="reverseMode">Fly backwards (reveal: from the target out to the whole picture)</span>
+      </label>
+      <label class="slider">
+        <span><span data-i18n="dolly">Dolly zoom (vertigo)</span> <button class="qm" data-help="hintDolly">?</button> <output id="outDolly">0</output></span>
+        <input type="range" id="ctlDolly" min="0" max="100" step="1" value="0">
+      </label>
+      <p class="tip hint2" id="hintDolly" hidden data-i18n="dollyHint">The famous film effect:
+      the camera moves in while the lens zooms out. The target keeps its size, the space around it
+      stretches - near parts grow, the background shrinks away. Works in the zoom flight; the
+      target is the clicked zoom target.</p>
       <p class="tip" data-i18n="fineTip">Tip: hold Shift while dragging a slider for ten times
       finer steps - that works for every slider in AstroFly.</p>
       <p class="tip"><span data-i18n-html="tip"><b>Zoom target:</b> Click the preview to choose where
@@ -1201,8 +1237,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-09-28-87"></script>
+<script src="i18n.js?v=2026-09-28-88"></script>
 <script src="objectinfo.js?v=2026-08-16-67"></script>
-<script src="app.js?v=2026-09-28-87"></script>
+<script src="app.js?v=2026-09-28-88"></script>
 </body>
 </html>
