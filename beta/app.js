@@ -3101,15 +3101,39 @@ function angSep(ra1, dec1, ra2, dec2) {
   return 2 * Math.asin(Math.min(1, Math.sqrt(s))) * R2D;
 }
 
-/** Gaia DR3 über die VizieR-TAP-API abfragen (CSV, CORS-frei). */
+/**
+ * Gaia DR3 abfragen (TAP, CSV, CORS-frei). Zuerst das ESA-Gaia-Archiv, das
+ * auch große Felder in dichten Milchstraßenregionen in Sekunden liefert;
+ * VizieR (CDS) bleibt Ausweichserver. Beide liefern dieselben Spalten in
+ * derselben Reihenfolge.
+ */
 async function queryGaia(ra, dec, radiusDeg) {
-  const adql = `SELECT TOP 50000 RA_ICRS,DE_ICRS,Gmag,Plx,"BP-RP",pmRA,pmDE FROM "I/355/gaiadr3" ` +
-    `WHERE 1=CONTAINS(POINT('ICRS',RA_ICRS,DE_ICRS),` +
-    `CIRCLE('ICRS',${ra.toFixed(6)},${dec.toFixed(6)},${radiusDeg.toFixed(4)})) ` +
-    `AND Plx>0.05 ORDER BY Gmag`;
-  const url = "https://tapvizier.cds.unistra.fr/TAPVizieR/tap/sync?REQUEST=doQuery&LANG=ADQL&FORMAT=csv&QUERY=" +
-    encodeURIComponent(adql);
-  const lines = (await fetchTapCsv(url)).trim().split("\n");
+  const circle = `${ra.toFixed(6)},${dec.toFixed(6)},${radiusDeg.toFixed(4)}`;
+  const servers = [
+    { url: "https://gea.esac.esa.int/tap-server/tap/sync", timeout: 40000, tries: 2,
+      adql: `SELECT TOP 50000 ra,dec,phot_g_mean_mag,parallax,bp_rp,pmra,pmdec FROM gaiadr3.gaia_source ` +
+        `WHERE 1=CONTAINS(POINT('ICRS',ra,dec),CIRCLE('ICRS',${circle})) ` +
+        `AND parallax>0.05 ORDER BY phot_g_mean_mag` },
+    { url: "https://tapvizier.cds.unistra.fr/TAPVizieR/tap/sync", timeout: 60000, tries: 2,
+      adql: `SELECT TOP 50000 RA_ICRS,DE_ICRS,Gmag,Plx,"BP-RP",pmRA,pmDE FROM "I/355/gaiadr3" ` +
+        `WHERE 1=CONTAINS(POINT('ICRS',RA_ICRS,DE_ICRS),CIRCLE('ICRS',${circle})) ` +
+        `AND Plx>0.05 ORDER BY Gmag` },
+  ];
+  let csv = null, err = null;
+  for (const srv of servers) {
+    try {
+      csv = await fetchTapCsv(srv.url + "?REQUEST=doQuery&LANG=ADQL&FORMAT=csv&QUERY=" +
+        encodeURIComponent(srv.adql), srv.timeout, srv.tries);
+      if (/^\s*</.test(csv)) throw Object.assign(new Error("VOTable-Fehler"), { server: true, status: 500 });
+      break;
+    } catch (e) {
+      csv = null;
+      // Ein eindeutiger Server-/Zeitfehler sticht einen reinen Netzfehler
+      if (!err || e.server || e.timeout) err = e;
+    }
+  }
+  if (csv == null) throw err;
+  const lines = csv.trim().split("\n");
   const out = [];
   for (let i = 1; i < lines.length; i++) {
     const p = lines[i].split(",");
@@ -7523,9 +7547,11 @@ $("btnGaia").addEventListener("click", async () => {
       uploadStars();
     }
   } catch (e) {
-    gaiaTransient = e.server
-      ? { key: "gaiaSrvErr", args: [e.status] }
-      : { key: "gaiaNetErr", args: [] };
+    gaiaTransient = e.timeout
+      ? { key: "gaiaTimeout", args: [] }
+      : e.server
+        ? { key: "gaiaSrvErr", args: [e.status] }
+        : { key: "gaiaNetErr", args: [] };
   }
   updateGaiaStatus();
 });
