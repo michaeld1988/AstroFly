@@ -156,16 +156,24 @@ function findObjectRegion(items) {
  * versuchen und Server-Fehler von echten Verbindungsproblemen unterscheiden
  * (err.server = true -> Server antwortet, aber mit Fehlerstatus).
  */
-async function fetchTapCsv(url) {
+async function fetchTapCsv(url, timeoutMs = 45000, tries = 3) {
+  // Ohne Zeitlimit wartet fetch() ewig, wenn der Server die Verbindung
+  // offen hält, ohne zu antworten (VizieR bei großen, dichten Feldern)
   let lastErr;
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < tries; i++) {
     if (i) await new Promise((r) => setTimeout(r, 1500 * i));
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), timeoutMs);
     try {
-      const resp = await fetch(url);
+      const resp = await fetch(url, { signal: ctl.signal });
       if (resp.ok) return await resp.text();
       lastErr = Object.assign(new Error("HTTP " + resp.status), { server: true, status: resp.status });
     } catch (e) {
+      // Zeitüberschreitung: dieselbe Abfrage erneut zu senden hilft nicht
+      if (ctl.signal.aborted) throw Object.assign(new Error("Timeout"), { timeout: true });
       lastErr = e;
+    } finally {
+      clearTimeout(timer);
     }
   }
   throw lastErr;
