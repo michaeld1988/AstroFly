@@ -8008,6 +8008,40 @@ function flipMask(fh, fv) {
   }
 }
 
+/**
+ * Alles, was in Koordinaten des Starless-Bildes liegt, mit dem Bild spiegeln:
+ * Galaxien (Mittelpunkt, Lage der Ellipse, Drehsinn, nahe Seite), Zoomziel
+ * und Wegpunkte des Flugplans. Die Bildebene ist um die Bildmitte
+ * symmetrisch (x nach rechts, y nach oben).
+ */
+function mirrorPlaneState(fh, fv) {
+  if (!fh && !fv) return;
+  const one = fh !== fv; // genau eine Achse: Drehsinn und Winkel kehren sich um
+  if (Array.isArray(state.galaxies) && state.galaxies.length) {
+    if (typeof galSyncFromState === "function") galSyncFromState();
+    for (const g of state.galaxies) {
+      if (fh) g.x = -g.x;
+      if (fv) g.y = -g.y;
+      // Lage der grossen Achse: Spiegelung an einer Achse -> 180 - Winkel
+      if (one) g.tilt = (180 - g.tilt + 180) % 180;
+      if (one && g.dir) g.dir = -g.dir;
+      // nahe Seite: liegt bei der Darstellung 180 - Winkel bei H auf der
+      // anderen Seite der grossen Achse, bei V auf derselben
+      if (fh) g.near = g.near === -1 ? 1 : -1;
+    }
+    galSelect(state.galSel || 0);
+    galBkTex = null;
+  }
+  if (state.target) state.target = { x: fh ? -state.target.x : state.target.x, y: fv ? -state.target.y : state.target.y };
+  if (Array.isArray(state.waypoints)) {
+    for (const wp of state.waypoints) {
+      if (fh) wp.x = -wp.x;
+      if (fv) wp.y = -wp.y;
+      if (one && wp.angle) wp.angle = -wp.angle;
+    }
+  }
+}
+
 function applyImageFlip(fh, fv) {
   clearWpThumbCache();
   if (state.starless) {
@@ -8019,6 +8053,7 @@ function applyImageFlip(fh, fv) {
     state.texColorW = colSrc.width;
     state.texColorH = colSrc.height;
     buildDepthMap();
+    mirrorPlaneState(fh, fv);
     buildSpinMask();
   }
   // "Nur Starless": Maske und damit das Koordinatensystem bleiben stehen -
