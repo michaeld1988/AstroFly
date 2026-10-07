@@ -354,6 +354,14 @@ vec2 spinWarpR(vec2 q, float rim) {
   if (k < 0) return q;
   float t = 1.0 - r;
   float a = (uGalB[k].z + uGalB[k].w * t * t) * (rim > 0.5 ? 1.0 : smoothstep(1.0, 0.75, r));
+  // Bulge-Schutz: Der Kern einer Galaxie ist eine Kugel, keine Scheibe. In
+  // der geneigten Scheibenebene mitgedreht wuerde er zum schiefen Oval
+  // gezogen (bei M31 schon ab ~6 Grad sichtbar). Je geneigter die Scheibe,
+  // desto weiter innen bleibt das Licht stehen; die Drehung setzt nach aussen
+  // weich ein. Der Winkel haengt weiter nur vom Ellipsenradius ab - jeder
+  // Ring dreht in sich, keine Doppelbilder
+  float incl = clamp((1.0 - uGalA[k].w) * 2.0, 0.0, 1.0);
+  a *= mix(1.0, smoothstep(0.05, 0.45, r), incl);
   float ca = cos(a), sa = sin(a);
   return galBack(vec2(ca * e.x + sa * e.y, -sa * e.x + ca * e.y), k);
 }
@@ -700,6 +708,8 @@ vec2 spinStar(vec2 p, float second) {
   vec2 aw = second > 0.5 ? uGalCS[best].xy : uGalBS[best].zw;
   float t = 1.0 - rb;
   float a = (aw.x + aw.y * t * t) * smoothstep(1.0, 0.85, rb);
+  // Bulge-Schutz wie im Hintergrund: Sterne vor dem Kern drehen ebenso wenig mit
+  a *= mix(1.0, smoothstep(0.05, 0.45, rb), clamp((1.0 - uGalAS[best].w) * 2.0, 0.0, 1.0));
   float ca = cos(a), sa = sin(a);
   vec2 e = vec2(ca * eb.x - sa * eb.y, sa * eb.x + ca * eb.y);
   e.y *= uGalAS[best].w;
