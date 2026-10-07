@@ -41,6 +41,25 @@ pick one of eight one-click style presets (3 for nebulae, 3 for galaxies,
 2 for star clusters), choose duration and aspect ratio, export – done.
 Switch to **Pro mode** anytime for every individual control.
 
+## 🆕 New in October 2026
+
+- **Galaxies spin in 3D:** galaxies are detected automatically (several per
+  image) and rotate rigidly in their own tilted disc plane; the round core
+  (bulge) stays round, the disc can be rendered as a real 3D disc with stars
+  orbiting through the arms, plus an orbit flight around the galaxy
+- **Clean real star shapes:** every star is cut cleanly from your own star
+  mask (no more ghost blobs from neighbouring stars)
+- **Diffraction spikes and Airy disks** for a telescope look, optional
+- **Volumetric nebulae:** glow, structure and dust in separate depth layers
+- **AI depth map** (Depth Anything, runs in your browser) to mix with the
+  automatic depth
+- **Cinematic camera moves:** Kubrick push, reveal, vertigo (dolly zoom),
+  Hubble flythrough, Interstellar drift, handheld, crane, spiral dive, arc
+  shot and diagonal flight from the left or right edge; reverse flight
+- **Image quality:** filmic tone mapping, multi-level bloom, film grain,
+  blue-noise dithering and supersampled export
+- Faster and more reliable Gaia catalog queries (ESA archive with fallback)
+
 ## Run locally
 
 Download the repository and open `index.html` in your browser – that's it,

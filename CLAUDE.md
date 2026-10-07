@@ -13,7 +13,20 @@ kein Build-Schritt, alles läuft lokal im Browser.
 - Claude ist der alleinige Entwickler; Michael testet, gibt Feedback und
   entscheidet über Releases.
 
-## Kern-Features (Stand: 22. August 2026, live v2026-08-22-1)
+## Kern-Features (Stand: 7. Oktober 2026, live v2026-10-07-1)
+
+**Neu mit v2026-10-07-1 (Beta v-58 bis v-94 komplett live):** Galaxien-Rotation
+v2 (Auto-Erkennung mehrerer Galaxien, starre Drehung in der geneigten
+Scheibenebene, Bulge-Schutz, 3D-Scheibe, Scheibensterne, Kern-Glühen,
+Orbit-Flug, Spiegeln nimmt Galaxien/Zoomziel/Wegpunkte mit), saubere echte
+Sternabbilder (Watershed-Segmentierung), Beugungsspikes + Airy-Kern,
+Volumetrischer Nebel, KI-Tiefenkarte, Kino-Presets (u. a. Kubrick, Reveal,
+Vertigo, Crane, Spiral, Arc, Schrägflug links/rechts mit Zoomfahrt),
+Rückwärtsflug, Dolly, Filmic/HDR-Bloom/Korn/Dithering, Supersampling-Export,
+Gaia-Abfrage über ESA-Archiv mit VizieR-Fallback.
+Bekannte Grenze: Begleitgalaxien (z. B. M32/M110 bei M31) drehen in der
+Scheibe mit und werden dabei verzogen.
+
 
 - 3D-Parallaxe aus automatischer Tiefenkarte; Zoom- und Lateral-Flugmodus,
   Loop-Modus, Zoomziel per Klick (tiefenbewusst)

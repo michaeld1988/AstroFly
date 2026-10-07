@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AstroFly – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-08-24-1">
+<link rel="stylesheet" href="style.css?v=2026-10-07-1">
 </head>
 <body>
 
@@ -193,6 +193,23 @@
       spikes, halos and exact colors included - instead of an idealized glow sprite. Faint
       stars stay procedural (they are only a few pixels anyway). During strong motion
       streaks a star falls back to the procedural sprite.</p>
+      <label class="check">
+        <input type="checkbox" id="ctlStarImg">
+        <span data-i18n="starImg">Cinematic star mode (render the star mask as an image)</span>
+        <button class="qm" data-help="hintStarImg">?</button>
+      </label>
+      <p class="tip hint2" id="hintStarImg" hidden data-i18n="starImgHint">The star layer moves
+      as one photographic image: every star keeps its exact shape, diffraction spikes and
+      color from your mask. Best for calm, cinematic flights. Star particles are off in this
+      mode, so twinkle, motion streaks, per-star depth and the Gaia time lapse do not apply;
+      brightness, color boost and the distance slider still work.</p>
+      <label class="slider">
+        <span><span data-i18n="starCull">Hide smallest stars</span> <output id="outStarCull">0</output></span>
+        <input type="range" id="ctlStarCull" min="0" max="100" step="1" value="0">
+      </label>
+      <p class="tip" id="starCullInfo" data-i18n="starCullHint">Wide-field images often carry
+      thousands of tiny stars that make the animation feel restless. Drag right to remove the
+      smallest stars first - the counter shows how many stay visible.</p>
       <details class="adv">
         <summary data-i18n="advStretch">Mask stretch</summary>
         <label class="check">
@@ -270,6 +287,20 @@
         <button class="pcard" data-preset="clusterDive"><b data-i18n="pClusterDive">Into the cluster</b><small data-i18n="pClusterDiveD">deep dive through the stars</small></button>
         <button class="pcard" data-preset="clusterSparkle"><b data-i18n="pClusterSparkle">Sparkling drift</b><small data-i18n="pClusterSparkleD">calm, twinkling – great for loops</small></button>
       </div>
+      <div class="pgroup" data-i18n="pgCine">Cinematic camera moves</div>
+      <div class="pgrid">
+        <button class="pcard" data-preset="cineKubrick"><b data-i18n="pCineKubrick">Kubrick push-in</b><small data-i18n="pCineKubrickD">slow, perfectly steady, like 2001</small></button>
+        <button class="pcard" data-preset="cineReveal"><b data-i18n="pCineReveal">Reveal</b><small data-i18n="pCineRevealD">from the detail out to the whole picture</small></button>
+        <button class="pcard" data-preset="cineVertigo"><b data-i18n="pCineVertigo">Vertigo</b><small data-i18n="pCineVertigoD">dolly zoom - the space stretches</small></button>
+        <button class="pcard" data-preset="cineHubble"><b data-i18n="pCineHubble">Hubble flythrough</b><small data-i18n="pCineHubbleD">deep approach, gently sinking</small></button>
+        <button class="pcard" data-preset="cineInterstellar"><b data-i18n="pCineInterstellar">Interstellar drift</b><small data-i18n="pCineInterstellarD">dark, slow tracking shot</small></button>
+        <button class="pcard" data-preset="cineHandheld"><b data-i18n="pCineHandheld">Handheld</b><small data-i18n="pCineHandheldD">documentary feel, organic shake</small></button>
+        <button class="pcard" data-preset="cineCrane"><b data-i18n="pCineCrane">Crane shot</b><small data-i18n="pCineCraneD">the camera rises over the subject</small></button>
+        <button class="pcard" data-preset="cineSpiral"><b data-i18n="pCineSpiral">Spiral dive</b><small data-i18n="pCineSpiralD">accelerating plunge with a roll</small></button>
+        <button class="pcard" data-preset="cineDiagLeft"><b data-i18n="pCineDiagLeft">Diagonal flight to the left</b><small data-i18n="pCineDiagLeftD">drift + slow zoom toward the nebula</small></button>
+        <button class="pcard" data-preset="cineDiagRight"><b data-i18n="pCineDiagRight">Diagonal flight to the right</b><small data-i18n="pCineDiagRightD">drift + slow zoom toward the nebula</small></button>
+        <button class="pcard" data-preset="cineArc"><b data-i18n="pCineArc">Arc shot</b><small data-i18n="pCineArcD">the camera circles the galaxy</small></button>
+      </div>
       <details class="adv" open>
         <summary data-i18n="upManage">Save current settings as preset</summary>
         <p class="tip" data-i18n="upHint">Save your current settings under a name and reapply
@@ -329,6 +360,20 @@
         <button class="pcard" data-preset="clusterDive"><b data-i18n="pClusterDive">Into the cluster</b><small data-i18n="pClusterDiveD">deep dive through the stars</small></button>
         <button class="pcard" data-preset="clusterSparkle"><b data-i18n="pClusterSparkle">Sparkling drift</b><small data-i18n="pClusterSparkleD">calm, twinkling – great for loops</small></button>
       </div>
+      <div class="pgroup" data-i18n="pgCine">Cinematic camera moves</div>
+      <div class="pgrid">
+        <button class="pcard" data-preset="cineKubrick"><b data-i18n="pCineKubrick">Kubrick push-in</b><small data-i18n="pCineKubrickD">slow, perfectly steady, like 2001</small></button>
+        <button class="pcard" data-preset="cineReveal"><b data-i18n="pCineReveal">Reveal</b><small data-i18n="pCineRevealD">from the detail out to the whole picture</small></button>
+        <button class="pcard" data-preset="cineVertigo"><b data-i18n="pCineVertigo">Vertigo</b><small data-i18n="pCineVertigoD">dolly zoom - the space stretches</small></button>
+        <button class="pcard" data-preset="cineHubble"><b data-i18n="pCineHubble">Hubble flythrough</b><small data-i18n="pCineHubbleD">deep approach, gently sinking</small></button>
+        <button class="pcard" data-preset="cineInterstellar"><b data-i18n="pCineInterstellar">Interstellar drift</b><small data-i18n="pCineInterstellarD">dark, slow tracking shot</small></button>
+        <button class="pcard" data-preset="cineHandheld"><b data-i18n="pCineHandheld">Handheld</b><small data-i18n="pCineHandheldD">documentary feel, organic shake</small></button>
+        <button class="pcard" data-preset="cineCrane"><b data-i18n="pCineCrane">Crane shot</b><small data-i18n="pCineCraneD">the camera rises over the subject</small></button>
+        <button class="pcard" data-preset="cineSpiral"><b data-i18n="pCineSpiral">Spiral dive</b><small data-i18n="pCineSpiralD">accelerating plunge with a roll</small></button>
+        <button class="pcard" data-preset="cineDiagLeft"><b data-i18n="pCineDiagLeft">Diagonal flight to the left</b><small data-i18n="pCineDiagLeftD">drift + slow zoom toward the nebula</small></button>
+        <button class="pcard" data-preset="cineDiagRight"><b data-i18n="pCineDiagRight">Diagonal flight to the right</b><small data-i18n="pCineDiagRightD">drift + slow zoom toward the nebula</small></button>
+        <button class="pcard" data-preset="cineArc"><b data-i18n="pCineArc">Arc shot</b><small data-i18n="pCineArcD">the camera circles the galaxy</small></button>
+      </div>
       <div class="pgroup" id="userPresetGroupHead" hidden data-i18n="upHead">My presets</div>
       <div class="pgrid" id="userPresetGrid" hidden></div>
       <label class="slider">
@@ -351,7 +396,10 @@
     <section data-tab="tiefe">
       <h2><span data-i18n="sec2">Depth map</span> <button class="qm" data-help="hintDepth">?</button></h2>
       <p class="tip hint2" id="hintDepth" hidden data-i18n="depthHint">Computed automatically from
-      the brightness of the starless image: bright nebula regions appear "closer" to the camera.</p>
+      the brightness of the starless image: bright nebula regions appear "closer" to the camera.
+      AstroFly limits how steep the map may get for your current flight, so the nebula can never
+      fold over itself (double images) or tear open (black holes). Stronger parallax or longer
+      zooms automatically give a smoother map.</p>
       <div class="depthrow">
         <canvas id="depthPreview" width="160" height="107"></canvas>
         <div class="depthctrl">
@@ -374,8 +422,52 @@
       image exactly (same framing; white = near, black = far). Export the automatic map,
       refine it in any editor, load it back - smoothing and invert still apply, and
       mirroring follows the image automatically.</p>
+      <div class="exportrow">
+        <button id="btnDepthAi" class="secondary" data-i18n="depthAi">Compute AI depth map (Depth Anything v2)</button>
+        <button class="qm" data-help="hintDepthAi">?</button>
+      </div>
+      <p class="tip hint2" id="hintDepthAi" hidden data-i18n="depthAiHint">Runs a neural depth
+      estimator (Depth Anything v2 Small) right in your browser, nothing is uploaded. The first
+      use downloads the model (about 25 to 50 MB, cached afterwards); with WebGPU it takes a
+      few seconds, the WASM fallback up to a minute. The model was trained on everyday scenes,
+      so for nebulae it mostly reads brightness and blur too: compare it with the automatic
+      map and blend with the slider.</p>
+      <p class="tip" id="depthAiStatus" hidden></p>
+      <label class="slider">
+        <span><span data-i18n="depthAiMix">AI share in the depth map</span> <output id="outDepthAiMix">100 %</output></span>
+        <input type="range" id="ctlDepthAiMix" min="0" max="100" step="1" value="100" disabled>
+      </label>
       <p class="tip" id="depthCustomStatus" hidden></p>
       <button id="btnDepthClear" class="secondary" hidden data-i18n="depthClear">Remove custom depth map</button>
+      <details class="adv" open>
+        <summary><span data-i18n="advVol">Volumetric nebula</span><span class="grow"></span><span class="badge" data-i18n="expBadge">Experimental</span></summary>
+        <p class="tip" data-i18n="volTip">The nebula flies as three see-through
+        layers, each on its own clean depth: a soft base glow behind, the bright structures
+        on top and the dark dust lanes slightly in front. At rest the image is exactly your
+        photo, in motion the layers slide over each other like real gas.</p>
+        <label class="check">
+          <input type="checkbox" id="ctlVol" checked>
+          <span data-i18n="vol">Volumetric nebula (glow, structures, dust)</span>
+          <button class="qm" data-help="hintVol">?</button>
+        </label>
+        <p class="tip hint2" id="hintVol" hidden data-i18n="volHint">The base glow is everything
+        broader than about 5 % of the image, the structures are the rest. Dust lanes are cut out,
+        the glow behind them is filled in from the surroundings, so a lane never leaves a black
+        hole behind. No structure is split between layers, so nothing appears twice.
+        Off = one image bent along the depth map.</p>
+        <label class="slider">
+          <span><span data-i18n="volSpread">Glow distance behind the structures</span> <output id="outVolSpread">50</output></span>
+          <input type="range" id="ctlVolSpread" min="0" max="100" step="1" value="50">
+        </label>
+        <label class="slider">
+          <span><span data-i18n="volDust">Dust floating in front</span> <button class="qm" data-help="hintVolDust">?</button> <output id="outVolDust">0</output></span>
+          <input type="range" id="ctlVolDust" min="0" max="100" step="1" value="0">
+        </label>
+        <p class="tip hint2" id="hintVolDust" hidden data-i18n="volDustHint">Lets clearly defined dark
+        clouds (Bok globules, the Horsehead, dark pillars) float slightly in front of the glow; the glow
+        behind them is filled in. Best for images with distinct dark nebulae. On finely textured dark
+        regions keep it at 0, since the texture would slide against the glow.</p>
+      </details>
       <div class="selrow">
         <label for="ctlDepthRes" data-i18n="depthRes">Depth map resolution</label>
         <select id="ctlDepthRes">
@@ -416,6 +508,8 @@
         <select id="ctlFlightMode">
           <option value="zoom" selected data-i18n="flightZoom">Toward the nebula (zoom in)</option>
           <option value="lateral" data-i18n="flightLateral">Lateral drift (glide across)</option>
+          <option value="orbit" data-i18n="flightOrbit">Orbit around the galaxy</option>
+          <option value="diagonal" data-i18n="flightDiagonal">Diagonal flight (from the edge, zoom + drift)</option>
         </select>
       </label>
       <div id="driftRow" hidden>
@@ -423,9 +517,21 @@
           <span><span data-i18n="driftDir">Flight direction</span> <output id="outDriftDir">90°</output></span>
           <input type="range" id="ctlDriftDir" min="0" max="360" step="5" value="90">
         </label>
-        <p class="tip" data-i18n="lateralHint">The camera glides across the image at constant zoom –
-        near regions and stars drift past faster (parallax). Speed sets the travel distance,
-        a click sets the path center. Increase zoom for a longer travel range.</p>
+        <p class="tip" id="orbitHintP" hidden data-i18n="orbitHint">The camera frames the selected galaxy
+        (Galaxy tab) and circles it on an arc: the near side of the 3D disc and the core swing more than
+        the far side. Speed sets the arc and the swing, flight direction the start angle, zoom the framing.</p>
+        <p class="tip" id="diagonalHintP" hidden data-i18n="diagonalHint">The camera starts at the image
+        edge and flies straight to the opposite side while zooming in slightly - evenly from the very first
+        frame. Flight direction 0° = start at the left edge, 180° = start at the right edge (in between:
+        diagonal). Speed sets how far it travels (100 = all the way across), “Zoom in during the flight”
+        how much it zooms, a click shifts the path.</p>
+        <label class="slider" id="zoomDriftRow" hidden>
+          <span><span data-i18n="zoomDrift">Zoom in during the flight</span> <output id="outZoomDrift">30</output></span>
+          <input type="range" id="ctlZoomDrift" min="0" max="100" step="1" value="30">
+        </label>
+        <p class="tip" id="lateralHintP" data-i18n="lateralHint">The camera glides across the image and slowly
+        zooms in (“Zoom in during the flight”, 0 = fixed zoom) – near regions and stars drift past faster
+        (parallax). Speed sets the travel distance, a click sets the path center. Increase zoom for a longer travel range.</p>
       </div>
       <label class="slider">
         <span><span data-i18n="zoom">Zoom (start framing)</span> <output id="outZoom">1.00×</output></span>
@@ -453,6 +559,18 @@
         <input type="checkbox" id="ctlLoop">
         <span data-i18n="loopMode">Loop mode (there &amp; back, seamless)</span>
       </label>
+      <label class="check">
+        <input type="checkbox" id="ctlReverse">
+        <span data-i18n="reverseMode">Fly backwards (reveal: from the target out to the whole picture)</span>
+      </label>
+      <label class="slider">
+        <span><span data-i18n="dolly">Dolly zoom (vertigo)</span> <button class="qm" data-help="hintDolly">?</button> <output id="outDolly">0</output></span>
+        <input type="range" id="ctlDolly" min="0" max="100" step="1" value="0">
+      </label>
+      <p class="tip hint2" id="hintDolly" hidden data-i18n="dollyHint">The famous film effect:
+      the camera moves in while the lens zooms out. The target keeps its size, the space around it
+      stretches - near parts grow, the background shrinks away. Works in the zoom flight; the
+      target is the clicked zoom target.</p>
       <p class="tip" data-i18n="fineTip">Tip: hold Shift while dragging a slider for ten times
       finer steps - that works for every slider in AstroFly.</p>
       <p class="tip"><span data-i18n-html="tip"><b>Zoom target:</b> Click the preview to choose where
@@ -542,28 +660,65 @@
     <!-- ==================== GALAXIEN-ROTATION ==================== -->
     <section data-tab="galaxie">
       <h2><span data-i18n="spinHead">Galaxy spin</span></h2>
-      <p class="tip" data-i18n="spinHint">Galaxy spin: rotates only the region around the spin
-      center – with a soft falloff at the edge, so the rest of the image stays untouched.
-      Foreground stars do not rotate.</p>
-      <button id="btnSpinCenter" class="secondary" data-i18n="spinCenterBtn">Set spin center (then click the preview)</button>
+      <p class="tip" data-i18n="spinHint">Each galaxy turns rigidly in its own (tilted) disc, like the
+      real spiral pattern, with a gentle, capped swirl in the core. Only the galaxy's light turns;
+      the sky behind it stays still, so nothing smears or appears twice, even after many turns.
+      Several galaxies can spin independently.</p>
+      <div class="exportrow">
+        <button id="btnGalDetect" class="secondary" data-i18n="galDetect">Find galaxies automatically</button>
+        <button class="qm" data-help="hintGalDetect">?</button>
+      </div>
+      <p class="tip hint2" id="hintGalDetect" hidden data-i18n="galDetectHint">Looks for extended objects
+      brighter than the sky (stars are ignored), fits an ellipse to each (up to 8) and reads the spin
+      direction from the spiral arms: arms trail behind the rotation. Plate-solved images show the
+      SIMBAD names. Check the rings with "Show galaxies" and fine-tune the selected one below.</p>
+      <p class="tip" id="galStatus" hidden></p>
+      <div id="galList"></div>
+      <div class="exportrow">
+        <button id="btnSpinCenter" class="secondary" data-i18n="galAdd">Add galaxy (click the preview)</button>
+        <button id="btnGalMove" class="secondary" data-i18n="galMove">Move selected (click the preview)</button>
+      </div>
       <label class="check">
         <input type="checkbox" id="ctlSpinShow">
-        <span data-i18n="spinShow">Show spin region (red mask overlay)</span>
+        <span data-i18n="spinShow">Show galaxies (rings, selected one in yellow)</span>
       </label>
       <label class="slider">
-        <span><span data-i18n="spinSpeed">Galaxy spin (°/s at core)</span> <output id="outSpinSpeed">0.0 °/s</output></span>
+        <span><span data-i18n="spinSpeed">Spin speed (°/s)</span> <output id="outSpinSpeed">0.0 °/s</output></span>
         <input type="range" id="ctlSpinSpeed" min="-10" max="10" step="0.1" value="0">
       </label>
+      <h2 class="sub" data-i18n="galCineHead">Cinematic</h2>
+      <label class="check">
+        <input type="checkbox" id="ctlGal3d" checked>
+        <span data-i18n="gal3d">Galaxies as 3D discs</span>
+        <button class="qm" data-help="hintGal3d">?</button>
+      </label>
+      <p class="tip hint2" id="hintGal3d" hidden data-i18n="gal3dHint">Each galaxy gets real depth: its disc
+      is tilted as its ellipse shows (the side with the dust lanes in front of the core is the near side),
+      and the core bulges out as a sphere. You see it when the camera moves - best with the orbit flight.
+      The arrow button in the list flips the near side.</p>
       <label class="slider">
-        <span><span data-i18n="spinRadius">Spin radius</span> <output id="outSpinRadius">40</output></span>
-        <input type="range" id="ctlSpinRadius" min="5" max="100" step="1" value="40">
+        <span><span data-i18n="gal3dAmt">Depth of the disc</span> <output id="outGal3dAmt">50</output></span>
+        <input type="range" id="ctlGal3dAmt" min="0" max="100" step="1" value="50">
       </label>
       <label class="slider">
-        <span><span data-i18n="spinDiff">Differential rotation (inner faster)</span> <output id="outSpinDiff">40</output></span>
-        <input type="range" id="ctlSpinDiff" min="0" max="100" step="1" value="40">
+        <span><span data-i18n="galStars">Stars flowing through the arms</span> <button class="qm" data-help="hintGalStars">?</button> <output id="outGalStars">50</output></span>
+        <input type="range" id="ctlGalStars" min="0" max="100" step="1" value="50">
+      </label>
+      <p class="tip hint2" id="hintGalStars" hidden data-i18n="galStarsHint">While the galaxy spins, faint stars
+      in its disc orbit like real stars: inside faster than the spiral pattern, outside slower, so they drift
+      through the arms. They follow the galaxy's light and take its colors. Points never smear.</p>
+      <label class="slider">
+        <span><span data-i18n="galGlow">Core glow on approach</span> <output id="outGalGlow">40</output></span>
+        <input type="range" id="ctlGalGlow" min="0" max="100" step="1" value="40">
+      </label>
+      <p class="tip" data-i18n="galOrbitTip">Tip: the flight mode "Orbit around the galaxy" (Flight tab) circles the selected galaxy.</p>
+      <h2 class="sub" data-i18n="galSelHead">Selected galaxy</h2>
+      <label class="slider">
+        <span><span data-i18n="spinRadius">Radius</span> <output id="outSpinRadius">40.0</output></span>
+        <input type="range" id="ctlSpinRadius" min="1" max="100" step="0.1" value="40">
       </label>
       <label class="slider">
-        <span><span data-i18n="spinFlat">Spin ellipse (inclined galaxy)</span> <output id="outSpinFlat">0</output></span>
+        <span><span data-i18n="spinFlat">Tilt of the disc (ellipse)</span> <output id="outSpinFlat">0</output></span>
         <input type="range" id="ctlSpinFlat" min="0" max="100" step="1" value="0">
       </label>
       <label class="slider">
@@ -571,13 +726,12 @@
         <input type="range" id="ctlSpinTilt" min="0" max="180" step="1" value="0">
       </label>
       <label class="slider">
-        <span><span data-i18n="spinMaskAmt">Brightness mask influence</span> <output id="outSpinMaskAmt">0</output></span>
-        <input type="range" id="ctlSpinMaskAmt" min="0" max="100" step="1" value="0">
+        <span><span data-i18n="spinDiff">Swirl in the core (capped)</span> <button class="qm" data-help="hintSpinDiff">?</button> <output id="outSpinDiff">40</output></span>
+        <input type="range" id="ctlSpinDiff" min="0" max="100" step="1" value="40">
       </label>
-      <label class="slider">
-        <span><span data-i18n="spinMaskSmooth">Brightness mask smoothing</span> <output id="outSpinMaskSmooth">6</output></span>
-        <input type="range" id="ctlSpinMaskSmooth" min="2" max="60" step="1" value="6">
-      </label>
+      <p class="tip hint2" id="hintSpinDiff" hidden data-i18n="spinDiffHint">Lets the core run slightly ahead
+      of the outer disc, like a real rotation curve. The lead grows with the spin and then stops at about
+      11 degrees, so the arms never wind up or smear.</p>
       <label class="check">
         <input type="checkbox" id="ctlSpinStars">
         <span data-i18n="spinStars">Rotate stars inside the spin region</span>
@@ -654,6 +808,45 @@
           <input type="range" id="ctlOcclude" min="0" max="100" step="1" value="0">
         </label>
       </details>
+
+      <details class="adv">
+        <summary data-i18n="advOptics">Optics: Airy core &amp; diffraction spikes</summary>
+        <label class="check">
+          <input type="checkbox" id="ctlAiry">
+          <span data-i18n="airy">Airy core (diffraction disc instead of soft blob)</span>
+          <button class="qm" data-help="hintAiry">?</button>
+        </label>
+        <p class="tip hint2" id="hintAiry" hidden data-i18n="airyHint">Renders each star with the
+        diffraction pattern of a real telescope: a crisp bright disc with a faint ring around it
+        instead of a soft Gaussian blob. Subtle, but stars look like optics, not sprites.</p>
+        <label class="slider">
+          <span><span data-i18n="organic">Organic star glow (fine rays)</span> <button class="qm" data-help="hintOrganic">?</button> <output id="outOrganic">35</output></span>
+          <input type="range" id="ctlOrganic" min="0" max="100" step="1" value="35">
+        </label>
+        <p class="tip hint2" id="hintOrganic" hidden data-i18n="organicHint">Bright stars get a
+        halo of dozens of fine, uneven rays like in real astrophotos, drawn from a library of
+        16 star patterns - each star with its own pattern, rotation and strength. Faint stars
+        stay clean. Keep it subtle.</p>
+        <label class="slider">
+          <span><span data-i18n="spikes">Diffraction spikes</span> <button class="qm" data-help="hintSpikes">?</button> <output id="outSpikes">0</output></span>
+          <input type="range" id="ctlSpikes" min="0" max="100" step="1" value="0">
+        </label>
+        <p class="tip hint2" id="hintSpikes" hidden data-i18n="spikesHint">Adds the spider-vane
+        spikes of a reflector telescope to bright stars. Only the brightest stars get long spikes,
+        faint ones stay clean. Off by default, since not every photo wants them.</p>
+        <label class="selfull">
+          <span data-i18n="spikeArms">Number of spikes</span>
+          <select id="ctlSpikeArms">
+            <option value="4" selected data-i18n="spikeArms4">4 (Newtonian, 4-vane spider)</option>
+            <option value="6" data-i18n="spikeArms6">6 (3-vane spider)</option>
+            <option value="8" data-i18n="spikeArms8">8 (double spider)</option>
+          </select>
+        </label>
+        <label class="slider">
+          <span><span data-i18n="spikeRot">Spike rotation</span> <output id="outSpikeRot">0°</output></span>
+          <input type="range" id="ctlSpikeRot" min="0" max="90" step="1" value="0">
+        </label>
+      </details>
     </section>
 
     <!-- ==================== LOOK ==================== -->
@@ -690,9 +883,24 @@
         <span><span data-i18n="vignette">Vignette</span> <output id="outVignette">0</output></span>
         <input type="range" id="ctlVignette" min="0" max="100" step="1" value="0">
       </label>
+      <label class="slider">
+        <span><span data-i18n="grain">Film grain</span> <button class="qm" data-help="hintGrain">?</button> <output id="outGrain">0</output></span>
+        <input type="range" id="ctlGrain" min="0" max="100" step="1" value="0">
+      </label>
+      <p class="tip hint2" id="hintGrain" hidden data-i18n="grainHint">Fine, analog-style grain,
+      stronger in the shadows. Besides the look it helps video compression: smooth dark
+      gradients keep their texture instead of turning into blocky steps. Banding protection
+      (dithering) is always on, even at 0.</p>
 
       <details class="adv">
         <summary data-i18n="advLook">Color &amp; detail</summary>
+        <label class="slider">
+          <span><span data-i18n="filmic">Filmic curve</span> <button class="qm" data-help="hintFilmic">?</button> <output id="outFilmic">0</output></span>
+          <input type="range" id="ctlFilmic" min="0" max="100" step="1" value="0">
+        </label>
+        <p class="tip hint2" id="hintFilmic" hidden data-i18n="filmicHint">Cinema-style tone
+        mapping: bright star cores and bloom roll off softly instead of burning out to flat
+        white, and the midtones get a gentle film contrast. 0 keeps the classic look.</p>
         <label class="slider">
           <span><span data-i18n="exposure">Exposure</span> <output id="outExposure">0</output></span>
           <input type="range" id="ctlExposure" min="-100" max="100" step="1" value="0">
@@ -886,11 +1094,31 @@
           <option value="classic" data-i18n="lsClassic">Classic</option>
         </select>
       </div>
+      <h2 class="sub"><span data-i18n="cardHead">Info card (bottom left)</span></h2>
+      <p class="tip" data-i18n="cardTip">Fill in what the card should say. Empty fields stay hidden;
+      filled fields complete or replace the automatically detected data, and without detection
+      the card is built from these fields alone.</p>
+      <div class="objedit cardedit">
+        <input type="text" id="ctlCard_name" data-i18n-ph="objF_name" placeholder="Name (e.g. Flame Nebula)">
+        <input type="text" id="ctlCard_type" data-i18n-ph="objF_type" placeholder="Type (e.g. emission nebula)">
+        <input type="text" id="ctlCard_size" data-i18n-ph="objF_size" placeholder="Size (e.g. 12 light-years)">
+        <input type="text" id="ctlCard_dist" data-i18n-ph="objF_dist" placeholder="Distance (e.g. 1,350 light-years)">
+        <input type="text" id="ctlCard_age" data-i18n-ph="objF_age" placeholder="Age (e.g. 2 million years)">
+        <input type="text" id="ctlCard_note" data-i18n-ph="objF_note" placeholder="Note (free text)">
+      </div>
       <div id="cardObjRow" class="selrow" hidden>
         <label for="ctlCardObj" data-i18n="cardObjLabel">Info card shows</label>
         <select id="ctlCardObj"></select>
       </div>
+      <h2 class="sub"><span data-i18n="labelsHead">Field labels</span></h2>
       <div id="objList"></div>
+      <div class="btnrow">
+        <button id="btnObjAdd" class="secondary" data-i18n="objAddOwn">Add your own object</button>
+      </div>
+      <p class="tip" data-i18n="objAddTip">Labels can be edited (pencil): name, type, size, distance,
+      age and a note. Empty fields stay hidden, filled ones appear in the label and the info card.
+      Your own objects are placed with a click into the preview; choose one under "Info card shows"
+      to put its data on the card (untick its label if you only want the card).</p>
       <p class="tip" id="objStatus"></p>
     </section>
 
@@ -926,6 +1154,15 @@
         </select>
         <button id="btnExport" class="primary" disabled data-i18n="exportBtn">Export video</button>
       </div>
+      <label class="check">
+        <input type="checkbox" id="ctlSuperSample" checked>
+        <span data-i18n="superSample">High quality export (2× supersampling, up to Full HD)</span>
+        <button class="qm" data-help="hintSuperSample">?</button>
+      </label>
+      <p class="tip hint2" id="hintSuperSample" hidden data-i18n="superSampleHint">The video is
+      rendered internally at twice the resolution and averaged down: star edges become perfectly
+      smooth and the smallest stars stop shimmering. Export takes about three times longer.
+      4K is always rendered at 1×.</p>
       <p class="tip" id="exportBrowserHint" hidden></p>
       <div id="exportStatus"></div>
       <div class="progress" id="exportProgressWrap" hidden><div id="exportProgress"></div></div>
@@ -1014,8 +1251,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-10-06-1"></script>
-<script src="objectinfo.js?v=2026-10-06-1"></script>
-<script src="app.js?v=2026-10-06-1"></script>
+<script src="i18n.js?v=2026-10-07-1"></script>
+<script src="objectinfo.js?v=2026-10-07-1"></script>
+<script src="app.js?v=2026-10-07-1"></script>
 </body>
 </html>
