@@ -46,6 +46,7 @@ const state = {
   galaxies: [],          // Galaxien-Rotation v2: [{ x, y, rad, flat, tilt, twist, dir, name, auto }]
   galSel: 0,             // ausgewaehlte Galaxie (Regler bearbeiten diese)
   gal3d: true,           // Galaxien als 3D-Scheibe (Tiefe aus Neigung + Kern-Woelbung)
+  galSatOn: true,        // Begleitgalaxien (M32/M110 u. a.) stehen lassen statt mitzudrehen
   gal3dAmt: 50,          // Tiefe der Scheibe 0..100
   galStars: 50,          // Sterne ziehen durch die Arme 0..100
   galGlow: 40,           // Kern-Gluehen beim Anflug 0..100
@@ -260,6 +261,7 @@ uniform int uGalN;          // Anzahl der Galaxien (0 = aus)
 uniform vec4 uGalA[8];      // Zentrum x, y (Ebene), grosse Halbachse, Stauchung b/a
 uniform vec4 uGalB[8];      // cos/sin der Ellipsenlage, Drehwinkel (rad), Wirbel innen (rad)
 uniform sampler2D uGalBk;   // Himmel hinter den Galaxien (aus der Umgebung aufgefuellt)
+uniform sampler2D uGalSat;  // Begleitgalaxien: rgb = Wirtslicht ohne Begleiter, a = Maske (s. galFindSatellites)
 uniform float uSpinShow;    // 1 = Galaxien-Ellipsen einblenden
 uniform float uGalSel;      // ausgewaehlte Galaxie (Vorschau hervorheben)
 uniform float uGal3D;       // 1 = Galaxien als 3D-Scheibe: Tiefe ist Geometrie und dreht NICHT mit
@@ -520,7 +522,17 @@ void main() {
     vec3 cQ = sampleCol(uvQ);
     vec3 bkQ = texture(uGalBk, uvQ).rgb, bkS = texture(uGalBk, uv).rgb;
     float al = 1.0 - smoothstep(0.85, 1.0, rg);
-    vec3 comp = max(mix(cQ, col + bkQ - bkS, al), 0.0);
+    // Begleitgalaxien (z. B. M32/M110 vor M31) kreisen nicht mit der Scheibe.
+    // Gedreht wird nur das Scheibenlicht OHNE Begleiter (unter ihnen aus der
+    // Umgebung aufgefuellt): Foto am Ziel + (Scheibe an der Quelle - Scheibe
+    // am Ziel). So wandert keine Kopie eines Begleiters mit (sie wuerde in
+    // der geneigten Ebene verzogen), die Begleiter bleiben stehen, die
+    // Scheibe dreht unter ihnen weiter - und das Ruhebild ist exakt das Foto.
+    // Ohne Begleiter (a = 0) ist das genau die bisherige Mischung
+    vec4 satS = texture(uGalSat, uv), satQ = texture(uGalSat, uvQ);
+    vec3 hostS = mix(col - bkS, satS.rgb, satS.a);
+    vec3 hostQ = mix(cQ - bkQ, satQ.rgb, satQ.a);
+    vec3 comp = max(cQ + al * (hostS - hostQ), 0.0);
     col = kg >= 0 ? comp : col;
     // Kern-Gluehen beim Anflug: der Kern (rund im Bild) wird dezent heller;
     // der Bloom macht daraus einen weichen Schein
@@ -1400,6 +1412,7 @@ const starBuf = gl.createBuffer();
 let texColor = null;
 let texDepth = null;
 let texGalBk = null;      // Himmel hinter den Galaxien (aufgefuellt, Float)
+let texGalSat = null;     // Begleitgalaxien: rgb = Wirtslicht ohne Begleiter (aufgefuellt), a = Begleiter-Maske
 let galBkTex = null, galBkSig = "", galBkTimer = 0;
 let texVolL = [];                   // Volumetrischer Nebel: [entstaubt + Staubmaske, Grund-Leuchten]
 let volBuiltN = 0;                  // 1 = Volumetrik-Texturen vorhanden
@@ -1459,6 +1472,12 @@ function makeFbo(w, h) {
 }
 
 // 1x1-Schwarztextur: Platzhalter für die Sternebene, wenn nicht getrennt wird
+// Voellig transparent (a = 0): "keine Begleitgalaxien" fuer uGalSat
+const texClear = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, texClear);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 const texBlack = gl.createTexture();
 gl.bindTexture(gl.TEXTURE_2D, texBlack);
 gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
@@ -2486,8 +2505,189 @@ function buildGalaxyBg() {
   }
   if (texGalBk) gl.deleteTexture(texGalBk);
   texGalBk = makeTextureFloat(w, h, rgba);
+  // Begleitgalaxien: Maske + aufgefuelltes Wirtslicht (ohne Begleiter)
+  const lum = new Float32Array(n);
+  for (let i = 0; i < n; i++) lum[i] = 0.299 * rgbO[i * 3] + 0.587 * rgbO[i * 3 + 1] + 0.114 * rgbO[i * 3 + 2];
+  const sats = galFindSatellites(lum, rgbO, w, h, imgAspect);
+  state.galSats = sats;
+  { const el = $("galSatCount"); if (el) el.textContent = t("galSatCount", sats.length); }
+  if (texGalSat) { gl.deleteTexture(texGalSat); texGalSat = null; }
+  if (sats.length) {
+    // Maske: 1 bis 1,2 Begleiter-Radien (mit Halo), weich auf 0 bei 1,7
+    const sMask = new Float32Array(n), hv = new Float32Array(n).fill(1);
+    for (const S of sats) {
+      const c = Math.cos(S.phi), sn = Math.sin(S.phi);
+      const R = S.a * 1.75;
+      const x0 = Math.max(0, Math.floor(S.mx - R)), x1 = Math.min(w - 1, Math.ceil(S.mx + R));
+      const y0 = Math.max(0, Math.floor(S.my - R)), y1 = Math.min(h - 1, Math.ceil(S.my + R));
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+        const dx = x - S.mx, dy = y - S.my;
+        const r = Math.hypot(c * dx + sn * dy, (-sn * dx + c * dy) / S.flat) / S.a;
+        const u = Math.min(1, Math.max(0, (1.7 - r) / 0.5)), v = u * u * (3 - 2 * u), i = y * w + x;
+        if (v > sMask[i]) sMask[i] = v;
+        if (r < 1.75) hv[i] = 0;
+      }
+    }
+    // Wirtslicht = Bild minus Himmel. Unter einem Begleiter: glatte Flaeche
+    // (quadratisch je Farbkanal), angepasst an das Scheibenlicht im Ring
+    // direkt um ihn (1,8-2,8 Radien) - uebernimmt den oertlichen Verlauf der
+    // Scheibe. Ohne genug Ringpunkte (Bildrand): aus der Umgebung aufgefuellt
+    const host = new Float32Array(n * 3);
+    for (let i = 0; i < n * 3; i++) host[i] = Math.max(0, rgbO[i] - fill[i]);
+    const hostFill = pushPullFill(host, hv, w, h);
+    for (const S of sats) {
+      const c = Math.cos(S.phi), sn = Math.sin(S.phi), R = Math.ceil(S.a * 2.8);
+      const x0 = Math.max(0, Math.floor(S.mx - R)), x1 = Math.min(w - 1, Math.ceil(S.mx + R));
+      const y0 = Math.max(0, Math.floor(S.my - R)), y1 = Math.min(h - 1, Math.ceil(S.my + R));
+      // Normalgleichungen fuer f = b0 + b1 u + b2 v + b3 u^2 + b4 uv + b5 v^2 (u, v in Radien)
+      const A = new Float64Array(36), B = [new Float64Array(6), new Float64Array(6), new Float64Array(6)];
+      let cnt = 0;
+      const basis = (u, v) => [1, u, v, u * u, u * v, v * v];
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+        const dx = x - S.mx, dy = y - S.my;
+        const r = Math.hypot(c * dx + sn * dy, (-sn * dx + c * dy) / S.flat) / S.a;
+        if (r < 1.8 || r > 2.8 || !hv[y * w + x]) continue;
+        const f = basis(dx / S.a, dy / S.a), i = (y * w + x) * 3;
+        for (let k = 0; k < 6; k++) {
+          for (let l = 0; l < 6; l++) A[k * 6 + l] += f[k] * f[l];
+          for (let ch = 0; ch < 3; ch++) B[ch][k] += f[k] * host[i + ch];
+        }
+        cnt++;
+      }
+      if (cnt < 40) continue;
+      const coef = B.map((bv) => solveSym6(A, bv));
+      if (coef.some((q) => !q)) continue;
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+        const i = y * w + x;
+        if (hv[i]) continue;
+        const f = basis((x - S.mx) / S.a, (y - S.my) / S.a);
+        for (let ch = 0; ch < 3; ch++) {
+          let v = 0; for (let k = 0; k < 6; k++) v += coef[ch][k] * f[k];
+          hostFill[i * 3 + ch] = Math.max(0, v);
+        }
+      }
+    }
+    const sat = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) {
+      sat[i * 4] = hostFill[i * 3]; sat[i * 4 + 1] = hostFill[i * 3 + 1]; sat[i * 4 + 2] = hostFill[i * 3 + 2]; sat[i * 4 + 3] = sMask[i];
+    }
+    texGalSat = makeTextureFloat(w, h, sat);
+  }
   galBkTex = texColor;
   galBkSig = galGeomSig();
+}
+
+/** 6x6-Gleichungssystem (Gauss mit Spaltenpivot); null, wenn singulaer. */
+function solveSym6(A0, b0) {
+  const N = 6, A = Float64Array.from(A0), b = Float64Array.from(b0);
+  for (let c = 0; c < N; c++) {
+    let pr = c;
+    for (let r = c + 1; r < N; r++) if (Math.abs(A[r * N + c]) > Math.abs(A[pr * N + c])) pr = r;
+    if (Math.abs(A[pr * N + c]) < 1e-9) return null;
+    if (pr !== c) {
+      for (let k = 0; k < N; k++) { const t = A[c * N + k]; A[c * N + k] = A[pr * N + k]; A[pr * N + k] = t; }
+      const t = b[c]; b[c] = b[pr]; b[pr] = t;
+    }
+    for (let r = c + 1; r < N; r++) {
+      const f = A[r * N + c] / A[c * N + c];
+      for (let k = c; k < N; k++) A[r * N + k] -= f * A[c * N + k];
+      b[r] -= f * b[c];
+    }
+  }
+  const x = new Float64Array(N);
+  for (let r = N - 1; r >= 0; r--) {
+    let v = b[r];
+    for (let k = r + 1; k < N; k++) v -= A[r * N + k] * x[k];
+    x[r] = v / A[r * N + r];
+  }
+  return x;
+}
+
+/**
+ * Begleitgalaxien in grossen Galaxien finden (M32/M110 vor M31 u. a.): Sie
+ * liegen im Licht der Wirtsgalaxie, gehoeren aber nicht zu ihrer Scheibe und
+ * duerfen nicht mitkreisen. Gesucht wird im Zylinderhut (Bild minus
+ * morphologische Oeffnung) auf zwei Groessen - fein trennt nahe Begleiter vom
+ * Kern, grob erfasst ausgedehnte ganz. Kern, Spiralknoten und schwache
+ * Scheibenstrukturen fallen ueber Abstand, Helligkeit, Groesse und Form raus.
+ * Rueckgabe in Pixeln der Arbeitsgroesse: [{ mx, my, a, flat, phi }]
+ */
+function galFindSatellites(Lo, rgb, w, h, imgAspect) {
+  const n = w * h, out = [];
+  const tmp = new Float32Array(n), lab = new Int32Array(n), stack = new Int32Array(n);
+  for (const g of state.galaxies || []) {
+    if (!(g.rad >= 0.06)) continue;
+    const t = g.tilt * Math.PI / 180, cs = Math.cos(t), sn = Math.sin(t);
+    const reg = new Uint8Array(n);
+    for (let y = 0; y < h; y++) {
+      const qy = 0.5 - (y + 0.5) / h;
+      for (let x = 0; x < w; x++) {
+        const dx = ((x + 0.5) / w - 0.5) * imgAspect - g.x, dy = qy - g.y;
+        if (Math.hypot(cs * dx + sn * dy, (-sn * dx + cs * dy) / g.flat) < g.rad * 1.4) reg[y * w + x] = 1;
+      }
+    }
+    const hx = (g.x / imgAspect + 0.5) * w - 0.5, hy = (0.5 - g.y) * h - 0.5;
+    for (const rs of [Math.max(3, Math.round(w * 0.018)), Math.max(4, Math.round(w * 0.035))]) {
+      const M = openChannel(Lo, w, h, rs);
+      { const r = Math.max(2, Math.round(rs / 2)); for (let k = 0; k < 2; k++) { boxBlurH(M, tmp, w, h, r); boxBlurV(tmp, M, w, h, r); } }
+      const R = new Float32Array(n), vals = [];
+      for (let i = 0; i < n; i++) if (reg[i]) { R[i] = Lo[i] - M[i]; vals.push(Math.abs(R[i])); }
+      if (vals.length < 100) continue;
+      vals.sort((p, q) => p - q);
+      const sig = 1.4826 * vals[vals.length >> 1];
+      const th = Math.max(0.02, 5 * sig), pkMin = Math.max(0.06, 15 * sig);
+      lab.fill(-1);
+      for (let i0 = 0; i0 < n; i0++) {
+        if (!reg[i0] || lab[i0] >= 0 || R[i0] <= th) continue;
+        let sp = 0, cnt = 0, f = 0, fx = 0, fy = 0, fxx = 0, fyy = 0, fxy = 0, pk = 0, px = 0, py = 0, core = false;
+        stack[sp++] = i0; lab[i0] = i0;
+        while (sp) {
+          const i = stack[--sp], x = i % w, y = (i / w) | 0, v = R[i];
+          cnt++; f += v; fx += v * x; fy += v * y; fxx += v * x * x; fyy += v * y * y; fxy += v * x * y;
+          if (v > pk) { pk = v; px = x; py = y; }
+          if (Math.abs(x - hx) < 1.5 && Math.abs(y - hy) < 1.5) core = true;
+          for (let ddy = -1; ddy <= 1; ddy++) for (let ddx = -1; ddx <= 1; ddx++) {
+            const xx = x + ddx, yy = y + ddy;
+            if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+            const k = yy * w + xx;
+            if (lab[k] < 0 && reg[k] && R[k] > th) { lab[k] = i0; stack[sp++] = k; }
+          }
+        }
+        if (core || f <= 0) continue;
+        const mx = fx / f, my = fy / f;
+        const vxx = fxx / f - mx * mx, vyy = fyy / f - my * my, vxy = fxy / f - mx * my;
+        const tr = (vxx + vyy) / 2, dd = Math.sqrt(Math.max(0, ((vxx - vyy) / 2) ** 2 + vxy * vxy));
+        const l1 = Math.max(1e-6, tr + dd), l2 = Math.max(1e-6, tr - dd);
+        const a = 2.9 * Math.sqrt(l1), flat = Math.sqrt(l2 / l1);
+        if (Math.hypot(mx - hx, my - hy) / h < 0.08 || pk < pkMin || a < 0.025 * h ||
+          cnt < 0.0004 * n || flat < 0.4 || Math.hypot(px - mx, py - my) > 0.6 * a) continue;
+        const S = { mx, my, a, flat: Math.max(0.4, flat), phi: 0.5 * Math.atan2(2 * vxy, vxx - vyy) };
+        // Eigenes Licht gegen den Ring drumherum: Ein Begleiter hebt sich
+        // deutlich ab und hat die Farbe alter Sterne; Sternwolken der Scheibe
+        // (NGC 206 in M31) heben sich kaum ab und sind blau - sie kreisen mit
+        const ci = [0, 0, 0], cr = [0, 0, 0];
+        let ni = 0, nr = 0;
+        const R2 = Math.ceil(a * 1.7);
+        for (let y = Math.max(0, Math.floor(my - R2)); y <= Math.min(h - 1, Math.ceil(my + R2)); y++) {
+          for (let x = Math.max(0, Math.floor(mx - R2)); x <= Math.min(w - 1, Math.ceil(mx + R2)); x++) {
+            const d = Math.hypot(x - mx, y - my) / a, i = (y * w + x) * 3;
+            if (d < 0.5) { ci[0] += rgb[i]; ci[1] += rgb[i + 1]; ci[2] += rgb[i + 2]; ni++; }
+            else if (d > 1.3 && d < 1.7) { cr[0] += rgb[i]; cr[1] += rgb[i + 1]; cr[2] += rgb[i + 2]; nr++; }
+          }
+        }
+        if (!ni || !nr) continue;
+        const res = ci.map((v, k) => v / ni - cr[k] / nr);
+        const lumOf = (c) => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+        const ringL = lumOf(cr.map((v) => v / nr));
+        if (lumOf(res) < Math.max(0.05, 0.3 * ringL) || res[2] > 1.12 * Math.max(1e-3, res[0])) continue;
+        // auf beiden Skalen gefunden: die groessere (vollstaendigere) Form gilt
+        const dup = out.find((o) => Math.hypot(o.mx - mx, o.my - my) < 0.6 * Math.max(o.a, a));
+        if (!dup) out.push(S);
+        else if (a > dup.a) Object.assign(dup, S);
+      }
+    }
+  }
+  return out;
 }
 
 // Ausgewaehlte Galaxie <-> Regler: die bisherigen Regler (Zentrum, Radius,
@@ -4819,6 +5019,24 @@ function render(forcedT) {
   gl.viewport(0, 0, fbScene.w, fbScene.h);
   gl.clear(gl.COLOR_BUFFER_BIT);
 
+  // Galaxien-Rotation v2 (te-basiert -> im Loop-Modus nahtlos hin & zurueck).
+  // Aktiv bei Drehung oder zum Einrichten (Ellipsen-Vorschau). Neuaufbau der
+  // Galaxien-Texturen VOR dem Binden: makeTexture* bindet an die gerade
+  // aktive Einheit 0 und verdraengte dort sonst fuer dieses Bild das Foto
+  // (dunkles Bild, v. a. im Export nach einer Aenderung)
+  galSyncFromState();
+  const galShow = (state.spinShow || state.spinPick) && !state.exporting;
+  const galOn = state.spinSpeed !== 0 || galShow || state.galaxies.some((g) => g.auto);
+  if (galOn && state.starless && (galBkTex !== texColor || galBkSig !== galGeomSig())) {
+    if (state.exporting || !texGalBk) { clearTimeout(galBkTimer); galBkTimer = 0; buildGalaxyBg(); }
+    else if (!galBkTimer) galBkTimer = setTimeout(() => { galBkTimer = 0; buildGalaxyBg(); }, 250);
+  }
+  if (state.starless && (galStarSig() !== galStarsKey || galStarsTex !== texColor) && !galStarTimer) {
+    if (state.exporting) uploadStars();
+    else galStarTimer = setTimeout(() => { galStarTimer = 0; uploadStars(); }, 200);
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbScene.fb);
+  gl.viewport(0, 0, fbScene.w, fbScene.h);
   gl.disable(gl.BLEND);
   gl.useProgram(bgProg);
   gl.bindVertexArray(quadVao);
@@ -4828,10 +5046,13 @@ function render(forcedT) {
   gl.bindTexture(gl.TEXTURE_2D, texDepth);
   gl.activeTexture(gl.TEXTURE2);
   gl.bindTexture(gl.TEXTURE_2D, texGalBk || texBlack);
+  gl.activeTexture(gl.TEXTURE5);
+  gl.bindTexture(gl.TEXTURE_2D, (state.galSatOn !== false && texGalSat) || texClear);
   gl.activeTexture(gl.TEXTURE0);
   u1i(bgProg, "uColor", 0);
   u1i(bgProg, "uDepth", 1);
   u1i(bgProg, "uGalBk", 2);
+  u1i(bgProg, "uGalSat", 5);
   u1f(bgProg, "uViewAspect", viewAspect);
   u1f(bgProg, "uImgAspect", imgAspect);
   u1f(bgProg, "uZoom", cam.zoom);
@@ -4847,19 +5068,6 @@ function render(forcedT) {
   u2f(bgProg, "uColorTexel", 1 / (state.texColorW || 2048), 1 / texH);
   u1f(bgProg, "uBicubic", magnify > 1.05 ? 1 : 0);
   u1f(bgProg, "uObjFar", state.objFar ? 1 : 0);
-  // Galaxien-Rotation v2 (te-basiert -> im Loop-Modus nahtlos hin & zurueck).
-  // Aktiv bei Drehung oder zum Einrichten (Ellipsen-Vorschau)
-  galSyncFromState();
-  const galShow = (state.spinShow || state.spinPick) && !state.exporting;
-  const galOn = state.spinSpeed !== 0 || galShow || state.galaxies.some((g) => g.auto);
-  if (galOn && state.starless && (galBkTex !== texColor || galBkSig !== galGeomSig())) {
-    if (state.exporting || !texGalBk) { clearTimeout(galBkTimer); galBkTimer = 0; buildGalaxyBg(); }
-    else if (!galBkTimer) galBkTimer = setTimeout(() => { galBkTimer = 0; buildGalaxyBg(); }, 250);
-  }
-  if (state.starless && (galStarSig() !== galStarsKey || galStarsTex !== texColor) && !galStarTimer) {
-    if (state.exporting) uploadStars();
-    else galStarTimer = setTimeout(() => { galStarTimer = 0; uploadStars(); }, 200);
-  }
   const GU = galUniforms(cam.te);
   u1i(bgProg, "uGalN", galOn ? GU.N : 0);
   u4fv(bgProg, "uGalA", GU.A);
@@ -5372,6 +5580,7 @@ bindSlider("ctlDolly", "outDolly", "dolly", asInt);
 bindSlider("ctlZoomDrift", "outZoomDrift", "zoomDrift", asInt);
 $("ctlReverse").addEventListener("change", () => { state.reverse = $("ctlReverse").checked; });
 $("ctlGal3d").addEventListener("change", () => { state.gal3d = $("ctlGal3d").checked; });
+$("ctlGalSat").addEventListener("change", () => { state.galSatOn = $("ctlGalSat").checked; requestRender(); });
 bindSlider("ctlSpinRadius", "outSpinRadius", "spinRadius", (v) => ctlNum(v, 1));
 bindSlider("ctlSpinDiff", "outSpinDiff", "spinDiff", asInt);
 bindSlider("ctlSpinFlat", "outSpinFlat", "spinFlat", asInt);
@@ -7870,7 +8079,7 @@ const USER_PRESET_GROUPS = {
     "ctlFrameX", "ctlFrameY", "ctlTiltX", "ctlTiltY", "ctlSwayAmp",
     "ctlSwayTempo", "ctlSwayDir", "ctlSwayRandom", "ctlTiltRamp",
     "ctlTiltRampDir", "ctlFade", "ctlDuration", "ctlLoop", "ctlReverse", "ctlDolly", "ctlZoomDrift", "ctlSpinSpeed",
-    "ctlSpinDiff", "ctlSpinStars", "ctlGal3d", "ctlGal3dAmt", "ctlGalStars", "ctlGalGlow"],
+    "ctlSpinDiff", "ctlSpinStars", "ctlGal3d", "ctlGalSat", "ctlGal3dAmt", "ctlGalStars", "ctlGalGlow"],
   stars: ["ctlSpread", "ctlStarDist", "ctlLayers", "ctlStarPar", "ctlTwinkle",
     "ctlTwinkleSpeed", "ctlStarSize", "ctlStarBright", "ctlStarSat",
     "ctlGenStars", "ctlOcclude", "ctlStarCull", "ctlAnchor", "ctlAiry",

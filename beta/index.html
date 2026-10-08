@@ -696,6 +696,14 @@
       is tilted as its ellipse shows (the side with the dust lanes in front of the core is the near side),
       and the core bulges out as a sphere. You see it when the camera moves - best with the orbit flight.
       The arrow button in the list flips the near side.</p>
+      <label class="check">
+        <input type="checkbox" id="ctlGalSat" checked>
+        <span data-i18n="galSat">Keep companion galaxies still</span> <span id="galSatCount" class="hint"></span>
+        <button class="qm" data-help="hintGalSat">?</button>
+      </label>
+      <p class="tip hint2" id="hintGalSat" hidden data-i18n="galSatHint">Small companion galaxies in front of a
+      large galaxy (like M32 and M110 at Andromeda) do not orbit with its disc. They are found automatically and
+      stay where they are, while the disc keeps turning underneath them - without copies or stretching.</p>
       <label class="slider">
         <span><span data-i18n="gal3dAmt">Depth of the disc</span> <output id="outGal3dAmt">50</output></span>
         <input type="range" id="ctlGal3dAmt" min="0" max="100" step="1" value="50">
@@ -1251,8 +1259,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-10-06-92"></script>
+<script src="i18n.js?v=2026-10-08-95"></script>
 <script src="objectinfo.js?v=2026-10-06-92"></script>
-<script src="app.js?v=2026-10-07-94"></script>
+<script src="app.js?v=2026-10-08-95"></script>
 </body>
 </html>
