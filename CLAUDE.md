@@ -24,8 +24,10 @@ Volumetrischer Nebel, KI-Tiefenkarte, Kino-Presets (u. a. Kubrick, Reveal,
 Vertigo, Crane, Spiral, Arc, Schrägflug links/rechts mit Zoomfahrt),
 Rückwärtsflug, Dolly, Filmic/HDR-Bloom/Korn/Dithering, Supersampling-Export,
 Gaia-Abfrage über ESA-Archiv mit VizieR-Fallback.
-Bekannte Grenze: Begleitgalaxien (z. B. M32/M110 bei M31) drehen in der
-Scheibe mit und werden dabei verzogen.
+Beta v-95: Begleitgalaxien (z. B. M32/M110 bei M31) werden automatisch
+erkannt (`galFindSatellites`) und bleiben stehen, die Scheibe dreht darunter
+weiter (Schalter `ctlGalSat`); Galaxien-Texturen werden vor dem Binden neu
+aufgebaut (vorher konnte ein Bild im Export dunkel werden).
 
 
 - 3D-Parallaxe aus automatischer Tiefenkarte; Zoom- und Lateral-Flugmodus,
