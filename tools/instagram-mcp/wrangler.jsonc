@@ -1,0 +1,14 @@
+{
+  // Cloudflare-Worker-Konfiguration für den Instagram-MCP-Server.
+  // Deployen mit: npx wrangler deploy   (vorher: Secrets setzen, siehe README)
+  "name": "astrofly-instagram-mcp",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-01-01",
+
+  // KV-Namespace für die automatische Token-Erneuerung.
+  // Einmalig anlegen mit:  npx wrangler kv namespace create TOKENS
+  // ... und die ausgegebene ID hier eintragen:
+  "kv_namespaces": [
+    { "binding": "TOKENS", "id": "HIER_DIE_ID_EINTRAGEN" }
+  ]
+}
