@@ -23,7 +23,8 @@ Sternabbilder (Watershed-Segmentierung), Beugungsspikes + Airy-Kern,
 Volumetrischer Nebel, KI-Tiefenkarte, Kino-Presets (u. a. Kubrick, Reveal,
 Vertigo, Crane, Spiral, Arc, Schrägflug links/rechts mit Zoomfahrt),
 Rückwärtsflug, Dolly, Filmic/HDR-Bloom/Korn/Dithering, Supersampling-Export,
-Gaia-Abfrage über ESA-Archiv mit VizieR-Fallback.
+Gaia-Abfrage über VizieR-ASU in parallelen Kacheln (~1°, max. 48) mit
+GAVO-Heidelberg als Ausweichserver je Kachel (seit v2026-10-23-1).
 Beta v-95: Begleitgalaxien (z. B. M32/M110 bei M31) werden automatisch
 erkannt (`galFindSatellites`) und bleiben stehen, die Scheibe dreht darunter
 weiter (Schalter `ctlGalSat`); Galaxien-Texturen werden vor dem Binden neu
@@ -106,6 +107,8 @@ aufgebaut (vorher konnte ein Bild im Export dunkel werden).
    `localStorage.setItem("astrofly-tour-seen", "1")` setzen, sonst legt sich
    der geführte Einstieg über die Bedienelemente. Für SIMBAD-Änderungen
    zusätzlich live gegen den echten TAP-Server testen (Mocks reichen nicht).
+   Neue Katalogserver immer per `fetch` im echten Browser prüfen, nicht nur
+   mit curl: CORS entscheidet erst der Browser.
 6. **Monitoring:** ein täglicher Check-in um 07:00 UTC berichtet neue Issues
    und offene PRs. An Issues nichts fixen oder kommentieren, nur berichten –
    außer Michael bittet darum.
@@ -135,4 +138,8 @@ aufgebaut (vorher konnte ein Bild im Export dunkel werden).
 - SIMBAD-TAP-Eigenheiten: `ORDER BY` ohne Tabellenpräfix (Spalten-Alias
   nutzen), `galdim_majaxis` darf NULL sein, Idents haben doppelte
   Leerzeichen („NGC  6960")
+- Katalogserver im Browser (Stand Oktober 2026): ESA-Gaia-TAP sendet keinen
+  CORS-Header, TAPVizieR sendet ihn doppelt (`*, *`) – beides blockt der
+  Browser. Funktionieren: VizieR-ASU (`vizier.cds.unistra.fr/viz-bin/asu-tsv`),
+  SIMBAD-TAP, GAVO-TAP (`dc.zah.uni-heidelberg.de`, Sync-Limit ~20 s)
 - Commits enden mit Co-Authored-By-Zeile von Claude
