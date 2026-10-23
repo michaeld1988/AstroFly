@@ -3312,49 +3312,139 @@ function angSep(ra1, dec1, ra2, dec2) {
 }
 
 /**
- * Gaia DR3 abfragen (TAP, CSV, CORS-frei). Zuerst das ESA-Gaia-Archiv, das
- * auch große Felder in dichten Milchstraßenregionen in Sekunden liefert;
- * VizieR (CDS) bleibt Ausweichserver. Beide liefern dieselben Spalten in
- * derselben Reihenfolge.
+ * Gaia DR3 für das Bildfeld laden, hellste Sterne zuerst. Die TAP-Dienste
+ * scheiden im Browser aus: Das ESA-Archiv sendet keinen CORS-Header,
+ * TAPVizieR sendet ihn doppelt ("*, *") - beides blockiert der Browser. Die
+ * klassische VizieR-Schnittstelle (ASU) sendet ihn korrekt. Für "die hellsten
+ * N" muss der Server erst alle Sterne der Fläche lesen; ein großes, dichtes
+ * Milchstraßenfeld dauerte am Stück fast eine Minute. Darum wird das Bildfeld
+ * in Kacheln von etwa 1° zerlegt, die parallel laufen und je ihren
+ * Flächenanteil der hellsten Sterne liefern. Fällt eine Kachel bei CDS aus,
+ * springt das GAVO-Archiv (Heidelberg) für sie ein.
  */
-async function queryGaia(ra, dec, radiusDeg) {
-  const circle = `${ra.toFixed(6)},${dec.toFixed(6)},${radiusDeg.toFixed(4)}`;
-  const servers = [
-    { url: "https://gea.esac.esa.int/tap-server/tap/sync", timeout: 40000, tries: 2,
-      adql: `SELECT TOP 50000 ra,dec,phot_g_mean_mag,parallax,bp_rp,pmra,pmdec FROM gaiadr3.gaia_source ` +
-        `WHERE 1=CONTAINS(POINT('ICRS',ra,dec),CIRCLE('ICRS',${circle})) ` +
-        `AND parallax>0.05 ORDER BY phot_g_mean_mag` },
-    { url: "https://tapvizier.cds.unistra.fr/TAPVizieR/tap/sync", timeout: 60000, tries: 2,
-      adql: `SELECT TOP 50000 RA_ICRS,DE_ICRS,Gmag,Plx,"BP-RP",pmRA,pmDE FROM "I/355/gaiadr3" ` +
-        `WHERE 1=CONTAINS(POINT('ICRS',RA_ICRS,DE_ICRS),CIRCLE('ICRS',${circle})) ` +
-        `AND Plx>0.05 ORDER BY Gmag` },
-  ];
-  let csv = null, err = null;
-  for (const srv of servers) {
-    try {
-      csv = await fetchTapCsv(srv.url + "?REQUEST=doQuery&LANG=ADQL&FORMAT=csv&QUERY=" +
-        encodeURIComponent(srv.adql), srv.timeout, srv.tries);
-      if (/^\s*</.test(csv)) throw Object.assign(new Error("VOTable-Fehler"), { server: true, status: 500 });
-      break;
-    } catch (e) {
-      csv = null;
-      // Ein eindeutiger Server-/Zeitfehler sticht einen reinen Netzfehler
-      if (!err || e.server || e.timeout) err = e;
+async function queryGaia(wcs, nax1, nax2, maxStars, onProgress) {
+  // Bildfeld samt 3 % Rand (wie das Fenster in matchGaia) in Kacheln teilen.
+  // Das Raster liegt in der Tangentialebene (xi/eta, Grad) entlang RA/Dec -
+  // wie die Rechtecke, die VizieR versteht: Reihen von etwa 1° Höhe, jede
+  // genau so breit, wie das (oft gedrehte) Bild in dieser Höhe ist. Am Bild
+  // ausgerichtete Kacheln müssten bei gedrehten Bildern bis zu 56 % mehr
+  // Himmel abfragen.
+  const toPix = (xi, eta) => [wcs.crpix1 + wcs.icd[0] * xi + wcs.icd[1] * eta,
+    wcs.crpix2 + wcs.icd[2] * xi + wcs.icd[3] * eta];
+  let poly = [[-0.03, -0.03], [1.03, -0.03], [1.03, 1.03], [-0.03, 1.03]].map(([u, v]) => {
+    const dx = u * nax1 - wcs.crpix1, dy = v * nax2 - wcs.crpix2;
+    return [wcs.cd[0] * dx + wcs.cd[1] * dy, wcs.cd[2] * dx + wcs.cd[3] * dy];
+  });
+  // Weitwinkelfelder wie bisher auf 6° um die Bildmitte begrenzen - riesige
+  // Kacheln voller Milchstraße schafft kein Server im Zeitlimit
+  const mx = poly.reduce((s, p) => s + p[0], 0) / 4, my = poly.reduce((s, p) => s + p[1], 0) / 4;
+  const shrink = Math.min(1, 6 / Math.max(...poly.map(([x, e]) => Math.hypot(x - mx, e - my))));
+  poly = poly.map(([x, e]) => [mx + (x - mx) * shrink, my + (e - my) * shrink]);
+  const eMin = Math.min(...poly.map((p) => p[1])), eMax = Math.max(...poly.map((p) => p[1]));
+  // xi-Spanne des Bildes zwischen zwei eta-Linien (Ecken im Band plus
+  // Schnittpunkte der Kanten mit den Bandgrenzen)
+  const bandSpan = (b0, b1) => {
+    const xs = [];
+    poly.forEach(([x, e], k) => {
+      if (e >= b0 && e <= b1) xs.push(x);
+      const [x2, e2] = poly[(k + 1) % 4];
+      for (const b of [b0, b1]) if ((e - b) * (e2 - b) < 0) xs.push(x + (x2 - x) * (b - e) / (e2 - e));
+    });
+    return [Math.min(...xs), Math.max(...xs)];
+  };
+  let tile = 1.0, cells;
+  for (;;) {
+    const ny = Math.max(1, Math.ceil((eMax - eMin) / tile)), sy = (eMax - eMin) / ny;
+    cells = [];
+    for (let j = 0; j < ny; j++) {
+      const b = eMin + j * sy, [x0, x1] = bandSpan(b, b + sy);
+      const nx = Math.max(1, Math.ceil((x1 - x0) / tile)), sx = (x1 - x0) / nx;
+      for (let i = 0; i < nx; i++) {
+        const a = x0 + i * sx;
+        cells.push([[a, b], [a + sx, b], [a + sx, b + sy], [a, b + sy]]);
+      }
     }
+    if (cells.length <= 48) break;
+    tile *= 1.15;
   }
-  if (csv == null) throw err;
-  const lines = csv.trim().split("\n");
-  const out = [];
-  for (let i = 1; i < lines.length; i++) {
-    const p = lines[i].split(",");
-    if (p.length < 4) continue;
-    const ra_ = +p[0], dec_ = +p[1], plx = +p[3];
-    const bprp = p.length > 4 && p[4] !== "" ? +p[4] : NaN;
-    const pmra = p.length > 5 && p[5] !== "" ? +p[5] : NaN;  // mas/Jahr (inkl. cos δ)
-    const pmde = p.length > 6 && p[6] !== "" ? +p[6] : NaN;
-    if (isFinite(ra_) && isFinite(dec_) && plx > 0) out.push({ ra: ra_, dec: dec_, plx, bprp, pmra, pmde });
-  }
-  return out;
+  const perTile = Math.ceil((maxStars / cells.length) * 1.3);
+  const tiles = cells.map((quad) => {
+    const mid = toPix((quad[0][0] + quad[2][0]) / 2, (quad[0][1] + quad[2][1]) / 2);
+    const c = wcsPix2Sky(wcs, mid[0], mid[1]);
+    // RA/Dec-Rechteck um die vier Ecken (abseits der Bildmitte ist das
+    // Raster leicht gegen RA/Dec verdreht)
+    let hx = 0, hy = 0;
+    for (const [x, e] of quad) {
+      const s = wcsPix2Sky(wcs, ...toPix(x, e));
+      const dra = ((s.ra - c.ra + 540) % 360) - 180;
+      hx = Math.max(hx, Math.abs(dra * Math.cos(c.dec * D2R)));
+      hy = Math.max(hy, Math.abs(s.dec - c.dec));
+    }
+    return { ra: c.ra, dec: c.dec, w: 2 * hx + 0.002, h: 2 * hy + 0.002 };
+  });
+
+  const cols = (p, bprp) => ({ ra: +p[0], dec: +p[1], g: p[2].trim() === "" ? 99 : +p[2], plx: +p[3],
+    bprp: bprp(p), pmra: p[5].trim() === "" ? NaN : +p[5], pmde: p[6].trim() === "" ? NaN : +p[6] });
+  const viaVizier = async (tl) => {
+    const coord = `${tl.ra.toFixed(6)} ${tl.dec >= 0 ? "+" : ""}${tl.dec.toFixed(6)}`;
+    const txt = await fetchTapCsv("https://vizier.cds.unistra.fr/viz-bin/asu-tsv?-source=I/355/gaiadr3" +
+      `&-c=${encodeURIComponent(coord)}&-c.bd=${tl.w.toFixed(4)}x${tl.h.toFixed(4)}` +
+      `&-out=RA_ICRS,DE_ICRS,Gmag,Plx,BP-RP,pmRA,pmDE&-sort=Gmag&-out.max=${perTile}&Plx=%3E0.05`, 75000, 2);
+    // Auch eine leere Kachel trägt den Tabellenkopf - ohne ihn ging etwas schief
+    if (!/^#RESOURCE=/m.test(txt)) throw Object.assign(new Error("ASU-Fehler"), { server: true, status: 500 });
+    return txt.split("\n").filter((l) => l && l[0] !== "#").map((l) => l.split("\t"))
+      .filter((p) => p.length >= 7).map((p) => cols(p, (q) => (q[4].trim() === "" ? NaN : +q[4])));
+  };
+  const viaGavo = async (tl) => {
+    const r = Math.hypot(tl.w, tl.h) / 2;
+    const adql = `SELECT TOP ${perTile} ra,dec,phot_g_mean_mag,parallax,phot_bp_mean_mag,phot_rp_mean_mag,pmra,pmdec ` +
+      `FROM gaia.dr3lite WHERE 1=CONTAINS(POINT('ICRS',ra,dec),CIRCLE('ICRS',${tl.ra.toFixed(6)},${tl.dec.toFixed(6)},${r.toFixed(4)})) ` +
+      `AND parallax>0.05 ORDER BY phot_g_mean_mag`;
+    const csv = await fetchTapCsv("https://dc.zah.uni-heidelberg.de/tap/sync?REQUEST=doQuery&LANG=ADQL&FORMAT=csv" +
+      `&MAXREC=${perTile}&QUERY=${encodeURIComponent(adql)}`, 40000, 1);
+    if (/^\s*</.test(csv)) throw Object.assign(new Error("VOTable-Fehler"), { server: true, status: 500 });
+    // Spalten wie bei VizieR: BP-RP aus den beiden Einzelhelligkeiten
+    return csv.trim().split("\n").slice(1).map((l) => l.split(",")).filter((p) => p.length >= 8)
+      .map((p) => cols([p[0], p[1], p[2], p[3], "", p[6], p[7]],
+        () => (p[4] === "" || p[5] === "" ? NaN : p[4] - p[5])));
+  };
+
+  // Höchstens 6 Abfragen gleichzeitig (so viele Verbindungen öffnet der
+  // Browser ohnehin pro Server)
+  const seen = new Set(), out = [];
+  let done = 0, okTiles = 0, err = null, next = 0, vizierOk = false, vizierDown = false;
+  const worker = async () => {
+    while (next < tiles.length) {
+      const tl = tiles[next++];
+      let rows = null;
+      // Hängt CDS bis zum Zeitlimit, ohne je geliefert zu haben, gehen die
+      // übrigen Kacheln gleich nach Heidelberg, statt jede für sich zu warten.
+      // Hat CDS schon geliefert, war es nur eine besonders dichte Kachel.
+      if (!vizierDown) {
+        try { rows = await viaVizier(tl); vizierOk = true; } catch (e) { err = e; if (e.timeout && !vizierOk) vizierDown = true; }
+      }
+      if (!rows) try { rows = await viaGavo(tl); } catch (e) { if (!err || e.server || e.timeout) err = e; }
+      if (rows) {
+        okTiles++;
+        for (const s of rows) {
+          if (!isFinite(s.ra) || !isFinite(s.dec) || !(s.plx > 0)) continue;
+          // Nachbarkacheln überlappen: jeden Stern nur einmal
+          const key = Math.round(s.ra * 1e5) + ":" + Math.round(s.dec * 1e5);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push(s);
+        }
+      }
+      if (onProgress) onProgress(++done, tiles.length);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(6, tiles.length) }, worker));
+  // Ein paar ausgefallene Kacheln kosten nur dort die echten Tiefen; fehlt
+  // mehr als die Hälfte, lieber eine klare Fehlermeldung
+  if (okTiles * 2 < tiles.length) throw err || new Error("Gaia");
+  // matchGaia ordnet hellste zuerst zu
+  out.sort((a, b) => a.g - b.g);
+  return out.map(({ g, ...s }) => s);
 }
 
 /**
@@ -7375,7 +7465,7 @@ function updateGaiaStatus() {
     $("ctlGaiaOnly").checked = false;
   }
 
-  stageToast(gaiaTransient && gaiaTransient.key === "gaiaQuerying" ? t("gaiaQuerying") : null);
+  stageToast(gaiaTransient && gaiaTransient.key === "gaiaQuerying" ? t("gaiaQuerying", ...gaiaTransient.args) : null);
   if (gaiaTransient) { el.textContent = t(gaiaTransient.key, ...gaiaTransient.args); return; }
   if (g) {
     el.textContent = t("gaiaResult", g.matched, g.total, pct, g.dMin, g.dMax) +
@@ -7743,15 +7833,18 @@ $("btnGaia").addEventListener("click", async () => {
   if (!state.wcs || !state.maskStarCount) return;
   const wcs = state.wcs;
   const nax1 = wcs.naxis1 || state.stars.width, nax2 = wcs.naxis2 || state.stars.height;
-  const c = wcsPix2Sky(wcs, nax1 / 2, nax2 / 2);
-  // Radius: halbe Bilddiagonale plus etwas Reserve
-  const corner = wcsPix2Sky(wcs, 1, 1);
-  const radius = Math.min(6, angSep(c.ra, c.dec, corner.ra, corner.dec) * 1.1 + 0.02);
   gaiaTransient = { key: "gaiaQuerying", args: [] };
   updateGaiaStatus();
   $("btnGaia").disabled = true;
   try {
-    const stars = await queryGaia(c.ra, c.dec, radius);
+    // Gut dreimal so viele Katalogsterne wie Masken-Sterne: genug, damit
+    // jeder erkannte Stern sein Gegenstück findet, ohne Megabytes zu laden
+    const maxStars = Math.min(50000, Math.max(10000, 3 * state.maskStarCount));
+    const stars = await queryGaia(wcs, nax1, nax2, maxStars, (done, total) => {
+      if (total < 2 || !gaiaTransient || gaiaTransient.key !== "gaiaQuerying") return;
+      gaiaTransient.args = [done, total];
+      updateGaiaStatus();
+    });
     gaiaTransient = null;
     // Katalog behalten: Damit übersteht der Abgleich einen Masken-Neuaufbau
     // (Stretch, Spiegeln, neue Maske) ohne neue Netzabfrage

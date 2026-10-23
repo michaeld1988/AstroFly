@@ -356,21 +356,31 @@ async function querySimbadStars(ra, dec, radiusDeg) {
 
 /**
  * Gaia-DR3-Astrophysik (GSP-Phot/FLAME) für markante Sterne: Radius in
- * Sonnenradien, Masse, Alter, Temperatur, Entfernung. Eine Abfrage für alle
- * Positionen; Ergebnis wird als star.phys angehängt, fehlende Werte bleiben
- * einfach weg (für sehr helle oder extreme Sterne führt Gaia oft nur Teile).
+ * Sonnenradien, Masse, Alter, Temperatur, Entfernung. Ergebnis wird als
+ * star.phys angehängt, fehlende Werte bleiben einfach weg (für sehr helle oder extreme Sterne führt Gaia oft nur Teile).
  */
 async function queryStarParams(stars) {
   if (!stars.length) return;
-  const circles = stars.map((s) =>
-    `1=CONTAINS(POINT('ICRS',RA_ICRS,DE_ICRS),CIRCLE('ICRS',${s.ra.toFixed(6)},${s.dec.toFixed(6)},0.0015))`);
-  const adql = `SELECT TOP ${stars.length * 4} RA_ICRS, DE_ICRS, Teff, Dist, Rad, "Mass-Flame", "Age-Flame" ` +
-    `FROM "I/355/paramp" WHERE ${circles.join(" OR ")}`;
-  const url = "https://tapvizier.cds.unistra.fr/TAPVizieR/tap/sync?REQUEST=doQuery&LANG=ADQL&FORMAT=csv&QUERY=" +
-    encodeURIComponent(adql);
-  const lines = (await fetchTapCsv(url)).trim().split("\n");
-  for (let i = 1; i < lines.length; i++) {
-    const f = csvFields(lines[i]);
+  // TAPVizieR sendet den CORS-Header derzeit doppelt (blockiert der Browser),
+  // die klassische ASU-Schnittstelle nicht - sie kennt aber nur eine Position
+  // pro Abfrage, daher je Stern eine kleine Abfrage, sechs gleichzeitig
+  const rows = [];
+  let next = 0;
+  const worker = async () => {
+    while (next < stars.length) {
+      const s = stars[next++];
+      const coord = `${s.ra.toFixed(6)} ${s.dec >= 0 ? "+" : ""}${s.dec.toFixed(6)}`;
+      const url = "https://vizier.cds.unistra.fr/viz-bin/asu-tsv?-source=I/355/paramp" +
+        `&-c=${encodeURIComponent(coord)}&-c.rd=0.0015&-out.max=4` +
+        "&-out=RA_ICRS,DE_ICRS,Teff,Dist,Rad,Mass-Flame,Age-Flame";
+      try {
+        const txt = await fetchTapCsv(url, 20000, 2);
+        for (const l of txt.split("\n")) if (l && l[0] !== "#") rows.push(l.split("\t").map((x) => x.trim()));
+      } catch { /* optional: dieser Stern bleibt ohne Zusatzinfos */ }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(6, stars.length) }, worker));
+  for (const f of rows) {
     if (f.length < 7) continue;
     const ra = +f[0], dec = +f[1];
     if (!isFinite(ra) || !isFinite(dec)) continue;
