@@ -480,14 +480,14 @@
         photo, in motion the layers slide over each other like real gas.</p>
         <label class="check">
           <input type="checkbox" id="ctlLdi">
-          <span data-i18n="ldi">Layered depth (multiplane, alpha)</span>
+          <span data-i18n="ldi">Layered depth (multiplane, experimental)</span>
           <button class="qm" data-help="hintLdi">?</button>
         </label>
-        <p class="tip hint2" id="hintLdi" hidden data-i18n="ldiHint">Splits the image into depth
-        layers along the depth map and fills in what each layer hides behind the nearer ones.
-        The layers then slide rigidly over each other – no folds, no holes, so parallax and
-        depth range can go much further. Replaces the volumetric nebula while on; not used
-        with rotating galaxies or the Moon. Building takes a moment.</p>
+        <p class="tip hint2" id="hintLdi" hidden data-i18n="ldiHint">Experimental. Splits the
+        image into depth layers along the depth map and fills in what each layer hides behind
+        the nearer ones; the layers then slide rigidly over each other. Works for images with
+        distinct depth planes; on smooth, brightness-based depth maps it slices the nebula into
+        visible rings – then leave it off.</p>
         <label class="slider">
           <span><span data-i18n="ldiLayers">Number of layers</span> <output id="outLdiLayers">5</output></span>
           <input type="range" id="ctlLdiLayers" min="3" max="8" step="1" value="5">
