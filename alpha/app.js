@@ -1,0 +1,10020 @@
+/* AstroFly – 3D camera flight through astrophotos
+ *
+ * Pipeline:
+ *   starless image -> color texture + depth map (smoothed luminance)
+ *   star mask      -> star particles (blob detection) with individual 3D depth
+ *   WebGL2 pass 1  -> scene (parallax nebula + stars) into framebuffer
+ *   WebGL2 pass 2  -> bloom (bright pass + Gaussian blur at quarter resolution)
+ *   WebGL2 pass 3  -> composite: motion blur, warp fringing,
+ *                     vignette, fade in/out
+ *   WebCodecs / MediaRecorder -> export as MP4/WebM
+ */
+
+"use strict";
+
+// ---------------------------------------------------------------- Zustand
+
+const state = {
+  starless: null,        // { canvas, width, height, name }
+  stars: null,
+  starsOriginal: null,   // unbearbeitete Sternmaske (für Streckung an/aus)
+  depthCanvas: null,
+  starCount: 0,
+
+  aspect: 16 / 9,
+  aspectName: "16:9",
+  strictEdges: true,     // Ausschnitt nie über die echte Bildfläche (sonst Spiegelränder)
+
+  flightMode: "zoom",    // "zoom" = auf den Nebel zu, "lateral" = seitlicher Flug
+  driftDir: 90,          // Flugrichtung beim seitlichen Flug in Grad
+  zoomBase: 1,
+  speed: 40,             // 0..100 (beim seitlichen Flug: Fahrstrecke)
+  ease: 60,              // Beschleunigen/Abbremsen 0..100
+  easeMode: "linear",    // inout | in | out | linear
+  parallax: 60,          // 0..100
+  depthBoost: 33,        // Räumlichkeit/Tiefenumfang 0..100
+  rotationSpeed: 0,      // °/s
+  orientation: 0,        // °
+  frameX: 0,             // Ausschnitt-Verschiebung -100..100 (an Bildkante geklemmt)
+  frameY: 0,
+  spinSpeed: 0,          // Galaxien-Rotation im Kern in °/s (0 = aus)
+  spinRadius: 40,        // Wirkradius in % 
+  spinDiff: 40,          // 0 = starr, 100 = innen deutlich schneller
+  spinFlat: 0,           // Ellipsen-Stauchung für geneigte Galaxien 0..100
+  spinTilt: 0,           // Ellipsen-Winkel in Grad
+  spinCenter: { x: 0, y: 0 }, // Rotationszentrum in Ebenen-Einheiten (= ausgewaehlte Galaxie)
+  galaxies: [],          // Galaxien-Rotation v2: [{ x, y, rad, flat, tilt, twist, dir, name, auto }]
+  galSel: 0,             // ausgewaehlte Galaxie (Regler bearbeiten diese)
+  gal3d: true,           // Galaxien als 3D-Scheibe (Tiefe aus Neigung + Kern-Woelbung)
+  galSatOn: true,        // Begleitgalaxien (M32/M110 u. a.) stehen lassen statt mitzudrehen
+  gal3dAmt: 50,          // Tiefe der Scheibe 0..100
+  galStars: 50,          // Sterne ziehen durch die Arme 0..100
+  galGlow: 40,           // Kern-Gluehen beim Anflug 0..100
+  spinPick: false,       // nächster Klick setzt das Rotationszentrum
+  labelPick: false,      // nächster Klick setzt ein eigenes Objekt-Label
+  spinShow: false,       // Rotationsbereich als rote Maske einblenden
+  spinStars: false,      // Sterne im Rotationsbereich mitdrehen
+  tiltX: 0,              // -100..100
+  tiltY: 0,
+  swayAmp: 0,            // Schwenk-Animation Stärke 0..100
+  swayTempo: 40,         // Schwenk-Tempo 0..100
+  swayDir: 0,            // Schwenk-Richtung in Grad
+  swayRandom: 0,         // 0 = gerichtet, 100 = zufälliges Wackeln
+  tiltRampAmp: 0,        // gerichteter Kipp-Schwenk: Stärke 0..100
+  tiltRampDir: 0,        // Kipp-Richtung in Grad
+  fade: 0,               // Ein-/Ausblenden in Zehntelsekunden (0 = aus)
+  duration: 20,          // s
+  loopMode: false,       // hin & zurück, nahtlos
+  reverse: false,        // Flug rueckwaerts: vom Ziel zurueck ins Gesamtbild (Reveal / Pull-out)
+  dolly: 0,              // Dolly-Zoom (Vertigo) 0..100: Objektiv zoomt gegen die Fahrt
+  zoomDrift: 30,         // Seit-/Schraegflug: langsam heranzoomen 0..100 (100 = 2x ueber den Flug)
+  smooth: 18,
+  depthRes: 768,        // Kantenlaenge der Tiefenkarte (768/1536/2048)
+  customDepth: null,     // eigene, importierte Tiefenkarte { canvas, width, height }
+  aiDepth: null,         // KI-Tiefenkarte (Depth Anything): { data: Float32Array 0..1, w, h }
+  depthAiMix: 100,       // Anteil der KI-Karte an der Tiefenkarte in %
+  vol: true,             // Volumetrischer Nebel: Grund-Leuchten + Strukturen + Staub als Schichten
+  volSpread: 50,         // Abstand Grund-Leuchten hinter den Strukturen 0..100
+  volDust: 0,            // Staub schwebt vor dem Leuchten 0..100 (0 = aus; fuer ausgepraegte Dunkelwolken)
+  srcFiles: { starless: null, stars: null, depth: null }, // Original-Dateien (Projekt-Speicherung)
+  invertDepth: false,
+  target: { x: 0, y: 0 }, // Zoomziel in Bildebenen-Einheiten (0,0 = Mitte)
+
+  spread: 70,            // Stern-Ebenen-Streuung 0..100
+  starDist: 55,          // Stern-Grundtiefe (Abstand zum Nebel) 0..100
+  starLayers: 0,         // Anzahl diskreter Tiefen-Ebenen (0 = kontinuierlich)
+  genStars: 0,           // Anzahl zusätzlich generierter (synthetischer) Sterne
+  starPar: 100,          // Stern-Parallaxe in % (Bewegung relativ zum Nebel)
+  maskStretched: false,  // Sternmaske ist bereits gestreckt -> keine Auto-Streckung
+  stretchAmount: 50,     // Intensität der Auto-Streckung 0..100
+  twinkle: 25,           // 0..100
+  wcs: null,             // Plate-Solve-Lösung (aus FITS/WCS-Header)
+  gaiaDepth: null,       // echte Tiefe je Masken-Stern (Float32Array, -1 = keine)
+  gaiaAmt: 100,          // echte Tiefen wirken nach dem Abgleich immer voll
+  gaiaInfo: null,        // { matched, total, dMin, dMax } für die Statuszeile
+  gaiaOnly: false,       // Wissenschafts-Modus: nur Sterne mit echter Tiefe
+  gaiaColorRGB: null,    // echte Katalogfarben je Masken-Stern (RGB, -1 = keine)
+  gaiaColors: false,     // Katalogfarben statt Fotofarben verwenden
+  gaiaPM: null,          // Eigenbewegung je Masken-Stern (Ebene/Jahr)
+  gaiaPmYears: 0,        // Zeitraffer-Spanne in Jahren (0 = aus)
+  objFar: false,         // Objekt einheitlich in die Ferne (hinter alle Sterne)
+  occlude: 0,
+  scenarioOn: false,     // Szenario-Flug: Kamera fliegt die Wegpunkte ab
+  scenEdit: false,       // Flugplan-Einrichtung: Kamera folgt dem Steuerkreuz
+  scenView: { x: 0, y: 0, zoom: 1, angle: 0 }, // aktuell eingerichteter Blick
+  waypoints: [],         // [{ x, y, zoom, dur, hold, ease }] in Ebenen-Einheiten
+  moonMode: false,       // Mond-Modus: Kugel-Tiefe statt Luminanz-Tiefe
+  moonDisk: null,        // erkannte Mondscheibe { cx, cy, r } (normiert auf Bildbreite)
+  moonObj: "moon",       // Auswahl im Bilder-Tab: moon | planet (gleiche Kugel-Logik)
+  starDetails: true,     // Sternphysik (Größe/Alter) in Labels anzeigen
+  realStars: true,       // hellste Sterne mit ihrem echten Pixel-Abbild rendern
+  starImage: false,      // Kino-Modus: Sternmaske als Bildebene (fotografische Sterne)
+  starCull: 0,           // kleinste Sterne ausblenden (0 = alle, 100 = nur die groessten)
+  flipH: false,          // Bild horizontal gespiegelt (Starless + Maske)
+  flipV: false,          // Bild vertikal gespiegelt
+  flipOnlyStarless: false, // Spiegeln wirkt nur aufs Starless (Maske/Koordinaten bleiben)
+  anchorStars: 100,      // % Sterne im Nebel verankern (100 = physikalisch korrekt)
+  objInfo: null,         // erkanntes Hauptobjekt { id, facts, otype }
+  cardCustom: {},        // Infokarte: eigene Felder (name, type, size, dist, age, note)
+  labels: null,          // Feld-Beschriftungen [{ id, x, y, sizePlane, otype, on }]
+  showInfo: true,        // Infokarte ins Video einblenden
+  showLabels: true,      // Feld-Beschriftungen ins Video einblenden
+  labelStyle: "editorial", // Stil der Beschriftungen (editorial/glass/hud/micro/focus/classic)
+  twinkleSpeed: 100,     // Funkel-Tempo in %
+  starSize: 100,         // % Sterngröße
+  starBright: 100,       // % Sternhelligkeit
+  starSat: 100,          // % Sternsättigung
+  seed: 1,               // Zufalls-Seed für Stern-Ebenen
+
+  bloom: 0,              // 0..100
+  mblur: 0,              // 0..100
+  mblurStars: false,     // Bewegungsunschärfe nur auf die Sterne
+  warp: 0,               // 0..100
+  vignette: 0,           // 0..100
+  grain: 0,              // Filmkorn 0..100
+  filmic: 0,             // filmische Tonwertkurve 0..100
+  airy: false,           // Airy-Kern: Beugungsscheibchen statt Gauss-Glocke
+  spikes: 0,             // Beugungsspikes: Staerke 0..100 (0 = aus)
+  spikeArms: 4,          // Anzahl der Spikes (4, 6, 8)
+  spikeRot: 0,           // Drehung der Spikes in Grad
+  organic: 35,           // organischer Strahlenkranz aus der Sternbibliothek 0..100
+  superSample: true,     // Export intern in 2x Aufloesung rendern und runterrechnen
+  renderScale: 1,        // aktueller Supersampling-Faktor (nur waehrend des Exports > 1)
+  exposure: 0,           // -100..100 (Blendenstufen ±2)
+  contrast: 0,           // -100..100
+  saturation: 0,         // -100..100
+  clarity: 0,            // -100..100 (negativ = weich/Orton)
+  structure: 0,          // -100..100 (feine Details, Multi-Scale-Lokalkontrast)
+  h2Sat: 100,            // Nebelfarben: Sättigung Rot/H-alpha in %
+  o3Sat: 100,            //   Türkis/OIII
+  s2Sat: 100,            //   Gold/SII
+  h2Hue: 0,              // Nebelfarben: Farbton-Shift in Grad (-45..45)
+  o3Hue: 0,
+  s2Hue: 0,
+  h2Det: 0,              // Erkennungs-Farbton je Band in Grad (0..360)
+  o3Det: 184,
+  s2Det: 34,
+  h2Width: 35,           // Erkennungs-Bereich je Band in ±Grad
+  o3Width: 45,
+  s2Width: 25,
+  bandShow: "off",       // Erkennungsmaske in der Vorschau: off/h2/o3/s2
+  bandFeather: 50,       // weiche Kante der Banderkennung in % (50 = neutral)
+  sharpen: 0,            // 0..100
+
+  viewScale: 70,         // Vorschaugröße in % der verfügbaren Fläche
+
+  playing: true,
+  t0: performance.now(),
+  pausedAt: 0,
+
+  exporting: false,
+  offlineExport: false,
+};
+
+const $ = (id) => document.getElementById(id);
+const canvas = $("glcanvas");
+
+// ---------------------------------------------------------------- WebGL
+
+const gl = canvas.getContext("webgl2", {
+  antialias: false, // Szene wird in FBO gerendert, MSAA griffe hier nicht
+  preserveDrawingBuffer: true, // nötig für captureStream in manchen Browsern
+});
+if (!gl) {
+  alert(t("webgl2"));
+  throw new Error("no webgl2");
+}
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    throw new Error("Shader: " + gl.getShaderInfoLog(s));
+  }
+  return s;
+}
+
+function program(vsSrc, fsSrc) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vsSrc));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fsSrc));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    throw new Error("Link: " + gl.getProgramInfoLog(p));
+  }
+  return p;
+}
+
+const locCache = new Map();
+function loc(prog, name) {
+  let m = locCache.get(prog);
+  if (!m) { m = new Map(); locCache.set(prog, m); }
+  let l = m.get(name);
+  if (l === undefined) { l = gl.getUniformLocation(prog, name); m.set(name, l); }
+  return l;
+}
+const u1f = (p, n, v) => gl.uniform1f(loc(p, n), v);
+const u1i = (p, n, v) => gl.uniform1i(loc(p, n), v);
+const u2f = (p, n, x, y) => gl.uniform2f(loc(p, n), x, y);
+const u3f = (p, n, x, y, z) => gl.uniform3f(loc(p, n), x, y, z);
+const u4fv = (p, n, arr) => gl.uniform4fv(loc(p, n), arr);
+
+// Maximale Texturkante: hochskalierte Bilder dürfen bis 8192 px nutzen
+const MAX_TEX = Math.min(8192, gl.getParameter(gl.MAX_TEXTURE_SIZE));
+
+// --- Vollbild-Vertexshader (für alle Bildschirm-Pässe) ---
+
+const quadVS = `#version 300 es
+layout(location=0) in vec2 aPos;
+out vec2 vUv;
+void main() {
+  vUv = aPos * 0.5 + 0.5;
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}`;
+
+// --- Pass 1a: Hintergrund (Starless + Tiefenkarte, Parallax-Zoom) ---
+
+const bgFS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D uColor;
+uniform sampler2D uDepth;
+uniform vec2 uColorTexel;   // 1 Texel der Farbtextur in UV
+uniform float uBicubic;     // 1 = bikubisch abtasten (beim Hineinzoomen)
+uniform float uObjFar;      // 1 = Objekt einheitlich in die Ferne legen
+uniform float uViewAspect;  // Breite/Höhe des Ausgabeformats
+uniform float uImgAspect;   // Breite/Höhe des Bildes
+uniform float uMoonMode;    // Mond-Modus: Himmel ausserhalb der Scheibe schwarz
+uniform vec2 uMoonC;        // Scheibenzentrum in Textur-UV
+uniform float uMoonR;       // Scheibenradius als Anteil der Bildbreite
+uniform float uZoom;        // aktueller Gesamtzoom
+uniform float uParallax;    // 0..1
+uniform float uAngle;       // rad
+uniform float uCover;       // Grundskalierung, damit Bild das Format füllt
+uniform vec2 uCenter;       // Kameraziel in Bildebenen-Einheiten
+uniform vec2 uTilt;         // Kipp-Parallaxe in Bildebenen-Einheiten
+uniform float uDepthRange;  // Räumlichkeit: Spreizung der Tiefen-Zoomraten
+// Galaxien-Rotation v2: bis zu 8 Galaxien, je eine Ellipse (Scheibenebene)
+uniform int uGalN;          // Anzahl der Galaxien (0 = aus)
+uniform vec4 uGalA[8];      // Zentrum x, y (Ebene), grosse Halbachse, Stauchung b/a
+uniform vec4 uGalB[8];      // cos/sin der Ellipsenlage, Drehwinkel (rad), Wirbel innen (rad)
+uniform sampler2D uGalBk;   // Himmel hinter den Galaxien (aus der Umgebung aufgefuellt)
+uniform sampler2D uGalSat;  // Begleitgalaxien: rgb = Wirtslicht ohne Begleiter, a = Maske (s. galFindSatellites)
+uniform float uSpinShow;    // 1 = Galaxien-Ellipsen einblenden
+uniform float uGalSel;      // ausgewaehlte Galaxie (Vorschau hervorheben)
+uniform float uGal3D;       // 1 = Galaxien als 3D-Scheibe: Tiefe ist Geometrie und dreht NICHT mit
+uniform float uGalGlow;     // Kern-Gluehen (waechst mit dem Anflug), 0 = aus
+uniform vec3 uBandSat;      // Nebelfarben: Sättigung je Band (HII, OIII, SII)
+uniform vec3 uBandHue;      // Nebelfarben: Farbton-Shift je Band (Kreisanteil)
+uniform vec3 uBandCen;      // Erkennungs-Farbton je Band (Kreisanteil, einstellbar)
+uniform vec3 uBandWidth;    // Erkennungs-Bereich je Band (Kreisanteil, einstellbar)
+uniform float uBandShow;    // Erkennungsmaske: 0 = aus, 1 = HII, 2 = OIII, 3 = SII
+uniform float uBandFeather; // weiche Kante der Banderkennung (0 = hart, 1 = sehr weich)
+uniform float uBandOn;      // 1 = mindestens ein Band-Regler aktiv
+uniform float uVol;         // Volumetrischer Nebel: 1 = an
+uniform sampler2D uVolD;    // rgb = entstaubtes Leuchten (aufgefuellt), a = Staubmaske
+uniform sampler2D uVolB;    // Grund-Leuchten (glatt, geringe Aufloesung, Float)
+uniform float uVolSep;      // so weit liegt das Grund-Leuchten hinter den Strukturen
+uniform float uVolDustZ;    // so weit liegt der Staub vor der lokalen Tiefe
+
+vec2 imgUv(vec2 q) {
+  return vec2(q.x / uImgAspect, q.y) + 0.5;
+}
+
+vec3 rgb2hsv(vec3 c) {
+  vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+  vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+  vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+  float d = q.x - min(q.w, q.y);
+  float e = 1.0e-10;
+  return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+vec3 hsv2rgb(vec3 c) {
+  vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+  vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+  return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+// C1-stetiges Farbton-Fenster: flacher Kern (voller Griff) mit Kosinus-
+// Auslauf, Ableitung an beiden Enden 0 - keine sichtbaren Kanten in
+// Verläufen. Der Feather verschiebt das Verhältnis Kern/Auslauf
+float bandW(float h, float center, float width) {
+  float d = abs(fract(h - center + 0.5) - 0.5);
+  if (d >= width) return 0.0;
+  float core = width * mix(0.55, 0.1, uBandFeather);
+  if (d <= core) return 1.0;
+  float t = (d - core) / (width - core);
+  return 0.5 + 0.5 * cos(3.14159265 * t);
+}
+
+// Galaxien-Rotation v2 - warum nichts mehr verzerrt oder doppelt erscheint:
+// Spiralarme sind Dichtewellen, deren MUSTER sich starr dreht. Deshalb dreht
+// sich jede Galaxie starr in ihrer (geneigten) Scheibenebene - eine reine
+// Drehung verzerrt nie. Dazu kommt ein kleiner, BEGRENZTER Wirbel (innen
+// etwas voraus), der mit dem Winkel waechst, aber bei ~11 Grad sattigt:
+// das wirkt organisch, wickelt sich aber nie auf. Der Winkel haengt nur vom
+// Ellipsenradius ab - jeder Ring dreht in sich, die Abbildung bleibt
+// eindeutig (keine Doppelbilder; die alte Helligkeitsmaske verletzte das).
+// Gedreht wird nur das Licht der Galaxie UEBER dem Himmel; der Himmel
+// dahinter (aufgefuellt) bleibt stehen - keine Scherzone am Rand
+vec2 galE(vec2 q, int k) {
+  vec2 d = q - uGalA[k].xy;
+  float c = uGalB[k].x, s = uGalB[k].y;
+  vec2 e = vec2(c * d.x + s * d.y, -s * d.x + c * d.y);
+  e.y /= uGalA[k].w;
+  return e;
+}
+vec2 galBack(vec2 e, int k) {
+  float c = uGalB[k].x, s = uGalB[k].y;
+  e.y *= uGalA[k].w;
+  return uGalA[k].xy + vec2(c * e.x - s * e.y, s * e.x + c * e.y);
+}
+// Galaxie, in deren Ellipse q liegt (-1 = keine); r = Ellipsenradius 0..1
+int galAt(vec2 q, out float rOut, out vec2 eOut) {
+  int best = -1;
+  float rb = 1.0;
+  eOut = vec2(0.0);
+  for (int k = 0; k < 8; k++) {
+    if (k >= uGalN) break;
+    vec2 e = galE(q, k);
+    float r = length(e) / uGalA[k].z;
+    if (r < rb) { rb = r; best = k; eOut = e; }
+  }
+  rOut = rb;
+  return best;
+}
+// Abtast-Drehung (der Inhalt dreht um +Winkel): starr + Wirbel innen.
+// rim = 1: Farbe (starr bis zum Rand, der Rand wird uebergeblendet);
+// rim = 0: Tiefe - sie laeuft am Rand weich auf die stehende Tiefe aus,
+// sonst springt die Parallaxe am Ellipsenrand und reisst eine Kante auf
+// (die Tiefe ist glatt, eine Scherung dort ist unsichtbar)
+vec2 spinWarpR(vec2 q, float rim) {
+  if (uGalN == 0 || (rim < 0.5 && uGal3D > 0.5)) return q;
+  float r; vec2 e;
+  int k = galAt(q, r, e);
+  if (k < 0) return q;
+  float t = 1.0 - r;
+  float a = (uGalB[k].z + uGalB[k].w * t * t) * (rim > 0.5 ? 1.0 : smoothstep(1.0, 0.75, r));
+  // Bulge-Schutz: Der Kern einer Galaxie ist eine Kugel, keine Scheibe. In
+  // der geneigten Scheibenebene mitgedreht wuerde er zum schiefen Oval
+  // gezogen (bei M31 schon ab ~6 Grad sichtbar). Je geneigter die Scheibe,
+  // desto weiter innen bleibt das Licht stehen; die Drehung setzt nach aussen
+  // weich ein. Der Winkel haengt weiter nur vom Ellipsenradius ab - jeder
+  // Ring dreht in sich, keine Doppelbilder
+  float incl = clamp((1.0 - uGalA[k].w) * 2.0, 0.0, 1.0);
+  a *= mix(1.0, smoothstep(0.05, 0.45, r), incl);
+  float ca = cos(a), sa = sin(a);
+  return galBack(vec2(ca * e.x + sa * e.y, -sa * e.x + ca * e.y), k);
+}
+vec2 spinWarp(vec2 q) { return spinWarpR(q, 1.0); }
+
+// Gradienten fuer die Mipmap-Wahl der Farbtextur: aus der UNGEDREHTEN
+// Bildposition (in main gesetzt). Eine Drehung aendert den Massstab nicht,
+// aber am Rand einer drehenden Galaxie springt die gedrehte Position von
+// Pixel zu Pixel - automatische Ableitungen waehlten dort eine verwaschene
+// Mipmap (gestrichelte Linie auf dem Ellipsenrand)
+vec2 gDx, gDy;
+
+// Farbabtastung: beim Hineinzoomen bikubisch (Catmull-Rom, 9 bilineare
+// Taps) statt nur bilinear - deutlich weniger Verpixelung bei Zoom > 1
+vec3 sampleCol(vec2 uv) {
+  if (uBicubic > 0.5) {
+    vec2 pos = uv / uColorTexel - 0.5;
+    vec2 f = fract(pos);
+    vec2 base = (pos - f + 0.5) * uColorTexel;
+    vec2 f2 = f * f, f3 = f2 * f;
+    vec2 w0 = -0.5 * f3 + f2 - 0.5 * f;
+    vec2 w1 =  1.5 * f3 - 2.5 * f2 + 1.0;
+    vec2 w2 = -1.5 * f3 + 2.0 * f2 + 0.5 * f;
+    vec2 w3 =  0.5 * f3 - 0.5 * f2;
+    vec2 w12 = w1 + w2;
+    vec2 uv12 = base + (w2 / w12) * uColorTexel;
+    vec2 uv0 = base - uColorTexel;
+    vec2 uv3 = base + 2.0 * uColorTexel;
+    vec3 col =
+      textureGrad(uColor, vec2(uv0.x,  uv0.y), gDx, gDy).rgb  * (w0.x  * w0.y) +
+      textureGrad(uColor, vec2(uv12.x, uv0.y), gDx, gDy).rgb  * (w12.x * w0.y) +
+      textureGrad(uColor, vec2(uv3.x,  uv0.y), gDx, gDy).rgb  * (w3.x  * w0.y) +
+      textureGrad(uColor, vec2(uv0.x,  uv12.y), gDx, gDy).rgb * (w0.x  * w12.y) +
+      textureGrad(uColor, vec2(uv12.x, uv12.y), gDx, gDy).rgb * (w12.x * w12.y) +
+      textureGrad(uColor, vec2(uv3.x,  uv12.y), gDx, gDy).rgb * (w3.x  * w12.y) +
+      textureGrad(uColor, vec2(uv0.x,  uv3.y), gDx, gDy).rgb  * (w0.x  * w3.y) +
+      textureGrad(uColor, vec2(uv12.x, uv3.y), gDx, gDy).rgb  * (w12.x * w3.y) +
+      textureGrad(uColor, vec2(uv3.x,  uv3.y), gDx, gDy).rgb  * (w3.x  * w3.y);
+    return max(col, 0.0);
+  }
+  return textureGrad(uColor, uv, gDx, gDy).rgb;
+}
+
+// Tiefe fuer die Iteration: R = Struktur-Tiefe (steilheitsbegrenzt), G =
+// grossraeumig geglaettete Tiefe des Grund-Leuchtens (nie vor den Strukturen)
+float depthOf(vec2 uv, float mode) {
+  vec4 t = texture(uDepth, uv);
+  if (mode > 0.5) return min(t.g, t.r) - uVolSep;
+  return mix(t.r, 0.02, uObjFar);
+}
+// Bildpunkt zu einem Bildschirmpunkt: Fixpunkt-Iteration der Parallaxe.
+// Die Tiefenkarte ist so steilheitsbegrenzt, dass die Abbildung ueber den
+// ganzen Flug kontrahiert (k <= 0,5): die Loesung ist eindeutig, fuenf
+// Schritte druecken den Restfehler unter 4 %, die lokale Dehnung bleibt
+// unter 1/(1-k) = 2-fach - keine Doppelbilder, kein Flimmern an Tiefenkanten
+// rigid = 1: Farbe starr gedreht (Strukturen); 0: weich am Ellipsenrand
+// auslaufend (glattes Grund-Leuchten und Staub - sie loesen mit eigener
+// Tiefe und laegen sonst auf einem schmalen Ring ausserhalb der Ellipse
+// gedreht neben ungedrehtem Bild: feiner Riss am Rand)
+vec2 solveUv(vec2 pr, float mode, float off, out vec2 qOut, float rigid) {
+  vec2 q = uCenter + pr / (uCover * uZoom);
+  vec2 uvD = imgUv(spinWarpR(q, 0.0));
+  for (int i = 0; i < 5; i++) {
+    float d = depthOf(uvD, mode) + off;
+    float ex = 1.0 + uParallax * (d - 0.45) * uDepthRange;
+    float scale = uCover * pow(uZoom, ex);
+    q = uCenter + pr / scale + uTilt * (d - 0.45);
+    uvD = imgUv(spinWarpR(q, 0.0));
+  }
+  qOut = q;
+  return uGalN > 0 && rigid > 0.5 ? imgUv(spinWarp(q)) : uvD;
+}
+// Entstaubtes Leuchten: ausserhalb der Staubmaske das Originalbild in
+// voller Aufloesung, innerhalb das aufgefuellte Leuchten hinter dem Staub
+// Entstaubt = je Kanal das Hellere aus Original und Auffuellung: Staub ist
+// damit eine reine Abdunklung (Verhaeltnis <= 1), und helle Details am Rand
+// einer Staubstelle leben nur im Leuchten - sie koennen sich beim
+// Verschieben nicht auf zwei Schichten aufteilen (kein Geisterstreifen)
+float dustW(float a) { return smoothstep(0.0, 0.3, a); }
+vec3 emission(vec2 uv) {
+  vec4 D = texture(uVolD, uv);
+  vec3 c = sampleCol(uv);
+  return mix(c, max(c, D.rgb), dustW(D.a));
+}
+// Volumetrischer Nebel v2 - drei Schichten, jede mit eigener, faltungsfreier
+// Tiefe, im Ruhezustand exakt das Originalbild:
+//  1. Grund-Leuchten B (glatt, liegt um uVolSep hinter den Strukturen)
+//  2. Strukturen = entstaubtes Leuchten minus Grund-Leuchten (fliegen auf
+//     der Tiefenkarte) - additiv wie echtes, durchscheinendes Gas
+//  3. Staub als Durchlaessigkeit (Original / entstaubt), knapp VOR der
+//     lokalen Tiefe: er schiebt sich ueber das Leuchten, dahinter erscheint
+//     aufgefuelltes Leuchten statt eines schwarzen Lochs
+// Keine Aufteilung einer Struktur auf mehrere Ebenen -> nichts erscheint doppelt
+// Kleinster Ellipsenradius ueber alle Galaxien (>= 1 = ausserhalb)
+float galRmin(vec2 q) {
+  float rb = 9.0;
+  for (int k = 0; k < 8; k++) {
+    if (k >= uGalN) break;
+    rb = min(rb, length(galE(q, k)) / uGalA[k].z);
+  }
+  return rb;
+}
+vec3 volumetric(vec2 pr, vec2 uvF, vec2 qF) {
+  vec2 qB, qT;
+  vec2 uvB = solveUv(pr, 1.0, 0.0, qB, 0.0);
+  vec2 uvT = solveUv(pr, 0.0, uVolDustZ, qT, 0.0);
+  // In drehenden Galaxien (und einem Rand von 25 %) keine Schichten: dort
+  // gilt die starre Drehung des Fotos - gleitendes Grund-Leuchten oder
+  // schwebender Staub wuerden ihr widersprechen und am Rand reissen
+  float lay = uGalN > 0 ? smoothstep(1.0, 1.25, galRmin(qF)) : 1.0;
+  vec3 eF = emission(uvF);
+  vec3 col = max(eF + lay * (texture(uVolB, uvB).rgb - texture(uVolB, uvF).rgb), 0.0);
+  // Abtastungen ohne Verzweigung (definierte Ableitungen an Staubraendern)
+  vec4 DF = texture(uVolD, uvF), Dt = texture(uVolD, uvT);
+  vec3 iT = textureGrad(uColor, uvT, gDx, gDy).rgb, iF = textureGrad(uColor, uvF, gDx, gDy).rgb;
+  vec3 eT = mix(iT, max(iT, Dt.rgb), dustW(Dt.a));
+  vec3 eFb = mix(iF, max(iF, DF.rgb), dustW(DF.a));
+  vec3 rT = clamp(iT / max(eT, vec3(1.5 / 255.0)), 0.0, 1.0);
+  vec3 rF = clamp(iF / max(eFb, vec3(1.5 / 255.0)), 0.0, 1.0);
+  return col * mix(rF, rT, lay);
+}
+
+void main() {
+  // Canvas-Punkt in Ebenen-Einheiten (Höhe = 1)
+  vec2 p = vec2((vUv.x - 0.5) * uViewAspect, vUv.y - 0.5);
+  float c = cos(uAngle), s = sin(uAngle);
+  vec2 pr = mat2(c, -s, s, c) * p;
+
+  // Parallax: nahe Bereiche (hohe Tiefe) zoomen überproportional;
+  // Kippen verschiebt sie zusätzlich seitlich. Tiefe ist erst nach dem
+  // Sampeln bekannt -> Fixpunkt-Iteration.
+  // "Objekt in echte Tiefe" (uObjFar): das Bild verhaelt sich wie ein
+  // fernes, starres Objekt - alle Sterne ziehen davor vorbei
+  vec2 q;
+  vec2 uv = solveUv(pr, 0.0, 0.0, q, 1.0);
+  gDx = dFdx(imgUv(q));
+  gDy = dFdy(imgUv(q));
+
+  vec3 col;
+  if (uVol > 0.5 && uObjFar < 0.5 && uMoonMode < 0.5) {
+    col = volumetric(pr, uv, q);
+  } else {
+    col = sampleCol(uv);
+  }
+  // Galaxien-Rotation: gedrehtes Galaxienlicht (Bild minus Himmel an der
+  // Quelle) auf den stehenden Himmel am Zielpunkt. Im Ruhebild exakt das
+  // Foto. Im aeussersten Ring (85-100 %) weich zum ungedrehten Bild - dort
+  // ist das Galaxienlicht praktisch null, eine Scherzone gibt es nicht
+  // WICHTIG: alle Abtastungen AUSSERHALB der Verzweigung - innerhalb waeren
+  // die Ableitungen fuer die Mipmap-Wahl an der Ellipsengrenze undefiniert
+  // (falsche Pixel als gestrichelte Linie genau auf dem Rand)
+  if (uGalN > 0) {
+    float rg; vec2 eg;
+    int kg = galAt(q, rg, eg);
+    vec2 uvQ = imgUv(q);
+    vec3 cQ = sampleCol(uvQ);
+    vec3 bkQ = texture(uGalBk, uvQ).rgb, bkS = texture(uGalBk, uv).rgb;
+    float al = 1.0 - smoothstep(0.85, 1.0, rg);
+    // Begleitgalaxien (z. B. M32/M110 vor M31) kreisen nicht mit der Scheibe.
+    // Gedreht wird nur das Scheibenlicht OHNE Begleiter (unter ihnen aus der
+    // Umgebung aufgefuellt): Foto am Ziel + (Scheibe an der Quelle - Scheibe
+    // am Ziel). So wandert keine Kopie eines Begleiters mit (sie wuerde in
+    // der geneigten Ebene verzogen), die Begleiter bleiben stehen, die
+    // Scheibe dreht unter ihnen weiter - und das Ruhebild ist exakt das Foto.
+    // Ohne Begleiter (a = 0) ist das genau die bisherige Mischung
+    vec4 satS = texture(uGalSat, uv), satQ = texture(uGalSat, uvQ);
+    vec3 hostS = mix(col - bkS, satS.rgb, satS.a);
+    vec3 hostQ = mix(cQ - bkQ, satQ.rgb, satQ.a);
+    vec3 comp = max(cQ + al * (hostS - hostQ), 0.0);
+    col = kg >= 0 ? comp : col;
+    // Kern-Gluehen beim Anflug: der Kern (rund im Bild) wird dezent heller;
+    // der Bloom macht daraus einen weichen Schein
+    if (uGalGlow > 0.0 && kg >= 0) {
+      float rImg = length(vec2(eg.x, eg.y * uGalA[kg].w)) / uGalA[kg].z;
+      col *= 1.0 + uGalGlow * exp(-2.0 * (rImg / 0.22) * (rImg / 0.22));
+    }
+  }
+  // Nebelfarben: HII-/OIII-/SII-artige Farbbereiche gezielt anpassen.
+  // Arbeitet auf dem Farbton (Rot, Türkis, Gold) - wirkt damit auf RGB-
+  // wie auf Schmalband-Paletten; Graues bleibt unangetastet
+  if (uBandOn > 0.5) {
+    vec3 hsv = rgb2hsv(col);
+    // Fenster-Gewichte je Band: reine Funktion des FARBTONS. Der Shift wird
+    // bewusst NICHT mit Saettigung/Helligkeit gegated - die Wirkung skaliert
+    // ohnehin mit der Farbigkeit des Pixels, Grau bleibt von selbst stehen.
+    // (Das alte Gate verschob Nachbarpixel gleicher Farbe unterschiedlich
+    // stark, sobald ihre Saettigung differierte - das riss Verlaeufe auf.)
+    vec3 wh = vec3(
+      bandW(hsv.x, uBandCen.x, uBandWidth.x),
+      bandW(hsv.x, uBandCen.y, uBandWidth.y),
+      bandW(hsv.x, uBandCen.z, uBandWidth.z));
+    // Verschiebung so begrenzen, dass die Farbton-Abbildung monoton bleibt
+    // (Steilheit des Auslaufs) - sonst "faltet" sie sich und es entstehen
+    // harte Banding-Kanten. Fuer grosse Shifts den Bereich weiter stellen.
+    vec3 lim = (uBandWidth * (1.0 - mix(0.55, 0.1, uBandFeather))) * 0.6;
+    vec3 sh = clamp(uBandHue, -lim, lim);
+    hsv.x = fract(hsv.x + dot(sh, wh) + 1.0);
+    // Saettigungs-Regler zusaetzlich mit Saettigungs-/Helligkeits-Gate:
+    // dunkles Farbrauschen (JPEG-Chroma) wird nicht aufgesaettigt
+    float gate = smoothstep(0.03, 0.16, hsv.y) * smoothstep(0.02, 0.12, hsv.z);
+    vec3 ws = wh * gate;
+    hsv.y = clamp(hsv.y * mix(1.0, uBandSat.x, ws.x) * mix(1.0, uBandSat.y, ws.y) * mix(1.0, uBandSat.z, ws.z), 0.0, 1.0);
+    col = hsv2rgb(hsv);
+    // Erkennungsmaske: hebt die Pixel hervor, die das gewaehlte Band packt
+    if (uBandShow > 0.5) {
+      float wSel = uBandShow < 1.5 ? ws.x : (uBandShow < 2.5 ? ws.y : ws.z);
+      col = col * 0.15 + wSel * (col + vec3(0.10, 0.32, 0.12));
+    }
+  }
+  // Vorschau der Galaxien: Ellipsen als Ringe (Auswahl gelb), Innenflaeche
+  // rot getoent, der weiche Randring schwaecher
+  if (uSpinShow > 0.5 && uGalN > 0) {
+    for (int j = 0; j < 8; j++) {
+      if (j >= uGalN) break;
+      float rj = length(galE(q, j)) / uGalA[j].z;
+      float ring = smoothstep(0.035, 0.0, abs(rj - 1.0));
+      vec3 rc = float(j) == uGalSel ? vec3(1.0, 0.82, 0.25) : vec3(1.0, 0.35, 0.25);
+      col = mix(col, rc, ring * 0.85);
+    }
+    float rs; vec2 es;
+    int ks = galAt(q, rs, es);
+    if (ks >= 0) col = mix(col, vec3(1.0, 0.15, 0.1), (1.0 - smoothstep(0.85, 1.0, rs)) * (float(ks) == uGalSel ? 0.3 : 0.18));
+  }
+  // Mond-Modus: alles ausserhalb der erkannten Scheibe ist Himmel - schwarz.
+  // Ohne diese Maske sampeln Hintergrund-Pixel (ferne Tiefe) mit anderem
+  // Zoom-Exponenten in die helle Scheibe hinein -> Echo-Ring um den Mond;
+  // beim Rauszoomen erschienen zudem gespiegelte Kopien (Textur-Wrap)
+  if (uMoonMode > 0.5) {
+    vec2 ddM = vec2(uv.x - uMoonC.x, (uv.y - uMoonC.y) / uImgAspect);
+    col *= 1.0 - smoothstep(uMoonR * 1.005, uMoonR * 1.04, length(ddM));
+  }
+  outColor = vec4(col, 1.0);
+}`;
+
+// --- Pass 1b: Sterne (Punkt-Sprites mit individueller Tiefe) ---
+
+const starVS = `#version 300 es
+layout(location=0) in vec2 aPos;    // Ebenen-Einheiten: x in ±imgAspect/2, y in ±0.5
+layout(location=1) in float aBright;// 0..1 (Helligkeit/Fluss)
+layout(location=2) in float aSize;  // Radius in Ebenen-Einheiten
+layout(location=3) in vec3 aColor;
+layout(location=4) in float aGaia;  // echte Tiefe 0..1 aus Gaia (-1 = keine)
+layout(location=5) in vec2 aPm;     // Eigenbewegung in Ebenen-Einheiten/Jahr
+layout(location=6) in vec4 aAtlas;  // echtes Sternabbild: Zentrum-UV, halbe Groesse (UV / Ebene); x<0 = keins
+uniform float uViewAspect;
+uniform float uZoom;
+uniform float uParallax;
+uniform float uAngle;
+uniform float uCover;
+uniform float uPixelsY;   // Canvas-Höhe in px
+uniform float uTime;
+uniform float uSeed;      // Zufalls-Seed für die Ebenen-Verteilung
+uniform float uStarBase;  // Grundtiefe (Abstand zum Nebel), 0 fern .. 1 nah
+uniform float uOrganic;   // Staerke des organischen Strahlenkranzes 0..1
+uniform float uSpread;    // Streuung der Ebenen 0..1
+uniform float uLayers;    // Anzahl diskreter Ebenen (0 = kontinuierlich)
+uniform float uStarPar;   // Parallax-Multiplikator für Sterne
+uniform float uTwinkle;   // Funkel-Stärke 0..1
+uniform float uTwSpeed;   // Funkel-Tempo (1 = normal)
+uniform float uWarp;      // 0..1: Sterne rasen zusätzlich an der Kamera vorbei
+uniform float uDepthRange;
+uniform float uStarSize;   // Größen-Multiplikator
+uniform float uCullBright;  // Sterne unterhalb dieser Helligkeit ausblenden
+uniform float uPxMin;       // stabile Mindestgroesse kleiner Sterne (in Render-Pixeln)
+uniform float uStarBright; // Helligkeits-Multiplikator
+uniform float uStarSat;    // Sättigung (0 = weiß, 1 = original, 2 = kräftig)
+uniform vec2 uCenter;
+uniform vec2 uTilt;
+// Zweiter Kamerazustand (kurz danach) für die Geschwindigkeits-Streifen:
+// jeder Stern kennt damit seine echte Bildschirmgeschwindigkeit
+uniform float uZoom2;
+uniform float uAngle2;
+uniform vec2 uCenter2;
+uniform vec2 uTilt2;
+uniform float uStreak;    // Belichtungszeit / dt (0 = keine Streifen)
+uniform float uMaxPoint;  // größte Punktgröße der GPU (Intel meldet z. B. nur 255)
+uniform float uGaiaAmt;   // Mischung Zufallstiefe -> echte Gaia-Tiefe (0..1)
+uniform float uGaiaOnly;  // 1 = Wissenschafts-Modus: nur Sterne mit Gaia-Tiefe
+// Sterne rotieren mit der Galaxie (gleiche Formeln wie spinWarp im Hintergrund;
+// Vorzeichen invertiert, weil dort die Abtastung statt des Inhalts gedreht wird)
+uniform float uSpinStars;   // 1 = Sterne im Rotationsbereich mitdrehen
+uniform int uGalNS;         // Galaxien wie im Hintergrund-Shader
+uniform vec4 uGalAS[8];     // Zentrum, Halbachse, Stauchung
+uniform vec4 uGalBS[8];     // cos/sin Lage, Winkel und Wirbel zum Zeitpunkt t
+uniform vec4 uGalCS[8];     // Winkel und Wirbel kurz danach (Streifen)
+uniform float uImgAspectS;
+uniform float uPmYears;   // Zeitraffer: verstrichene Jahre zum Zeitpunkt t
+uniform float uPmYears2;  // ... und kurz danach (für die Streifen)
+// Nebel-Okklusion: Nebelschwaden, die VOR einem Stern liegen, verdecken ihn
+uniform float uOcclude;    // Stärke 0..1 (0 = aus)
+uniform float uMoonMode;   // Mond-Modus: Sterne hinter die Mondscheibe zwingen
+uniform float uRealStars;  // 1 = hellste Sterne mit echtem Pixel-Abbild rendern
+uniform vec2 uMoonCS;      // Scheibenzentrum in Textur-UV
+uniform float uMoonRS;     // Scheibenradius als Anteil der Bildbreite
+uniform float uAnchor;     // Sterne im Nebel verankern: Stärke 0..1
+uniform vec2 uTiltB2;      // Nebel-Kippwert der zweiten Kamera (für Anker-Streifen)
+uniform float uObjFarS;    // 1 = Objekt liegt einheitlich weit hinten
+uniform vec2 uTiltB;       // Kipp-Parallaxe des Hintergrunds (nicht der Sterne)
+uniform sampler2D uDepthS; // Tiefenkarte des Nebels
+uniform sampler2D uColorS; // Starless-Bild (Dichte der Nebelschwaden)
+uniform float uSpikes;     // Beugungsspikes: Staerke 0..1 (0 = aus)
+uniform float uSpikeMax;   // Zusatzlaenge der Spikes hellster Sterne in px
+uniform float uSpikeW;     // Grundbreite der Spikes in Render-Pixeln (1 Ausgabepixel)
+out vec3 vColor;
+out float vAlpha;
+out vec2 vDir;    // Streifen-Richtung in Pixeln (normiert)
+out float vLen;   // Streifen-Länge in px
+out float vBase;  // Stern-Durchmesser in px
+out float vSize;  // gl_PointSize (für gl_PointCoord -> px)
+out float vGlow;  // Glanzhof der hellsten Sterne (0..1)
+out vec3 vAtlasUv;   // Atlas: Zentrum-UV + halbe Groesse in UV (x<0 = prozedural)
+out float vPatchHalf; // halbe Patch-Groesse auf dem Bildschirm in px
+out float vSpike;     // Laenge der Beugungsspikes in px (0 = keine)
+out vec4 vOrgP;       // Sternbibliothek: Staerke, Radius px, Kachel (+16 = gespiegelt), Drehung
+
+// Sternposition mit der Galaxien-Rotation mitdrehen (gleiche Ellipsen, Winkel
+// und Wirbel wie im Hintergrund; der Inhalt dreht um +Winkel). Am Ellipsen-
+// rand laeuft die Drehung weich aus - Sterne sind Punkte, eine Scherung
+// dort verschmiert nichts
+// Scheibensterne einer Galaxie (Marke im Atlas-Feld): kreisen mit flacher
+// Rotationskurve RELATIV zum starr drehenden Armmuster - innerhalb des
+// Korotationsradius (aAtlas.z) schneller, ausserhalb langsamer. So ziehen
+// sie durch die Arme wie echte Sterne durch Dichtewellen; als Punkte
+// verschmieren sie dabei nie
+vec2 discStar(vec2 p, float second, int k, float rc) {
+  vec2 d = p - uGalAS[k].xy;
+  float c = uGalBS[k].x, s = uGalBS[k].y;
+  vec2 e = vec2(c * d.x + s * d.y, -s * d.x + c * d.y);
+  e.y /= uGalAS[k].w;
+  float r = length(e) / uGalAS[k].z;
+  float pat = second > 0.5 ? uGalCS[k].x : uGalBS[k].z;
+  float a = pat * rc / max(r, 0.18);
+  float ca = cos(a), sa = sin(a);
+  e = vec2(ca * e.x - sa * e.y, sa * e.x + ca * e.y);
+  e.y *= uGalAS[k].w;
+  return uGalAS[k].xy + vec2(c * e.x - s * e.y, s * e.x + c * e.y);
+}
+
+vec2 spinStar(vec2 p, float second) {
+  if (uSpinStars < 0.5 || uGalNS == 0) return p;
+  int best = -1;
+  float rb = 1.0;
+  vec2 eb = vec2(0.0);
+  for (int k = 0; k < 8; k++) {
+    if (k >= uGalNS) break;
+    vec2 d = p - uGalAS[k].xy;
+    float c = uGalBS[k].x, s = uGalBS[k].y;
+    vec2 e = vec2(c * d.x + s * d.y, -s * d.x + c * d.y);
+    e.y /= uGalAS[k].w;
+    float r = length(e) / uGalAS[k].z;
+    if (r < rb) { rb = r; best = k; eb = e; }
+  }
+  if (best < 0) return p;
+  vec2 aw = second > 0.5 ? uGalCS[best].xy : uGalBS[best].zw;
+  float t = 1.0 - rb;
+  float a = (aw.x + aw.y * t * t) * smoothstep(1.0, 0.85, rb);
+  // Bulge-Schutz wie im Hintergrund: Sterne vor dem Kern drehen ebenso wenig mit
+  a *= mix(1.0, smoothstep(0.05, 0.45, rb), clamp((1.0 - uGalAS[best].w) * 2.0, 0.0, 1.0));
+  float ca = cos(a), sa = sin(a);
+  vec2 e = vec2(ca * eb.x - sa * eb.y, sa * eb.x + ca * eb.y);
+  e.y *= uGalAS[best].w;
+  float c = uGalBS[best].x, s = uGalBS[best].y;
+  return uGalAS[best].xy + vec2(c * e.x - s * e.y, s * e.x + c * e.y);
+}
+
+void main() {
+  // Reproduzierbare Zufalls-Tiefe pro Stern; "Neu mischen" ändert den Seed
+  float h = fract(sin(aPos.x * 127.1 + aPos.y * 311.7 + uSeed * 17.0) * 43758.5453);
+  // Optional in diskrete Ebenen einrasten (gleichmäßig verteilt)
+  // Scheibensterne ohne laufende Drehung (Drehung eben auf 0 gestellt, der
+  // entprellte Neuaufbau steht noch aus) nicht als gewoehnliche Sterne zeigen
+  bool discIdle = aAtlas.x < 0.0 && aAtlas.y > 9.5 && uGalNS == 0;
+  if (aBright < uCullBright || discIdle) {
+    // Ausgeblendeter Stern: aus dem Clip-Volumen schieben und alle
+    // Varyings neutral setzen (undefinierte Varyings sind UB)
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 1.0;
+    vAlpha = 0.0; vColor = vec3(0.0); vDir = vec2(1.0, 0.0);
+    vLen = 0.0; vBase = 1.0; vSize = 1.0; vGlow = 0.0;
+    vAtlasUv = vec3(-1.0); vPatchHalf = 0.0; vSpike = 0.0; vOrgP = vec4(0.0);
+    return;
+  }
+  // Scheibenstern? (Atlas-Feld x < 0, y = Galaxie + 10, z = Korotation)
+  bool disc = aAtlas.x < 0.0 && aAtlas.y > 9.5 && uGalNS > 0;
+  int dk = disc ? int(aAtlas.y - 10.0 + 0.5) : 0;
+  vec2 posNow = disc ? discStar(aPos, 0.0, dk, aAtlas.z) : aPos;
+  float brightShift = aBright * 0.12;
+  if (uLayers > 0.5) {
+    h = (floor(h * uLayers) + 0.5) / uLayers;
+    brightShift = 0.0;
+  }
+  float depth = clamp(uStarBase + (h - 0.5) * uSpread + brightShift, 0.02, 1.0);
+  // Echte Entfernung aus dem Gaia-Katalog (falls zugeordnet): ersetzt die
+  // Zufallstiefe je nach eingestellter Stärke. Im Wissenschafts-Modus zählen
+  // ausschließlich echte Tiefen; Sterne ohne Gaia-Messung werden ausgeblendet
+  if (aGaia >= 0.0) {
+    depth = mix(depth, clamp(aGaia, 0.02, 1.0), max(uGaiaAmt, uGaiaOnly));
+  } else if (uGaiaOnly > 0.5) {
+    gl_Position = vec4(4.0, 4.0, 2.0, 1.0); // außerhalb des Clip-Volumens
+    gl_PointSize = 1.0;
+    vColor = vec3(0.0); vAlpha = 0.0;
+    vDir = vec2(1.0, 0.0); vLen = 0.0; vBase = 1.0; vSize = 1.0;
+    vAtlasUv = vec3(-1.0); vPatchHalf = 0.0; vGlow = 0.0; vSpike = 0.0; vOrgP = vec4(0.0);
+    return;
+  }
+
+  // Mond-Modus: Sterne stehen quasi im Unendlichen - weit hinter dem Mond
+  // und nahezu unbewegt (der Mond ist das einzig nahe Objekt im Bild)
+  if (uMoonMode > 0.5) depth = min(depth, 0.03);
+
+  // Sterne im Nebel verankern: Sterne auf dichten Nebelregionen übernehmen
+  // Tiefe und Bewegung des Nebels an ihrer Bildposition - sie bleiben beim
+  // 3D-Flug IM Nebel (z. B. die Wolf-Rayet-Sterne im Löwennebel), statt
+  // davor herzufliegen. Sterne, deren Gaia-Tiefe klar vor oder hinter dem
+  // Nebel liegt, bleiben frei.
+  float anchorW = 0.0;
+  float dNA = 0.45;
+  if (disc) {
+    // Scheibensterne gehoeren zur Galaxie: volle Verankerung an ihrer
+    // aktuellen Position (gleiche Tiefe und Bewegung wie die Scheibe)
+    vec2 uvA = vec2(posNow.x / uImgAspectS, posNow.y) + 0.5;
+    dNA = textureLod(uDepthS, uvA, 0.0).r;
+    anchorW = 1.0;
+  } else if (uAnchor > 0.0) {
+    vec2 uvA = vec2(aPos.x / uImgAspectS, aPos.y) + 0.5;
+    if (uvA.x > 0.001 && uvA.x < 0.999 && uvA.y > 0.001 && uvA.y < 0.999) {
+      dNA = textureLod(uDepthS, uvA, 0.0).r;
+      dNA = mix(dNA, 0.02, uObjFarS);
+      vec3 cNA = textureLod(uColorS, uvA, 0.0).rgb;
+      float dens = smoothstep(0.05, 0.30, dot(cNA, vec3(0.299, 0.587, 0.114)));
+      float agree = aGaia >= 0.0
+        ? 1.0 - smoothstep(0.10, 0.28, abs(clamp(aGaia, 0.02, 1.0) - dNA))
+        : 1.0;
+      anchorW = uAnchor * dens * agree;
+    }
+  }
+
+  // Sterne parallaxieren deutlich stärker als der Nebel (Faktor ~2.6 relativ
+  // zur Räumlichkeit); Warp lässt sie zusätzlich beschleunigt vorbeiziehen
+  float ex = 1.0 + uParallax * (depth - 0.45) * uDepthRange * 2.6 * uStarPar + uWarp * (0.4 + depth);
+  // Verankerte Sterne bewegen sich exakt wie der Nebel an ihrer Position:
+  // gleicher Zoom-Exponent, gleicher Kippwert, kein Stern-Parallax-Faktor
+  ex = mix(ex, 1.0 + uParallax * (dNA - 0.45) * uDepthRange, anchorW);
+  // Ferne Sterne nie rückwärts fliegen lassen (Exponent bliebe sonst negativ)
+  ex = max(ex, 0.12);
+  // Mond-Modus: Sterne stehen fest am Himmel (Exponent 0 = kein Mitzoomen).
+  // Wer bewusst Bewegung will, zieht die Stern-Parallaxe ueber 100 %
+  if (uMoonMode > 0.5) ex = 0.3 * max(0.0, uStarPar - 1.0);
+  float scale = uCover * pow(uZoom, ex);
+  vec2 sp1 = disc ? posNow : spinStar(aPos + aPm * uPmYears, 0.0);
+  vec2 tOff = mix(uTilt * (depth - 0.45), uTiltB * (dNA - 0.45), anchorW);
+  vec2 pr = (sp1 - uCenter - tOff) * scale;
+  // Tiefe VOR der Verankerung merken: die zweite Kamera (Streifen) muss
+  // denselben Versatz rechnen wie die erste - sonst wuchs der Streifen mit
+  // dem seitlichen Versatz statt mit der Geschwindigkeit (lange Striche an
+  // Flug-Anfang und -Ende)
+  float depthT = depth;
+  depth = mix(depth, dNA, anchorW);
+  float c = cos(uAngle), s = sin(uAngle);
+  // Inverse der Hintergrund-Rotation, damit Sterne auf dem Bild liegen bleiben
+  vec2 p = mat2(c, s, -s, c) * pr;
+  vec2 clip = vec2(p.x * 2.0 / uViewAspect, p.y * 2.0);
+
+  // Nebel-Okklusion: Welcher Nebel-Punkt liegt an der Bildschirmposition
+  // dieses Sterns? Gleiche Fixpunkt-Iteration wie im Hintergrund-Shader;
+  // liegt der Nebel dort NÄHER an der Kamera als der Stern, schluckt seine
+  // Dichte (Helligkeit des Starless-Bilds) das Sternlicht
+  float occ = 0.0;
+  float occStr = max(uOcclude, uMoonMode);
+  if (occStr > 0.0) {
+    vec2 qn = uCenter + pr / (uCover * uZoom);
+    vec2 uvN = vec2(qn.x / uImgAspectS, qn.y) + 0.5;
+    float dN = 0.02;
+    for (int i = 0; i < 3; i++) {
+      dN = textureLod(uDepthS, uvN, 0.0).r;
+      dN = mix(dN, 0.02, uObjFarS);
+      float exN = 1.0 + uParallax * (dN - 0.45) * uDepthRange;
+      float scaleN = uCover * pow(uZoom, exN);
+      qn = uCenter + pr / scaleN + uTiltB * (dN - 0.45);
+      uvN = vec2(qn.x / uImgAspectS, qn.y) + 0.5;
+    }
+    if (uvN.x > 0.0 && uvN.x < 1.0 && uvN.y > 0.0 && uvN.y < 1.0) {
+      vec3 cN = textureLod(uColorS, uvN, 0.0).rgb;
+      float lum = dot(cN, vec3(0.299, 0.587, 0.114));
+      float front = smoothstep(0.02, 0.14, dN - depth);
+      float dens = smoothstep(0.04, 0.45, lum);
+      if (uMoonMode > 0.5) {
+        vec2 ddM = vec2(uvN.x - uMoonCS.x, (uvN.y - uMoonCS.y) / uImgAspectS);
+        dens = 1.0 - smoothstep(uMoonRS * 0.99, uMoonRS * 1.02, length(ddM));
+      }
+      occ = occStr * front * dens;
+    }
+  }
+
+  float px = aSize * 2.0 * scale * uPixelsY * uStarSize;
+  float base = clamp(px, 1.2, 500.0);
+  // Winzige Sterne (unter ~2,6 px) flackerten beim Bewegen wie ein
+  // Stroboskop: je nach Subpixel-Lage trafen sie mal ein Pixelzentrum,
+  // mal keins. Deshalb bekommen sie eine stabile Mindestgroesse und werden
+  // im gleichen Mass gedimmt (Energieerhalt): gleiche wahrgenommene
+  // Helligkeit, aber ueber mehrere Pixel verteilt und dadurch ruhig.
+  float dimSmall = 1.0;
+  if (px < uPxMin) {
+    dimSmall = base / uPxMin;
+    dimSmall *= dimSmall;
+    base = uPxMin;
+  }
+  // Beugungsspikes (Option): sichtbar nur an hellen Sternen, die Laenge
+  // waechst steil mit der Helligkeit - wie bei einer echten Fangspiegel-
+  // Spinne
+  float spike = 0.0;
+  if (uSpikes > 0.0) {
+    float spk = uSpikes * smoothstep(0.4, 1.0, aBright);
+    spike = spk * (base * 1.5 + uSpikeMax * spk);
+  }
+
+  // Geschwindigkeits-Streifen: Position kurz danach mit demselben Tiefen-
+  // Exponenten -> die Streifenlänge folgt der echten Geschwindigkeit dieses
+  // Sterns (nahe Sterne ziehen lange Striche, ferne bleiben Punkte)
+  float len = 0.0;
+  vec2 dirPx = vec2(1.0, 0.0);
+  vec2 clipMid = clip;
+  if (uStreak > 0.0) {
+    float scale2 = uCover * pow(uZoom2, ex);
+    vec2 tOff2 = mix(uTilt2 * (depthT - 0.45), uTiltB2 * (dNA - 0.45), anchorW);
+    vec2 pr2 = ((disc ? discStar(aPos, 1.0, dk, aAtlas.z) : spinStar(aPos + aPm * uPmYears2, 1.0)) - uCenter2 - tOff2) * scale2;
+    float c2 = cos(uAngle2), s2 = sin(uAngle2);
+    vec2 p2 = mat2(c2, s2, -s2, c2) * pr2;
+    vec2 clip2 = vec2(p2.x * 2.0 / uViewAspect, p2.y * 2.0);
+    vec2 velClip = (clip2 - clip) * uStreak;
+    // y negiert: gl_PointCoord zählt nach unten, der Clip-Space nach oben
+    vec2 velPx = velClip * 0.5 * vec2(uPixelsY * uViewAspect, -uPixelsY);
+    float fullLen = length(velPx);
+    // Langsame Sterne bleiben perfekt runde Punkte: Erst wenn die Bewegung
+    // deutlich über einen Sterndurchmesser hinausgeht, wächst der Schweif
+    // weich an - sonst wirken alle Sterne leicht "eiförmig" verformt.
+    // Wichtig: fullLen getrennt halten - dirPx muss mit der ECHTEN Länge
+    // normiert werden, sonst verzerrt ein teilweiser Anlauffaktor die ganze
+    // Kapsel-Geometrie (Sterne verschwanden bei mittleren Reglerwerten)
+    float rawLen = fullLen * smoothstep(base * 0.4, base * 1.3, fullLen);
+    // Nie größer werden als die GPU-Punktgröße erlaubt (sonst kappt der
+    // Treiber das Sprite und der Sternkopf wird sichtbar "halbiert"),
+    // plus 4 px Rand, damit der Kopf nie exakt auf der Sprite-Kante liegt
+    len = clamp(rawLen, 0.0, max(uMaxPoint - base - 4.0, 0.0));
+    if (fullLen > 1e-4) {
+      dirPx = velPx / fullLen;
+      // Kometen-Optik: Der Stern bleibt an seiner Position (Kopf), der
+      // Schweif läuft entgegen der Flugrichtung aus -> Sprite nach hinten,
+      // um die SICHTBARE Schweiflänge (nicht die volle Bewegung)
+      clipMid = clip - velClip * 0.5 * (len / fullLen);
+    }
+  }
+  gl_Position = vec4(clipMid, 0.0, 1.0);
+  float size = base + min(len + 4.0, uMaxPoint - base);
+  // Echtes Sternabbild: Sprite auf die Patch-Groesse aufziehen. Sobald ein
+  // sichtbarer Streifen entsteht, faellt der Stern auf das prozedurale
+  // Sprite zurueck (gestreckte Spikes/Halos wuerden haesslich verschmieren)
+  vAtlasUv = vec3(-1.0);
+  vPatchHalf = 0.0;
+  // Absorbierte Paar-Partner (Marke -2) sind im Patch des helleren Sterns
+  // enthalten - ihr eigenes Partikel wuerde sie doppelt zeichnen
+  if (uRealStars > 0.5 && aAtlas.x < -1.5) vAlpha = 0.0;
+  if (uRealStars > 0.5 && aAtlas.x >= 0.0 && len < base * 0.5) {
+    float patchHalf = aAtlas.w * scale * uPixelsY * uStarSize;
+    // Nur ausreichend grosse Patches lohnen sich: winzige (unter ~2,6 px
+    // Halbbreite) flackerten beim Bewegen wie ein Stroboskop und tragen
+    // ohnehin keine sichtbare PSF - sie fallen auf den stabilen
+    // prozeduralen Sprite zurueck
+    if (patchHalf > uPxMin) {
+      vPatchHalf = min(patchHalf, uMaxPoint * 0.5 - 1.0);
+      size = max(size, vPatchHalf * 2.0 + 2.0);
+      vAtlasUv = vec3(aAtlas.x, aAtlas.y, aAtlas.z);
+      len = 0.0;
+    }
+  }
+  // Leitsterne bekommen einen weiten, weichen Hof. Dafuer waechst nur das
+  // Sprite, nicht der Kern - sonst werden helle Sterne zu fetten Klumpen
+  vGlow = smoothstep(0.86, 1.0, aBright);
+  if (vGlow > 0.0 && vAtlasUv.x < 0.0) size = min(max(size, base * (1.0 + vGlow * 2.2)), uMaxPoint);
+  // Sprite muss die Spikes fassen (Deckel: groesste Punktgroesse der GPU)
+  if (spike > 0.0) {
+    spike = min(spike, uMaxPoint * 0.5 - 2.0);
+    size = min(max(size, spike * 2.0 + 4.0), uMaxPoint);
+  }
+  vSpike = spike;
+  // Organischer Strahlenkranz (Sternbibliothek): nur helle prozedurale
+  // Sterne, jeder mit eigener Kachel, Drehung, Spiegelung und Staerke -
+  // so sieht kein Stern aus wie sein Nachbar. Radius: 1,7-facher Hof
+  vOrgP = vec4(0.0);
+  float hv = fract(sin(dot(aPos, vec2(12.9898, 78.233))) * 43758.5453);
+  float org = uOrganic * smoothstep(0.55, 1.0, aBright) * (0.7 + 0.6 * fract(hv * 5.17));
+  if (org > 0.002) {
+    float rOrg = min(base * 0.5 * (1.0 + vGlow * 2.2) * 1.7, uMaxPoint * 0.5 - 2.0);
+    size = min(max(size, rOrg * 2.0 + 2.0), uMaxPoint);
+    float tileI = floor(hv * 16.0) + (fract(hv * 13.7) < 0.5 ? 16.0 : 0.0);
+    vOrgP = vec4(org, rOrg, tileI, fract(hv * 7.31) * 6.2831853);
+  }
+  gl_PointSize = size;
+  vDir = dirPx;
+  vLen = len;
+  vBase = base;
+  vSize = size;
+
+  float seed = fract(aPos.x * 137.7 + aPos.y * 91.3) * 6.2831;
+  float tw = sin(uTime * uTwSpeed * (1.0 + fract(seed) * 2.5) + seed * 10.0) * 0.5 + 0.5;
+  vAlpha = 1.0 - uTwinkle * 0.55 * tw;
+  // Kometen-Logik statt physikalischer Langzeitbelichtung: Der Sternkopf
+  // behält IMMER seine volle Helligkeit, nur der Schweif läuft weich aus
+  // (macht der Verlauf im Fragment-Shader). Eine globale Längen-Dämpfung
+  // ließ schwache Sterne bei mittleren Reglerwerten unter die
+  // Sichtbarkeitsschwelle fallen - der Regler war nicht dosierbar.
+  vAlpha *= 1.0 - occ;
+  // Kleine-Sterne-Dimmen nur fuer prozedurale Sprites - echte Sternabbilder
+  // bringen ihre Groesse aus dem Atlas-Patch mit
+  if (vAtlasUv.x < 0.0) vAlpha *= dimSmall;
+  // Scheibensterne blenden mit der Drehung ein (voll nach ~3,4 Grad): das
+  // Ruhebild bei Drehwinkel 0 bleibt exakt das Original
+  if (disc) vAlpha *= smoothstep(0.0, 0.06, abs(uGalBS[dk].z));
+  float lumS = dot(aColor, vec3(0.299, 0.587, 0.114));
+  vec3 cS = aColor;
+  if (uStarSat > 1.0) {
+    // Farb-Boost: Farbanteile relativ zum stärksten Kanal spreizen - die
+    // Maskenfarben sind Richtung Weiß angehoben, lineares Nachsättigen
+    // holt da kaum Farbe heraus; die Potenz macht zarte Tönungen kräftig,
+    // ohne die Helligkeit des Sterns anzuheben
+    float mx = max(cS.r, max(cS.g, cS.b)) + 1e-5;
+    cS = pow(cS / mx, vec3(1.0 + (uStarSat - 1.0) * 2.0)) * mx;
+  }
+  vColor = max(mix(vec3(lumS), cS, min(uStarSat, 1.0)), 0.0) * uStarBright;
+}`;
+
+const starFS = `#version 300 es
+precision highp float;
+in vec3 vColor;
+in float vAlpha;
+in vec2 vDir;
+in float vLen;
+in float vBase;
+in float vSize;
+in float vGlow;
+in vec3 vAtlasUv;
+in float vPatchHalf;
+in float vSpike;
+in vec4 vOrgP;
+uniform sampler2D uAtlas;   // echte Sternabbilder (Ausschnitte der Maske)
+uniform sampler2D uStarLib; // Sternbibliothek: 4x4 Kacheln je 256 px (R Strahlen, G Halo-Fasern)
+uniform float uStarBrightF; // Helligkeits-Regler (wie uStarBright im VS)
+uniform float uAngleF;      // Kamerawinkel: Patch dreht mit dem Bild mit
+uniform float uAiry;        // 1 = Airy-Kern statt Gauss-Glocke
+uniform float uSpikeArms;   // Anzahl der Spikes (4, 6, 8)
+uniform float uSpikeRot;    // Drehung der Spikes (rad)
+uniform float uSpikeWF;     // Grundbreite der Spikes in Render-Pixeln
+out vec4 outColor;
+
+// Airy-Beugungsscheibchen: I = (2 J1(x) / x)^2 mit x = 7 r (r = 1 am Sprite-
+// Rand): heller Kern, erster dunkler Ring bei r = 0.55, schwacher zweiter
+// Ring bei r = 0.73, zweiter Nullring am Rand. Die Reihe von 2J1(x)/x
+// konvergiert im Sprite-Bereich schnell (10 Glieder)
+float airyI(float r2) {
+  float u = r2 * 12.25;
+  float s = 1.0 - u * (1.0 / 2.0 - u * (1.0 / 12.0 - u * (1.0 / 144.0 - u * (1.0 / 2880.0
+    - u * (1.0 / 86400.0 - u * (1.0 / 3628800.0 - u * (1.0 / 203212800.0
+    - u * (1.0 / 14631321600.0 - u / 1316818944000.0))))))));
+  return s * s;
+}
+
+// Beugungsspikes wie bei einem echten Newton (Referenz: Deneb, 4 Streben):
+// hauchduenne Linien mit konstanter Breite in AUSGABE-Pixeln - unabhaengig
+// von der Sterngroesse (etwa 1,5 px am Kern, 0,6 px an der Spitze), nahe
+// am Kern hell und dann ein langer, schwacher Auslauf (1/(1+8t)), nur ein
+// Hauch Farbe (innen leicht blaeulich, aussen leicht warm). In der
+// mitrotierten Bildebene verankert (di)
+vec3 spikeLight(vec2 di) {
+  if (vSpike <= 0.0) return vec3(0.0);
+  float acc = 0.0, tint = 0.0;
+  int n = int(uSpikeArms * 0.5 + 0.5);
+  for (int k = 0; k < 4; k++) {
+    if (k >= n) break;
+    float a = uSpikeRot + float(k) * 3.14159265 / float(n);
+    vec2 dir = vec2(cos(a), sin(a));
+    float t = abs(dot(di, dir)) / vSpike;
+    if (t >= 1.0) continue;
+    float across = dot(di, vec2(-dir.y, dir.x));
+    float w = uSpikeWF * (0.6 + 0.9 * (1.0 - t) * (1.0 - t));
+    float prof = exp(-across * across / (2.0 * w * w)) * (1.0 - t) / (1.0 + 8.0 * t);
+    acc += prof; tint += prof * t;
+  }
+  if (acc <= 0.0) return vec3(0.0);
+  return acc * mix(vec3(0.95, 0.97, 1.06), vec3(1.08, 0.96, 0.86), tint / acc);
+}
+
+void main() {
+  // Bildschirm-Offset in die (mitrotierte) Bildebene drehen: Spikes und
+  // Halos bleiben dadurch am Bild verankert statt am Bildschirm
+  vec2 dPx = (gl_PointCoord - 0.5) * vSize;
+  float caF = cos(uAngleF), saF = sin(uAngleF);
+  vec2 duUp = vec2(dPx.x, -dPx.y);
+  vec2 di = vec2(caF * duUp.x + saF * duUp.y, -saF * duUp.x + caF * duUp.y);
+  // Sternbibliothek: Kachel des Sterns in der mitrotierten Bildebene
+  // abtasten (R = feine Strahlen, G = faserige Halo-Modulation um 0,5).
+  // Immer VOR einem discard sampeln (definierte Ableitungen, s. o.)
+  float rays = 0.0, fib = 1.0;
+  if (vOrgP.x > 0.0) {
+    float ca = cos(vOrgP.w), sa = sin(vOrgP.w);
+    vec2 q = mat2(ca, -sa, sa, ca) * di;
+    if (vOrgP.z >= 16.0) q.x = -q.x;
+    float ti = mod(vOrgP.z, 16.0);
+    vec2 tile = vec2(mod(ti, 4.0), floor(ti / 4.0));
+    vec2 luv = (tile + 0.5 + clamp(q / vOrgP.y * 0.5, -0.5, 0.5)) * 0.25;
+    vec2 lib = texture(uStarLib, luv).rg;
+    float inR = 1.0 - smoothstep(0.85, 1.0, length(di) / vOrgP.y);
+    rays = lib.r * vOrgP.x * 0.4 * inR;
+    fib = 1.0 + (lib.g * 2.0 - 1.0) * 0.8 * vOrgP.x;
+  }
+  // Echtes Sternabbild: Patch aus dem Atlas statt prozeduraler Glocke.
+  // Additives Blending -> schwarzer Patch-Hintergrund addiert nichts;
+  // ein weicher radialer Rand vermeidet sichtbare Kachelkanten
+  if (vAtlasUv.x >= 0.0 && vPatchHalf > 0.5) {
+    vec2 d = dPx;
+    float rn = length(d) / vPatchHalf;
+    vec2 uv = vec2(vAtlasUv.x + di.x / vPatchHalf * vAtlasUv.z,
+                   vAtlasUv.y + di.y / vPatchHalf * vAtlasUv.z);
+    // WICHTIG: erst sampeln, DANN verwerfen. Ein texture()-Aufruf hinter
+    // einem bedingten discard hat undefinierte Ableitungen - die Mip-Wahl
+    // wird dann treiberabhaengig falsch und kleine Sterne blitzen wie ein
+    // Stroboskop (vom Nutzer gemeldetes Flackern)
+    vec3 c = texture(uAtlas, uv).rgb;
+    vec3 sp = spikeLight(di) * vAlpha * 1.4;
+    if (rn > 1.0 && max(sp.r, sp.b) < 0.002 && rays < 0.002) discard;
+    float edge = 1.0 - smoothstep(0.78, 1.0, rn);
+    // Helligkeit wirkt RADIAL wie eine kuerzere Belichtung: Der Kern bleibt
+    // weiss, nur Saum/Spikes dunkeln ab (globales Dimmen machte die Kerne
+    // grau - unnatuerlich). Erst unter ~30 % verschwindet auch der Kern
+    float b = uStarBrightF;
+    float coreKeep = smoothstep(0.0, 0.3, b);
+    float w = b >= 1.0 ? b : mix(coreKeep, b, smoothstep(0.15, 0.8, rn));
+    // Strahlenkranz auch ueber echten Abbildern (dezent, dimmt wie der Saum)
+    outColor = vec4(c * edge * vAlpha * w + vColor * (sp + rays * vAlpha * w), 1.0);
+    return;
+  }
+  // Kapsel entlang der Flugrichtung: Abstand zur Streifen-Mittellinie,
+  // normiert auf den Stern-Radius (vLen = 0 -> runder Stern wie bisher)
+  vec2 d = dPx;
+  vec3 sp = spikeLight(di) * vAlpha * 1.4;
+  float along = dot(d, vDir);
+  float across = dot(d, vec2(-vDir.y, vDir.x));
+  float da = max(abs(along) - vLen * 0.5, 0.0);
+  vec2 q = vec2(da, across) / (vBase * 0.5);
+  float r2 = dot(q, q); // 0 Mittellinie .. 1 Rand
+  // Weiter Hof der Leitsterne: reicht bis zum Sprite-Rand und laeuft dort
+  // weich aus; zusammen mit dem Bloom wirkt ein heller Stern dadurch so
+  // dominant wie im Original, ohne dass sein Kern aufgeblaeht wird
+  // Bezug ist die Glow-Groesse, nicht das Sprite: das kann durch Spikes
+  // deutlich groesser sein, und der Hof wuerde sonst mitwachsen
+  float rOut = length(d) / max(vBase * (1.0 + vGlow * 2.2) * 0.5, 1.0);
+  float wide = vGlow > 0.0 ? exp(-rOut * rOut * 5.0) * vGlow * 0.5 : 0.0;
+  if (r2 > 1.0 && wide < 0.004 && max(sp.r, sp.b) < 0.002 && rays < 0.002) discard;
+  // Kernprofil: Gauss-Glocke oder (Option) Airy-Scheibchen; letzteres traegt
+  // etwas weniger Energie und wird entsprechend angehoben
+  float core = r2 <= 1.0 ? (uAiry > 0.5 ? airyI(r2) * 1.3 : exp(-r2 * 9.0)) : 0.0;
+  float halo = r2 <= 1.0 ? exp(-r2 * 2.5) * (0.35 + vGlow * 0.3) : 0.0;
+  // Hof und Strahlen faserig modulieren, Strahlenkranz additiv dazu
+  float a = (core + (halo + wide) * fib + rays) * vAlpha;
+  // Verlauf entlang des Schweifs: am Kopf (Sternposition, in Flugrichtung
+  // vorn) volle Helligkeit, zum Ende hin weich auslaufend
+  if (vLen > 0.5) {
+    float s = clamp((along + vLen * 0.5) / max(vLen, 1.0), 0.0, 1.0);
+    float grad = mix(0.10, 1.0, s * s);
+    // Der Kometen-Verlauf blendet erst mit wachsender Streifenlänge ein -
+    // bei winzigen Längen dimmte er sonst den ganzen Stern und der Regler
+    // war nicht dosierbar (Sterne verschwanden bei kleinen Werten)
+    a *= mix(1.0, grad, clamp(vLen / (vBase + 1.0), 0.0, 1.0));
+  }
+  outColor = vec4(vColor * (a + sp), a);
+}`;
+
+// --- Pass 2: Bloom ---
+
+const brightFS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D uScene;
+uniform sampler2D uStarsTex; // separate Sternebene (schwarz, wenn nicht getrennt)
+void main() {
+  vec3 sN = texture(uScene, vUv).rgb;
+  vec3 sS = texture(uStarsTex, vUv).rgb;
+  // additiv statt geclampt: im HDR-Puffer duerfen Sternkerne ueber Weiss
+  // liegen und speisen den Bloom entsprechend staerker
+  vec3 c = max(sN, 0.0) + max(sS, 0.0);
+  float l = max(max(c.r, c.g), c.b);
+  // Empfindlicher (niedrige Schwelle, weiches Knie): auch schwache Sterne
+  // glimmen - die Gesamtstärke regelt der Composite entsprechend sanfter
+  float k = smoothstep(0.30, 0.78, l);
+  outColor = vec4(c * k, 1.0);
+}`;
+
+const blurFS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D uScene;
+uniform vec2 uDir; // 1 Texel in Blur-Richtung (0,0 = reine Kopie)
+uniform float uGain; // Verstaerkung (Gewicht einer Bloom-Oktave)
+void main() {
+  const float W[5] = float[](0.227027, 0.194594, 0.121622, 0.054054, 0.016216);
+  vec3 acc = texture(uScene, vUv).rgb * W[0];
+  for (int i = 1; i < 5; i++) {
+    vec2 o = uDir * float(i) * 1.5;
+    acc += texture(uScene, vUv + o).rgb * W[i];
+    acc += texture(uScene, vUv - o).rgb * W[i];
+  }
+  outColor = vec4(acc * uGain, 1.0);
+}`;
+
+// --- Pass 3: Composite (Bewegungsunschärfe, Warp-Farbsäume, Vignette) ---
+
+const compFS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D uScene;
+uniform sampler2D uBloom;
+uniform sampler2D uSoft;  // stark weichgezeichnete Szene (für Klarheit)
+uniform sampler2D uMed;   // mittel weichgezeichnete Szene (für Struktur)
+uniform float uViewAspect;
+uniform float uBloomStrength;
+uniform float uShutter;   // "Belichtungszeit" der Bewegungsunschärfe in s
+uniform float uZoomRate;  // d(ln zoom)/dt
+uniform float uRotRate;   // rad/s
+uniform vec2 uPanVel;     // Kamerafahrt in Ebenen-Einheiten/s
+uniform float uChroma;    // Warp-Farbsäume
+uniform float uVignette;
+uniform float uFade;
+uniform float uGrain;      // Filmkorn-Staerke (0 = aus)
+uniform float uFilmic;     // filmische Kurve 0..1 (0 = wie bisher)
+uniform float uNoiseSeed;  // wechselt pro Frame: zeitlich variierendes Dither/Korn
+uniform float uExposure;   // Blendenstufen
+uniform float uContrast;   // 1 = neutral
+uniform float uSaturation; // 1 = neutral
+uniform float uClarity;    // 0 = aus, negativ = weich (Orton)
+uniform float uStructure;  // feine Details, 0 = aus
+uniform float uSharpen;    // 0 = aus
+uniform vec2 uTexel;       // 1 px der Szene in UV
+uniform sampler2D uStarsTex; // separate Sternebene ("nur Sterne"-Unschärfe)
+uniform float uSplit;      // 1 = Bewegungsunschärfe nur auf die Sterne
+
+void main() {
+  vec2 r = vec2((vUv.x - 0.5) * uViewAspect, vUv.y - 0.5);
+
+  // Bewegungsvektor dieses Pixels: radial (Zoom) + tangential (Rotation) + Fahrt
+  vec2 vel = r * uZoomRate + vec2(-r.y, r.x) * uRotRate + uPanVel;
+  vec2 off = vel * uShutter;
+  off = vec2(off.x / uViewAspect, off.y);
+  vec2 ca = vec2(r.x / uViewAspect, r.y) * uChroma * 0.02;
+
+  // Die Sterne liegen immer auf einer eigenen Ebene (uStarsTex): so treffen
+  // Klarheit/Struktur/Schärfe nur den Nebel - Sternbearbeitung wohnt im
+  // Sterne-Tab. uSplit = 1: Sterne sind bereits als eigene Geschwindigkeits-
+  // Streifen gerendert und bekommen KEINE Composite-Unschärfe mehr
+  vec3 col;
+  vec3 stars;
+  if (uSplit > 0.5) {
+    col = texture(uScene, vUv).rgb;
+    stars = texture(uStarsTex, vUv).rgb;
+  } else {
+    vec3 acc = vec3(0.0);
+    vec3 accS = vec3(0.0);
+    const int N = 8;
+    for (int i = 0; i < N; i++) {
+      float f = float(i) / float(N - 1) - 0.5;
+      vec2 o = off * f;
+      acc.r += texture(uScene, vUv + o * (1.0 + uChroma) + ca).r;
+      acc.g += texture(uScene, vUv + o).g;
+      acc.b += texture(uScene, vUv + o * (1.0 - uChroma) - ca).b;
+      accS.r += texture(uStarsTex, vUv + o * (1.0 + uChroma) + ca).r;
+      accS.g += texture(uStarsTex, vUv + o).g;
+      accS.b += texture(uStarsTex, vUv + o * (1.0 - uChroma) - ca).b;
+    }
+    col = acc / float(N);
+    stars = accS / float(N);
+  }
+
+  // Klarheit: lokaler Kontrast gegen stark weichgezeichnete Szene
+  if (uClarity != 0.0) {
+    vec3 soft = texture(uSoft, vUv).rgb;
+    col += (col - soft) * uClarity;
+  }
+  // Struktur: feiner Lokalkontrast gegen mittel weichgezeichnete Szene
+  if (uStructure != 0.0) {
+    vec3 med = texture(uMed, vUv).rgb;
+    col += (col - med) * uStructure;
+  }
+  // Schärfe: Unsharp-Mask mit 1-Pixel-Radius
+  if (uSharpen > 0.0) {
+    vec3 nb = texture(uScene, vUv + vec2(uTexel.x, 0.0)).rgb
+            + texture(uScene, vUv - vec2(uTexel.x, 0.0)).rgb
+            + texture(uScene, vUv + vec2(0.0, uTexel.y)).rgb
+            + texture(uScene, vUv - vec2(0.0, uTexel.y)).rgb;
+    col += (texture(uScene, vUv).rgb - nb * 0.25) * uSharpen;
+  }
+
+  // Sterne erst NACH Klarheit/Struktur/Schärfe dazulegen
+  // Sterne per Screen-Modus auf den Nebel legen (Astro-Standard wie in
+  // Photoshop/PixInsight): 1-(1-a)*(1-b) statt Addition - weicher Uebergang,
+  // helle Sternkerne auf hellem Nebel brennen nicht mehr aus
+  vec3 bloom = texture(uBloom, vUv).rgb * uBloomStrength;
+  float expo = exp2(uExposure);
+  // Bisheriger Weg (Standard): Screen-Mischung, bei Weiss gedeckelt
+  vec3 ldr = (1.0 - (1.0 - clamp(col, 0.0, 1.0)) * (1.0 - clamp(stars, 0.0, 1.0)) + bloom) * expo;
+  if (uFilmic > 0.0) {
+    // Filmischer Weg: echte HDR-Summe (Sternkerne duerfen ueber Weiss
+    // liegen), dann ACES-artige Kurve - Lichter rollen weich ab statt
+    // hart auszubrennen, Mitten bekommen Kino-Kontrast
+    vec3 x = max(max(col, 0.0) + max(stars, 0.0) + bloom, 0.0) * expo;
+    vec3 tm = (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);
+    col = mix(ldr, clamp(tm, 0.0, 1.0), uFilmic);
+  } else {
+    col = ldr;
+  }
+
+  // Farbabstimmung: Kontrast -> Sättigung
+  col = max(col, 0.0);
+  col = (col - 0.5) * uContrast + 0.5;
+  float lum = dot(max(col, 0.0), vec3(0.2126, 0.7152, 0.0722));
+  col = mix(vec3(lum), col, uSaturation);
+
+  float d = length(r) / (0.7071 * max(uViewAspect, 1.0));
+  col *= 1.0 - uVignette * smoothstep(0.45, 1.25, d);
+  col *= uFade;
+
+  // Filmkorn (optional): pro Pixel und Frame neues Rauschen, in den
+  // Schatten staerker als in den Lichtern - wie analoges Korn. Gibt der
+  // Videokompression zudem etwas zum Festhalten (weniger Matsch)
+  if (uGrain > 0.0) {
+    vec3 seed = vec3(gl_FragCoord.xy, uNoiseSeed);
+    float n = fract(sin(dot(seed, vec3(12.9898, 78.233, 37.719))) * 43758.5453) - 0.5;
+    float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+    col += n * uGrain * (0.35 + 0.65 * (1.0 - clamp(lum, 0.0, 1.0)));
+  }
+  // Dither gegen Banding: die Ausgabe wird gleich auf 8 Bit quantisiert.
+  // Interleaved-Gradient-Noise (blue-noise-aehnlich, texturfrei) mit
+  // Frame-Versatz verteilt den Quantisierungsfehler unsichtbar - dunkle
+  // Nebelverlaeufe laufen seidig durch statt in Stufen zu brechen
+  {
+    vec2 p = gl_FragCoord.xy + vec2(uNoiseSeed * 17.0, uNoiseSeed * 29.0);
+    float ign = fract(52.9829189 * fract(0.06711056 * p.x + 0.00583715 * p.y));
+    col += (ign - 0.5) / 255.0;
+  }
+
+  outColor = vec4(max(col, 0.0), 1.0);
+}`;
+
+// --- Pass 1b (Kino-Modus): Sternmaske als Bild - Sterne behalten ihre
+// echte fotografische Abbildung (PSF, Spikes, Farben) statt als Partikel
+// neu gezeichnet zu werden. Die Ebene liegt auf einer festen Tiefe
+// (Abstand-zum-Nebel-Regler) und nutzt dieselbe Kameramathematik wie das
+// Starless, inklusive des staerkeren Parallaxe-Faktors der Sternebene.
+const starImgFS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D uColor;
+uniform vec2 uColorTexel;
+uniform float uBicubic;
+uniform float uViewAspect;
+uniform float uImgAspect;
+uniform float uZoom;
+uniform float uAngle;
+uniform float uCover;
+uniform vec2 uCenter;
+uniform vec2 uTilt;
+uniform float uEx;         // fertiger Tiefen-Exponent der Sternebene
+uniform float uBright;     // Helligkeits-Regler
+uniform float uSat;        // Saettigungs-Regler (1 = neutral)
+void main() {
+  vec2 p = vec2((vUv.x - 0.5) * uViewAspect, vUv.y - 0.5);
+  float c = cos(uAngle), s = sin(uAngle);
+  vec2 pr = mat2(c, -s, s, c) * p;
+  float scale = uCover * pow(uZoom, uEx);
+  vec2 q = uCenter + pr / scale + uTilt;
+  vec2 uv = vec2(q.x / uImgAspect, q.y) + 0.5;
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+    outColor = vec4(0.0, 0.0, 0.0, 1.0);
+    return;
+  }
+  vec3 col;
+  if (uBicubic > 0.5) {
+    vec2 pos = uv / uColorTexel - 0.5;
+    vec2 f = fract(pos);
+    vec2 base = (pos - f + 0.5) * uColorTexel;
+    vec2 f2 = f * f, f3 = f2 * f;
+    vec2 w0 = -0.5 * f3 + f2 - 0.5 * f;
+    vec2 w1 =  1.5 * f3 - 2.5 * f2 + 1.0;
+    vec2 w2 = -1.5 * f3 + 2.0 * f2 + 0.5 * f;
+    vec2 w3 =  0.5 * f3 - 0.5 * f2;
+    vec2 w12 = w1 + w2;
+    vec2 uv12 = base + (w2 / w12) * uColorTexel;
+    vec2 uv0 = base - uColorTexel;
+    vec2 uv3 = base + 2.0 * uColorTexel;
+    col =
+      texture(uColor, vec2(uv0.x,  uv0.y)).rgb  * (w0.x  * w0.y) +
+      texture(uColor, vec2(uv12.x, uv0.y)).rgb  * (w12.x * w0.y) +
+      texture(uColor, vec2(uv3.x,  uv0.y)).rgb  * (w3.x  * w0.y) +
+      texture(uColor, vec2(uv0.x,  uv12.y)).rgb * (w0.x  * w12.y) +
+      texture(uColor, vec2(uv12.x, uv12.y)).rgb * (w12.x * w12.y) +
+      texture(uColor, vec2(uv3.x,  uv12.y)).rgb * (w3.x  * w12.y) +
+      texture(uColor, vec2(uv0.x,  uv3.y)).rgb  * (w0.x  * w3.y) +
+      texture(uColor, vec2(uv12.x, uv3.y)).rgb  * (w12.x * w3.y) +
+      texture(uColor, vec2(uv3.x,  uv3.y)).rgb  * (w3.x  * w3.y);
+    col = max(col, 0.0);
+  } else {
+    col = texture(uColor, uv).rgb;
+  }
+  // Farb-Boost wie im Partikel-Shader: Anteile relativ zum staerksten Kanal
+  // spreizen - holt die zarten Sternfarben heraus, ohne aufzuhellen
+  if (uSat > 1.0) {
+    float mx = max(col.r, max(col.g, col.b)) + 1e-5;
+    col = pow(col / mx, vec3(1.0 + (uSat - 1.0) * 2.0)) * mx;
+  } else if (uSat < 1.0) {
+    float lum = dot(col, vec3(0.299, 0.587, 0.114));
+    col = mix(vec3(lum), col, uSat);
+  }
+  outColor = vec4(col * uBright, 1.0);
+}`;
+
+const bgProg = program(quadVS, bgFS);
+const starImgProg = program(quadVS, starImgFS);
+const starProg = program(starVS, starFS);
+const brightProg = program(quadVS, brightFS);
+const blurProg = program(quadVS, blurFS);
+const compProg = program(quadVS, compFS);
+
+// Fullscreen-Dreieck
+const quadVao = gl.createVertexArray();
+gl.bindVertexArray(quadVao);
+const quadBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+// Stern-Puffer
+const starVao = gl.createVertexArray();
+const starBuf = gl.createBuffer();
+
+let texColor = null;
+let texDepth = null;
+let texGalBk = null;      // Himmel hinter den Galaxien (aufgefuellt, Float)
+let texGalSat = null;     // Begleitgalaxien: rgb = Wirtslicht ohne Begleiter (aufgefuellt), a = Begleiter-Maske
+let galBkTex = null, galBkSig = "", galBkTimer = 0;
+let texVolL = [];                   // Volumetrischer Nebel: [entstaubt + Staubmaske, Grund-Leuchten]
+let volBuiltN = 0;                  // 1 = Volumetrik-Texturen vorhanden
+let volBuiltTex = null;             // Farbtextur, fuer die sie gebaut wurden (neues/gespiegeltes Bild -> neu)
+let texStarAtlas = null;
+let texStarLib = null;    // Sternbibliothek (prozedural, einmal pro Sitzung)
+let texStarsImg = null;   // Kino-Modus: Sternmaske als Bildtextur (bis 4096 px)
+
+// Kino-Modus: Sternmaske als Bild hochladen (nur bei Bedarf, wird bei
+// Maskenwechsel/Spiegelung verworfen)
+function ensureStarsImgTexture() {
+  if (texStarsImg || !state.stars) return;
+  const src = downscale(state.stars, 4096);
+  texStarsImg = makeTexture(src);
+  state.texStarsW = src.width;
+  state.texStarsH = src.height;
+}
+function dropStarsImgTexture() {
+  if (texStarsImg) { gl.deleteTexture(texStarsImg); texStarsImg = null; }
+}
+
+function makeTexture(source) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, source);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.MIRRORED_REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.MIRRORED_REPEAT);
+  requestRender(); // neue Textur sofort zeigen, auch im Leerlauf
+  return t;
+}
+
+// --- Framebuffer für die Post-Processing-Kette ---
+
+// HDR-Zwischenpuffer: Halbfloat-Framebuffer, damit Sternkerne und Bloom
+// ueber Weiss hinaus rechnen koennen (Grundlage fuer filmisches Tone-Mapping).
+// Ohne die Erweiterung faellt alles auf 8 Bit zurueck
+const HDR_OK = !!gl.getExtension("EXT_color_buffer_float");
+
+function makeFbo(w, h) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  if (HDR_OK) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+  else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fb = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return { fb, tex, w, h };
+}
+
+// 1x1-Schwarztextur: Platzhalter für die Sternebene, wenn nicht getrennt wird
+// Voellig transparent (a = 0): "keine Begleitgalaxien" fuer uGalSat
+const texClear = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, texClear);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+const texBlack = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, texBlack);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+// Sternbibliothek im Leerlauf nach dem Start vorbauen (ca. 0,2-0,7 s CPU),
+// damit der erste Sternframe nach dem Bildladen nicht ruckelt
+setTimeout(() => { if (!texStarLib) { try { texStarLib = buildStarLib(); } catch { /* dann beim ersten Frame */ } } }, 400);
+
+let fbScene = null, fbStars = null, fbSoftA = null, fbSoftB = null,
+    fbMedA = null, fbMedB = null;
+// Bloom in vier Oktaven (1/2, 1/4, 1/8, 1/16): jede Stufe mit A/B-Paar fuer
+// den separablen Blur; die kleinen Stufen liefern den weiten, weichen Hof
+const BLOOM_LEVELS = 4;
+let fbBloom = [];
+
+function ensureFbos() {
+  const w = canvas.width, h = canvas.height;
+  if (fbScene && fbScene.w === w && fbScene.h === h) return;
+  for (const f of [fbScene, fbStars, fbSoftA, fbSoftB, fbMedA, fbMedB]) {
+    if (f) { gl.deleteFramebuffer(f.fb); gl.deleteTexture(f.tex); }
+  }
+  for (const lv of fbBloom) for (const f of [lv.a, lv.b]) { gl.deleteFramebuffer(f.fb); gl.deleteTexture(f.tex); }
+  fbScene = makeFbo(w, h);
+  fbStars = makeFbo(w, h);
+  fbBloom = [];
+  for (let k = 0; k < BLOOM_LEVELS; k++) {
+    const dw = Math.max(1, w >> (k + 1)), dh = Math.max(1, h >> (k + 1));
+    fbBloom.push({ a: makeFbo(dw, dh), b: makeFbo(dw, dh), w: dw, h: dh });
+  }
+  const bw = Math.max(1, w >> 2), bh = Math.max(1, h >> 2);
+  fbSoftA = makeFbo(bw, bh);
+  fbSoftB = makeFbo(bw, bh);
+  const mw = Math.max(1, w >> 1), mh = Math.max(1, h >> 1);
+  fbMedA = makeFbo(mw, mh);
+  fbMedB = makeFbo(mw, mh);
+}
+
+// ---------------------------------------------------------------- Bild-Dekodierung
+
+/**
+ * FITS-Bilddaten dekodieren (unkomprimiert): BITPIX 8/16/32 Integer sowie
+ * -32/-64 Float, Mono oder RGB (NAXIS3 = 3), BSCALE/BZERO, Big-Endian.
+ * FITS zählt Zeilen von unten nach oben -> beim Übertragen in den Canvas
+ * wird vertikal gespiegelt. Eine im Header enthaltene TAN-Plate-Solve-
+ * Lösung wird mitgeliefert (wcs), sodass kein separater Upload nötig ist.
+ */
+function decodeFits(buf, fileName) {
+  const bytes = new Uint8Array(buf);
+  const text = new TextDecoder("ascii").decode(
+    bytes.subarray(0, Math.min(bytes.length, 2880 * 200)));
+  const h = {};
+  let end = -1;
+  for (let off = 0; off + 80 <= text.length; off += 80) {
+    const card = text.slice(off, off + 80);
+    const key = card.slice(0, 8).trim();
+    if (key === "END") { end = off + 80; break; }
+    if (card[8] !== "=") continue;
+    let val = card.slice(10).split("/")[0].trim();
+    if (val.startsWith("'")) val = val.slice(1, val.lastIndexOf("'")).trim();
+    h[key] = val;
+  }
+  if (end < 0) throw new Error("FITS: header end not found");
+  const dataStart = Math.ceil(end / 2880) * 2880;
+  const bitpix = parseInt(h.BITPIX, 10);
+  const w = parseInt(h.NAXIS1, 10), hgt = parseInt(h.NAXIS2, 10);
+  const planes = parseInt(h.NAXIS3 || "1", 10);
+  if (!(w > 0) || !(hgt > 0)) throw new Error("FITS: no image data");
+  if (planes !== 1 && planes !== 3) throw new Error("FITS: NAXIS3 = " + planes);
+  const bscale = parseFloat(h.BSCALE || "1"), bzero = parseFloat(h.BZERO || "0");
+  const n = w * hgt * planes;
+  const bpp = Math.abs(bitpix) / 8;
+  if (dataStart + n * bpp > buf.byteLength) throw new Error("FITS: file truncated");
+  const dv = new DataView(buf, dataStart);
+  const vals = new Float32Array(n);
+  switch (bitpix) {
+    case 8:   for (let i = 0; i < n; i++) vals[i] = dv.getUint8(i) * bscale + bzero; break;
+    case 16:  for (let i = 0; i < n; i++) vals[i] = dv.getInt16(i * 2) * bscale + bzero; break;
+    case 32:  for (let i = 0; i < n; i++) vals[i] = dv.getInt32(i * 4) * bscale + bzero; break;
+    case -32: for (let i = 0; i < n; i++) vals[i] = dv.getFloat32(i * 4) * bscale + bzero; break;
+    case -64: for (let i = 0; i < n; i++) vals[i] = dv.getFloat64(i * 8) * bscale + bzero; break;
+    default: throw new Error("FITS: BITPIX " + bitpix);
+  }
+  // Robuste Normierung auf 0..255 über gesampelte Perzentile (einzelne
+  // heiße Pixel sollen das Bild nicht abdunkeln); gemeinsame Skala für
+  // alle Farbebenen, damit die Farbbalance erhalten bleibt
+  const stride = Math.max(1, Math.floor(n / 1e6));
+  const sample = [];
+  for (let i = 0; i < n; i += stride) {
+    if (isFinite(vals[i])) sample.push(vals[i]);
+  }
+  sample.sort((a, b) => a - b);
+  const lo = sample[Math.floor((sample.length - 1) * 0.0002)];
+  const hi = sample[Math.floor((sample.length - 1) * 0.9998)];
+  const range = Math.max(1e-9, hi - lo);
+  const rgba = new Uint8ClampedArray(w * hgt * 4);
+  const plane = w * hgt;
+  for (let y = 0; y < hgt; y++) {
+    const srcRow = (hgt - 1 - y) * w; // FITS: Zeile 0 liegt unten
+    for (let x = 0; x < w; x++) {
+      const sIdx = srcRow + x, d = (y * w + x) * 4;
+      rgba[d] = ((vals[sIdx] - lo) / range) * 255;
+      if (planes === 3) {
+        rgba[d + 1] = ((vals[sIdx + plane] - lo) / range) * 255;
+        rgba[d + 2] = ((vals[sIdx + 2 * plane] - lo) / range) * 255;
+      } else {
+        rgba[d + 1] = rgba[d + 2] = rgba[d];
+      }
+      rgba[d + 3] = 255;
+    }
+  }
+  const c = document.createElement("canvas");
+  c.width = w; c.height = hgt;
+  c.getContext("2d").putImageData(new ImageData(rgba, w, hgt), 0, 0);
+  let wcs = null;
+  try { wcs = parseWcsHeader(bytes.subarray(0, dataStart)); } catch { /* keine Lösung im Header */ }
+  return { canvas: c, width: w, height: hgt, name: fileName, wcs };
+}
+
+async function decodeFile(file) {
+  const name = file.name.toLowerCase();
+  if (/\.(fits?|fts)$/.test(name)) {
+    return decodeFits(await file.arrayBuffer(), file.name);
+  }
+  if (name.endsWith(".tif") || name.endsWith(".tiff")) {
+    const buf = await file.arrayBuffer();
+    const ifds = UTIF.decode(buf);
+    if (!ifds.length) throw new Error(t("tiffError"));
+    let best = ifds[0];
+    for (const ifd of ifds) {
+      UTIF.decodeImage(buf, ifd);
+      if ((ifd.width * ifd.height) > (best.width * best.height || 0)) best = ifd;
+    }
+    const rgba = UTIF.toRGBA8(best);
+    const c = document.createElement("canvas");
+    c.width = best.width; c.height = best.height;
+    const imgData = new ImageData(new Uint8ClampedArray(rgba.buffer, 0, best.width * best.height * 4), best.width, best.height);
+    c.getContext("2d").putImageData(imgData, 0, 0);
+    return { canvas: c, width: c.width, height: c.height, name: file.name };
+  }
+  const bmp = await createImageBitmap(file);
+  const c = document.createElement("canvas");
+  c.width = bmp.width; c.height = bmp.height;
+  c.getContext("2d").drawImage(bmp, 0, 0);
+  bmp.close();
+  return { canvas: c, width: c.width, height: c.height, name: file.name };
+}
+
+/** Bild auf maximale Kantenlänge verkleinern (gibt Canvas zurück). */
+// Verkleinerte Arbeitskopien und ihre Pixel werden gemerkt: dasselbe
+// Starless-Bild wird von Tiefe, Volumetrik, Galaxien-Suche, -Hintergrund und
+// -Sternen in wenigen festen Groessen gelesen. willReadFrequently haelt die
+// Kopien im Hauptspeicher - getImageData ist dann ein Kopieren statt eines
+// teuren GPU-Rueckholens. Ein neues oder gespiegeltes Bild ist ein neues
+// Canvas-Objekt und bekommt damit automatisch frische Eintraege. Die Kopien
+// sind nur zum Lesen da (Aufrufer zeichnen nie hinein)
+const downscaleCache = new WeakMap();
+const pixelCache = new WeakMap();
+function downscale(img, maxEdge) {
+  const s = Math.min(1, maxEdge / Math.max(img.width, img.height));
+  if (s >= 1) return img.canvas;
+  const w = Math.max(1, Math.round(img.width * s)), h = Math.max(1, Math.round(img.height * s));
+  let m = downscaleCache.get(img.canvas);
+  if (!m) { m = new Map(); downscaleCache.set(img.canvas, m); }
+  const key = w + "x" + h;
+  let c = m.get(key);
+  if (!c) {
+    c = document.createElement("canvas");
+    c.width = w; c.height = h;
+    c.getContext("2d", { willReadFrequently: true }).drawImage(img.canvas, 0, 0, w, h);
+    // Grosse Kopien (Sternmaske bis 3000 px) nicht festhalten - Speicher
+    if (Math.max(w, h) <= 1600) m.set(key, c);
+  }
+  return c;
+}
+/** RGBA-Pixel eines (Arbeits-)Canvas, bei kleinen Canvas gemerkt. Nur lesen! */
+function canvasPixels(c) {
+  let d = pixelCache.get(c);
+  if (d) return d;
+  d = c.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
+  if (Math.max(c.width, c.height) <= 1600) pixelCache.set(c, d);
+  return d;
+}
+
+// ---------------------------------------------------------------- Tiefenkarte
+
+/** Geglättete, kontrastgestreckte Luminanzkarte des Starless-Bildes. */
+function computeLuminanceMap(radius, invert, maxEdge) {
+  const res = maxEdge || state.depthRes;
+  const src = downscale(state.starless, res);
+  // Radius ist in Karten-Pixeln: bei hoeherer Aufloesung mitskalieren,
+  // damit die Glaettung optisch identisch bleibt
+  radius = Math.max(1, Math.round(radius * res / 768));
+  const w = src.width, h = src.height;
+  const data = canvasPixels(src);
+
+  // Luminanz
+  let lum = new Float32Array(w * h);
+  for (let i = 0, j = 0; i < lum.length; i++, j += 4) {
+    lum[i] = 0.299 * data[j] + 0.587 * data[j + 1] + 0.114 * data[j + 2];
+  }
+
+  // Kontrast über Perzentile strecken
+  const sorted = Float32Array.from(lum).sort();
+  const lo = sorted[Math.floor(sorted.length * 0.02)];
+  const hi = sorted[Math.floor(sorted.length * 0.98)];
+  const range = Math.max(1e-3, hi - lo);
+  for (let i = 0; i < lum.length; i++) {
+    lum[i] = Math.min(1, Math.max(0, (lum[i] - lo) / range));
+  }
+
+  // 3× Box-Blur ≈ Gauß
+  let a = lum, b = new Float32Array(w * h);
+  for (let pass = 0; pass < 3; pass++) {
+    boxBlurH(a, b, w, h, radius);
+    boxBlurV(b, a, w, h, radius);
+  }
+
+  const dst = new Uint8ClampedArray(w * h * 4);
+  const f = new Float32Array(w * h);
+  for (let i = 0, j = 0; i < a.length; i++, j += 4) {
+    let d = a[i];
+    if (invert) d = 1 - d;
+    f[i] = d;
+    const v = Math.round(d * 255);
+    dst[j] = dst[j + 1] = dst[j + 2] = v;
+    dst[j + 3] = 255;
+  }
+
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  c.getContext("2d").putImageData(new ImageData(dst, w, h), 0, 0);
+  return { canvas: c, data: dst, w, h, f };
+}
+
+
+/**
+ * Mondscheibe im Starless-Bild finden: helle Region vor dunklem Himmel ->
+ * Randpunkte -> konvexe Huelle -> Kreis-Fit (Kasa). Die Huelle sorgt dafuer,
+ * dass bei Mondphasen der beleuchtete Rand (echter Kreisbogen) den Fit
+ * dominiert und der Terminator weitgehend rausfaellt.
+ * Rueckgabe { cx, cy, r } normiert (x und r auf Bildbreite, y auf Hoehe).
+ */
+function detectMoonDisk() {
+  if (!state.starless) return null;
+  const src = downscale(state.starless, 512);
+  const w = src.width, h = src.height;
+  const data = canvasPixels(src);
+  const lum = new Float32Array(w * h);
+  let hi = 0;
+  for (let i = 0, j = 0; i < lum.length; i++, j += 4) {
+    lum[i] = 0.299 * data[j] + 0.587 * data[j + 1] + 0.114 * data[j + 2];
+    if (lum[i] > hi) hi = lum[i];
+  }
+  const th = Math.max(18, hi * 0.25);
+  const pts = [];
+  let area = 0;
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      if (lum[i] < th) continue;
+      area++;
+      if (lum[i - 1] < th || lum[i + 1] < th || lum[i - w] < th || lum[i + w] < th) {
+        pts.push([x, y]);
+      }
+    }
+  }
+  if (area < w * h * 0.004 || pts.length < 24) return null;
+
+  // Konvexe Huelle (Monotone Chain)
+  pts.sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [];
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper = [];
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const p = pts[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  const hull = lower.slice(0, -1).concat(upper.slice(0, -1));
+  if (hull.length < 8) return null;
+
+  // Kreis-Fit nach Kasa: x^2+y^2 = a*x + b*y + c, kleinste Quadrate
+  let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, sxz = 0, syz = 0, sz = 0;
+  for (const [x, y] of hull) {
+    const z = x * x + y * y;
+    sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y;
+    sxz += x * z; syz += y * z; sz += z;
+  }
+  const n = hull.length;
+  const det = sxx * (syy * n - sy * sy) - sxy * (sxy * n - sy * sx) + sx * (sxy * sy - syy * sx);
+  if (Math.abs(det) < 1e-6) return null;
+  const a = (sxz * (syy * n - sy * sy) - sxy * (syz * n - sy * sz) + sx * (syz * sy - syy * sz)) / det;
+  const b = (sxx * (syz * n - sy * sz) - sxz * (sxy * n - sx * sy) + sx * (sxy * sz - syz * sx)) / det;
+  const c = (sxx * (syy * sz - syz * sy) - sxy * (sxy * sz - syz * sx) + sxz * (sxy * sy - syy * sx)) / det;
+  const cx = a / 2, cy = b / 2;
+  const r = Math.sqrt(Math.max(0, c + cx * cx + cy * cy));
+
+  // Plausibilitaet: Radius sinnvoll, Zentrum nahe am Bild, helle Flaeche
+  // passt zur Kreisflaeche (bei Phasen ist sie kleiner, nie viel groesser)
+  const circleArea = Math.PI * r * r;
+  if (r < Math.min(w, h) * 0.04 || r > Math.max(w, h) * 0.9) return null;
+  if (cx < -0.3 * w || cx > 1.3 * w || cy < -0.3 * h || cy > 1.3 * h) return null;
+  if (area > circleArea * 1.25 || area < circleArea * 0.12) return null;
+
+  return { cx: cx / w, cy: cy / h, r: r / w };
+}
+
+/**
+ * Kugel-Tiefenkarte fuer den Mond-Modus: innerhalb der erkannten Scheibe
+ * echte Kugelgeometrie (Mitte nah, Rand kruemmt sich weg), aussen ferner
+ * Himmel. Leichte Glaettung vermeidet eine harte Tiefenkante am Mondrand.
+ */
+function computeMoonSphereMap() {
+  const src = downscale(state.starless, state.depthRes);
+  const w = src.width, h = src.height;
+  const d = state.moonDisk;
+  const cx = d.cx * w, cy = d.cy * h, R = Math.max(2, d.r * w);
+  let a = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const rr = Math.hypot(x - cx, y - cy) / R;
+      // Himmel liegt auf derselben Grundtiefe wie der Mondrand (0.5):
+      // KEIN Tiefensprung an der Scheibenkante - der Sprung erzeugte beim
+      // Vorbeiflug ein Echo/Doppelbild des Mondes (die Warp-Iteration fand
+      // am Rand die falsche von zwei Loesungen). Der Himmel ist schwarz,
+      // seine Bewegung ist unsichtbar - die Kugel waechst nur nach vorn
+      a[y * w + x] = rr >= 1 ? 0.5 : 0.5 + 0.38 * Math.sqrt(1 - rr * rr);
+    }
+  }
+  const b = new Float32Array(w * h);
+  const rM = Math.max(1, Math.round(2 * state.depthRes / 768));
+  boxBlurH(a, b, w, h, rM);
+  boxBlurV(b, a, w, h, rM);
+  const dst = new Uint8ClampedArray(w * h * 4);
+  const f = new Float32Array(w * h);
+  for (let i = 0, j = 0; i < a.length; i++, j += 4) {
+    f[i] = Math.min(1, Math.max(0, a[i]));
+    const v = Math.round(f[i] * 255);
+    dst[j] = dst[j + 1] = dst[j + 2] = v;
+    dst[j + 3] = 255;
+  }
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  c.getContext("2d").putImageData(new ImageData(dst, w, h), 0, 0);
+  return { canvas: c, data: dst, w, h, f };
+}
+
+
+/**
+ * Importierte Tiefenkarte aufbereiten: Luminanz wird 1:1 uebernommen
+ * (keine Kontraststreckung - gemalte Werte bleiben exakt), Glaettung
+ * und Invertieren wirken wie bei der automatischen Karte.
+ */
+function computeCustomDepthMap(radius, invert, maxEdge) {
+  const res = maxEdge || state.depthRes;
+  const src = downscale(state.customDepth, res);
+  const w = src.width, h = src.height;
+  const data = canvasPixels(src);
+  let a = new Float32Array(w * h);
+  for (let i = 0, j = 0; i < a.length; i++, j += 4) {
+    a[i] = (0.299 * data[j] + 0.587 * data[j + 1] + 0.114 * data[j + 2]) / 255;
+  }
+  const r = Math.max(1, Math.round(radius * res / 768));
+  const b = new Float32Array(w * h);
+  for (let pass = 0; pass < 3; pass++) {
+    boxBlurH(a, b, w, h, r);
+    boxBlurV(b, a, w, h, r);
+  }
+  const dst = new Uint8ClampedArray(w * h * 4);
+  const f = new Float32Array(w * h);
+  for (let i = 0, j = 0; i < a.length; i++, j += 4) {
+    let d = a[i];
+    if (invert) d = 1 - d;
+    f[i] = Math.min(1, Math.max(0, d));
+    const v = Math.round(f[i] * 255);
+    dst[j] = dst[j + 1] = dst[j + 2] = v;
+    dst[j + 3] = 255;
+  }
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  c.getContext("2d").putImageData(new ImageData(dst, w, h), 0, 0);
+  return { canvas: c, data: dst, w, h, f };
+}
+
+// Rohdaten-Textur (RGBA8, bilinear, gespiegelt wie die Bildtexturen). Kein
+// Umweg ueber ein Canvas: der wuerde Alpha vormultiplizieren und die
+// Staub-Durchlaessigkeit im Alphakanal verfaelschen
+function makeTextureRaw(w, h, data) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.MIRRORED_REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.MIRRORED_REPEAT);
+  requestRender(); // neue Textur sofort zeigen, auch im Leerlauf
+  return t;
+}
+
+/**
+ * Volumetrischer Nebel: Zerlegung des Starless in transparente Leuchtebenen.
+ * Der Schluessel je Pixel mischt die (feine) Helligkeit mit der (groben)
+ * Tiefenkarte; Hut-Funktionen verteilen den Pixel weich auf benachbarte
+ * Ebenen (Summe 1 -> additiv wieder das Original). Staub = lokale Senke
+ * gegenueber der Umgebung innerhalb des Nebels, als Durchlaessigkeit im
+ * Alphakanal. Nur Gewichte, keine Farben: die bleiben in voller Aufloesung
+ */
+/**
+ * Push-Pull-Fuellung (Gortler et al.): fehlende Pixel werden mehrstufig aus
+ * ihrer Umgebung aufgefuellt - grob aus der Pyramidenspitze, fein vom
+ * Lochrand her. Fuer Nebel (weiche Verlaeufe) ergibt das glaubwuerdige
+ * Rueckseiten hinter ausgeschnittenen Ebenen und laeuft in Millisekunden.
+ * rgb: Float32 (3 je Pixel), valid: Float32 0..1 (1 = Pixel vorhanden).
+ */
+function pushPullFill(rgb, valid, w, h) {
+  const lv = [{ c: rgb, v: valid, w, h }];
+  while (lv[lv.length - 1].w > 1 || lv[lv.length - 1].h > 1) {
+    const p = lv[lv.length - 1];
+    const cw = Math.max(1, Math.ceil(p.w / 2)), ch = Math.max(1, Math.ceil(p.h / 2));
+    const c = new Float32Array(cw * ch * 3), v = new Float32Array(cw * ch);
+    for (let y = 0; y < ch; y++) {
+      for (let x = 0; x < cw; x++) {
+        let r = 0, g = 0, b = 0, s = 0, n = 0;
+        for (let dy = 0; dy < 2; dy++) {
+          const yy = 2 * y + dy;
+          if (yy >= p.h) continue;
+          for (let dx = 0; dx < 2; dx++) {
+            const xx = 2 * x + dx;
+            if (xx >= p.w) continue;
+            const i = yy * p.w + xx, wv = p.v[i];
+            r += p.c[i * 3] * wv; g += p.c[i * 3 + 1] * wv; b += p.c[i * 3 + 2] * wv;
+            s += wv; n++;
+          }
+        }
+        const o = y * cw + x;
+        if (s > 0) { c[o * 3] = r / s; c[o * 3 + 1] = g / s; c[o * 3 + 2] = b / s; }
+        v[o] = Math.min(1, s / n);
+      }
+    }
+    lv.push({ c, v, w: cw, h: ch });
+  }
+  // Pull: von grob nach fein die Luecken bilinear aus der groeberen Stufe
+  // fuellen; teilweise gueltige Pixel werden anteilig gemischt
+  const out = new Float32Array(rgb.length);
+  out.set(rgb);
+  lv[0] = { c: out, v: new Float32Array(valid), w, h };
+  for (let L = lv.length - 2; L >= 0; L--) {
+    const f = lv[L], p = lv[L + 1];
+    for (let y = 0; y < f.h; y++) {
+      const py = Math.min(p.h - 1, Math.max(0, (y + 0.5) / 2 - 0.5));
+      const y0 = Math.floor(py), y1 = Math.min(p.h - 1, y0 + 1), fy = py - y0;
+      for (let x = 0; x < f.w; x++) {
+        const i = y * f.w + x, wv = f.v[i];
+        if (wv >= 1) continue;
+        const pxx = Math.min(p.w - 1, Math.max(0, (x + 0.5) / 2 - 0.5));
+        const x0 = Math.floor(pxx), x1 = Math.min(p.w - 1, x0 + 1), fx = pxx - x0;
+        const i00 = (y0 * p.w + x0) * 3, i10 = (y0 * p.w + x1) * 3, i01 = (y1 * p.w + x0) * 3, i11 = (y1 * p.w + x1) * 3;
+        for (let ch = 0; ch < 3; ch++) {
+          const up = (p.c[i00 + ch] * (1 - fx) + p.c[i10 + ch] * fx) * (1 - fy) + (p.c[i01 + ch] * (1 - fx) + p.c[i11 + ch] * fx) * fy;
+          f.c[i * 3 + ch] = f.c[i * 3 + ch] * wv + up * (1 - wv);
+        }
+        f.v[i] = 1;
+      }
+    }
+  }
+  return out;
+}
+
+// Laufendes Minimum/Maximum ueber ein Fenster 2r+1 (van Herk / Gil-Werman):
+// O(n) unabhaengig vom Radius. src/dst mit Schrittweite (Zeilen oder Spalten)
+let mmPad = new Float32Array(0), mmG = mmPad, mmH = mmPad;
+function runMinMax(src, dst, n, off, step, r, isMax) {
+  const k = 2 * r + 1, m = n + 2 * r;
+  // Puffer wiederverwenden (vorher drei neue Arrays je Zeile/Spalte)
+  if (mmPad.length < m) { mmPad = new Float32Array(m); mmG = new Float32Array(m); mmH = new Float32Array(m); }
+  const pad = mmPad, g = mmG, hh = mmH;
+  const first = src[off], last = src[off + (n - 1) * step];
+  for (let i = 0; i < r; i++) { pad[i] = first; pad[m - 1 - i] = last; }
+  for (let j = 0, o = off; j < n; j++, o += step) pad[j + r] = src[o];
+  // Bloecke der Laenge k: Praefix-Extrem vorwaerts (g), Suffix-Extrem
+  // rueckwaerts (hh); Fenster [x, x+2r] = Extrem aus hh[x] und g[x+2r]
+  if (isMax) {
+    for (let st = 0; st < m; st += k) {
+      const e = Math.min(m, st + k);
+      let v = pad[st]; g[st] = v;
+      for (let i = st + 1; i < e; i++) { const q = pad[i]; if (q > v) v = q; g[i] = v; }
+      v = pad[e - 1]; hh[e - 1] = v;
+      for (let i = e - 2; i >= st; i--) { const q = pad[i]; if (q > v) v = q; hh[i] = v; }
+    }
+    for (let x = 0, o = off; x < n; x++, o += step) { const a = hh[x], c = g[x + 2 * r]; dst[o] = a > c ? a : c; }
+  } else {
+    for (let st = 0; st < m; st += k) {
+      const e = Math.min(m, st + k);
+      let v = pad[st]; g[st] = v;
+      for (let i = st + 1; i < e; i++) { const q = pad[i]; if (q < v) v = q; g[i] = v; }
+      v = pad[e - 1]; hh[e - 1] = v;
+      for (let i = e - 2; i >= st; i--) { const q = pad[i]; if (q < v) v = q; hh[i] = v; }
+    }
+    for (let x = 0, o = off; x < n; x++, o += step) { const a = hh[x], c = g[x + 2 * r]; dst[o] = a < c ? a : c; }
+  }
+}
+// Morphologische Oeffnung (erst Min, dann Max, separabel) eines Kanals:
+// entfernt helle Strukturen schmaler als 2r+1, laesst breites Leuchten stehen
+function openChannel(a, w, h, r) {
+  const t = new Float32Array(w * h), u = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) runMinMax(a, t, w, y * w, 1, r, false);
+  for (let x = 0; x < w; x++) runMinMax(t, u, h, x, w, r, false);
+  for (let y = 0; y < h; y++) runMinMax(u, t, w, y * w, 1, r, true);
+  for (let x = 0; x < w; x++) runMinMax(t, u, h, x, w, r, true);
+  return u;
+}
+
+/**
+ * Volumetrischer Nebel v2: aus dem Starless zwei Texturen (unabhaengig von
+ * der Tiefenkarte, daher nur beim Bildwechsel / Staub-Regler neu):
+ *  - uVolD (1024 px): entstaubtes Leuchten (Staubstellen per Push-Pull aus
+ *    der Umgebung aufgefuellt) + Staubmaske im Alpha
+ *  - uVolB (256 px, Float): Grund-Leuchten - morphologische Oeffnung des
+ *    entstaubten Leuchtens (entfernt alle Strukturen unter ~5 % der
+ *    Bildbreite) plus weiche Glaettung. Die Strukturen ergeben sich im
+ *    Shader als Differenz, das Ruhebild bleibt dadurch exakt
+ */
+function buildVolLayers() {
+  if (!state.starless || !state.vol) return;
+  const src = downscale(state.starless, 1024);
+  const w = src.width, h = src.height, n = w * h;
+  const px = canvasPixels(src);
+  const rgb = new Float32Array(n * 3);
+  const L = new Float32Array(n);
+  for (let i = 0, j = 0; i < n; i++, j += 4) {
+    rgb[i * 3] = px[j] / 255; rgb[i * 3 + 1] = px[j + 1] / 255; rgb[i * 3 + 2] = px[j + 2] / 255;
+    L[i] = (0.299 * px[j] + 0.587 * px[j + 1] + 0.114 * px[j + 2]) / 255;
+  }
+  const tmp = new Float32Array(n);
+  const blurTo = (s0, f, minR) => {
+    const b = new Float32Array(n), r = Math.max(minR, Math.round(w * f));
+    boxBlurH(s0, tmp, w, h, r); boxBlurV(tmp, b, w, h, r); return b;
+  };
+  // Staub: deutliche lokale Senke auf einer von drei Skalen, nur wo die
+  // mittlere Umgebung selbst hell genug ist (Band IM Nebel, kein Himmel).
+  // Gemessen auf einer geoeffneten Helligkeit ohne Sterne und Sternreste:
+  // sonst hellt ein Stern seine Umgebung auf, und der dunkle Himmel direkt
+  // daneben galt als "Staub" (dunkle Flecken mit Farbsaum neben Sternen)
+  const Lo = openChannel(L, w, h, Math.max(2, Math.round(w * 0.004)));
+  const bgs = [0.02, 0.05, 0.10].map((f) => blurTo(Lo, f, 3));
+  const sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  const dust = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let du = 0;
+    for (const bg of bgs) du = Math.max(du, sm(0.22, 0.65, (bg[i] - Lo[i]) / (bg[i] + 0.02)));
+    dust[i] = du * sm(0.07, 0.18, bgs[1][i]);
+  }
+  // Maske um den weichen Rand der Staubstellen erweitern (Max-Filter), sonst
+  // bleiben halbdunkle Randpixel im "entstaubten" Leuchten und zeichnen beim
+  // Verschieben eine doppelte Kante nach
+  {
+    const r = Math.max(1, Math.round(w * 0.006));
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let v = 0;
+      for (let k = -r; k <= r; k++) { const xx = x + k; if (xx >= 0 && xx < w && dust[y * w + xx] > v) v = dust[y * w + xx]; }
+      tmp[y * w + x] = v;
+    }
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let v = 0;
+      for (let k = -r; k <= r; k++) { const yy = y + k; if (yy >= 0 && yy < h && tmp[yy * w + x] > v) v = tmp[yy * w + x]; }
+      dust[y * w + x] = v;
+    }
+    const rb = Math.max(1, Math.round(w * 0.004));
+    boxBlurH(dust, tmp, w, h, rb); boxBlurV(tmp, dust, w, h, rb);
+  }
+  // Aufgefuellt wird nur aus sauberer Umgebung: schon ein Hauch Staub gilt
+  // als fehlend. Zwei Durchgaenge: Die Erweiterung darf nur erfassen, was
+  // DUNKLER als das aufgefuellte Leuchten ist - helle Filamente am Rand einer
+  // Staubstelle gehoeren zum Leuchten (sonst wanderten ihre Stuecke mit der
+  // Staubschicht), halbdunkle Randpixel zum Staub (sonst bliebe beim
+  // Verschieben eine dunkle Haarlinie stehen)
+  const valid = new Float32Array(n);
+  for (let i = 0; i < n; i++) valid[i] = 1 - sm(0.02, 0.25, dust[i]);
+  // Aufgefuellt wird aus einer geoeffneten Fassung (feine helle Strukturen
+  // unter ~1,6 % der Breite entfernt): ein Filament direkt neben dem Staub
+  // bluete sonst als heller Saum in die Fuellung und erschiene beim
+  // Verschieben als Geisterstreifen. Das Filament selbst bleibt erhalten -
+  // der Shader nimmt je Kanal das Hellere aus Original und Fuellung
+  const rgbO = new Float32Array(n * 3);
+  {
+    const ro = Math.max(2, Math.round(w * 0.008)), chn = new Float32Array(n);
+    for (let c = 0; c < 3; c++) {
+      for (let i = 0; i < n; i++) chn[i] = rgb[i * 3 + c];
+      const o = openChannel(chn, w, h, ro);
+      for (let i = 0; i < n; i++) rgbO[i * 3 + c] = o[i];
+    }
+  }
+  const inp0 = pushPullFill(rgbO, valid, w, h);
+  for (let i = 0; i < n; i++) {
+    const li = 0.299 * inp0[i * 3] + 0.587 * inp0[i * 3 + 1] + 0.114 * inp0[i * 3 + 2];
+    dust[i] *= 1 - sm(-0.03, 0.06, (L[i] - li) / (li + 0.02));
+    valid[i] = 1 - sm(0.02, 0.25, dust[i]);
+  }
+  const inp = pushPullFill(rgbO, valid, w, h);
+  const d2 = new Uint8ClampedArray(n * 4);
+  for (let i = 0, j = 0; i < n; i++, j += 4) {
+    d2[j] = Math.round(inp[i * 3] * 255);
+    d2[j + 1] = Math.round(inp[i * 3 + 1] * 255);
+    d2[j + 2] = Math.round(inp[i * 3 + 2] * 255);
+    d2[j + 3] = Math.round(dust[i] * 255);
+  }
+  // Grund-Leuchten in 256 px: Block-Mittel -> Oeffnung (Min, dann Max) ->
+  // dreifache Box-Glaettung, je Farbkanal
+  const f = Math.max(1, Math.round(w / 256));
+  const bw = Math.ceil(w / f), bh = Math.ceil(h / f), bn = bw * bh;
+  const base = new Float32Array(bn * 4);
+  const ch = new Float32Array(bn), ch2 = new Float32Array(bn), t2 = new Float32Array(bn);
+  const re = Math.max(2, Math.round(bw * 0.025));
+  const morph = (a, out, isMin) => {
+    // separabel: erst Zeilen, dann Spalten
+    for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
+      let v = isMin ? Infinity : -Infinity;
+      for (let k = -re; k <= re; k++) {
+        const xx = x + k < 0 ? 0 : (x + k >= bw ? bw - 1 : x + k);
+        const q = a[y * bw + xx];
+        v = isMin ? (q < v ? q : v) : (q > v ? q : v);
+      }
+      t2[y * bw + x] = v;
+    }
+    for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
+      let v = isMin ? Infinity : -Infinity;
+      for (let k = -re; k <= re; k++) {
+        const yy = y + k < 0 ? 0 : (y + k >= bh ? bh - 1 : y + k);
+        const q = t2[yy * bw + x];
+        v = isMin ? (q < v ? q : v) : (q > v ? q : v);
+      }
+      out[y * bw + x] = v;
+    }
+  };
+  for (let c = 0; c < 3; c++) {
+    ch.fill(0);
+    const cnt = new Float32Array(bn);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const b = Math.floor(y / f) * bw + Math.floor(x / f);
+      ch[b] += inp[(y * w + x) * 3 + c]; cnt[b]++;
+    }
+    for (let b = 0; b < bn; b++) ch[b] /= Math.max(1, cnt[b]);
+    morph(ch, ch2, true);
+    morph(ch2, ch, false);
+    for (let pass = 0; pass < 3; pass++) { boxBlurH(ch, ch2, bw, bh, re); boxBlurV(ch2, ch, bw, bh, re); }
+    for (let b = 0; b < bn; b++) base[b * 4 + c] = ch[b];
+  }
+  for (let b = 0; b < bn; b++) base[b * 4 + 3] = 1;
+  for (const t of texVolL) gl.deleteTexture(t);
+  texVolL = [makeTextureRaw(w, h, d2), makeTextureFloat(bw, bh, base)];
+  volBuiltN = 1;
+  volBuiltTex = texColor;
+}
+
+function buildDepthMap() {
+  if (!state.starless) return;
+  const m = state.moonMode && state.moonDisk
+    ? computeMoonSphereMap()
+    : state.customDepth
+      ? computeCustomDepthMap(state.smooth, state.invertDepth)
+      : computeLuminanceMap(state.smooth, state.invertDepth);
+  // Rohkarte (vor der Steilheitsgrenze) merken: Flugaenderungen rechnen nur
+  // die Huelle neu, nicht die ganze Karte
+  state.depthRaw = { f: m.f, w: m.w, h: m.h };
+  finalizeDepthMap();
+}
+
+/**
+ * Tiefen-Engine v2 - warum es keine Doppelbilder und Loecher mehr gibt:
+ * Der Shader sucht fuer jeden Bildschirmpunkt den Bildpunkt, dessen Tiefe
+ * zu seiner Verschiebung passt (Fixpunkt-Iteration q = f(d(q))). Eindeutig
+ * und stabil ist diese Loesung genau dann, wenn die Abbildung kontrahiert:
+ * k = |dq/dd| * |grad d| < 1. |dq/dd| waechst mit Parallaxe, Raeumlichkeit,
+ * Zoom-Fortschritt, Kippen und Abstand zur Bildmitte; |grad d| ist die
+ * Steilheit der Tiefenkarte. Bei k >= 1 gibt es mehrere Loesungen - der
+ * Nebel erscheint doppelt oder reisst auf (dunkle Taschen wachsen zu
+ * "schwarzen Loechern"). Wir bestimmen deshalb den groessten Wert von
+ * |dq/dd| ueber den GANZEN Flug und begrenzen die Steilheit der Karte so,
+ * dass k ueberall <= DEPTH_KMAX bleibt. Die Begrenzung ist die untere
+ * Lipschitz-Huelle: dunkle Taschen neben hellen Strukturen werden
+ * angehoben (sie fliegen mit ihrer Umgebung mit, statt aufzureissen), helle
+ * Strukturen bleiben unveraendert. Sanfte Verlaeufe bleiben exakt erhalten
+ */
+// 0,5: lokale Dehnung hoechstens 2-fach (feine Textur bleibt ruhig), dabei
+// noch kraeftiges Relief
+const DEPTH_KMAX = 0.5;
+// Sicherheitsfaktor: Schachbrett-Metrik (8er-Nachbarschaft, <= 8 %) und
+// bilineare Interpolation zwischen den Karten-Pixeln
+const DEPTH_SAFETY = 1.15;
+
+// Groesstes |dq/dd| (Bildebenen-Einheiten je Tiefeneinheit) ueber den Flug,
+// getrennt je Tiefe: nahe Bereiche zoomen staerker und verschieben sich
+// dadurch pro Tiefenschritt WENIGER (pr/scale ist kleiner) - sie vertragen
+// eine steilere Karte als ferne. Rueckgabe: Tabelle ueber d = 0..1
+const DEPTH_GAIN_N = 32;
+function depthFlightGain() {
+  const G = new Float32Array(DEPTH_GAIN_N + 1);
+  if (!state.starless) return G;
+  const A = state.aspect, imgAspect = state.starless.width / state.starless.height;
+  const cover = coverBase(A, imgAspect);
+  const PR = (state.parallax / 100) * 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
+  if (PR <= 0) return G;
+  const rmax = 0.5 * Math.hypot(A, 1); // Bildecke in Ebenen-Einheiten
+  const se = state.scenEdit;
+  state.scenEdit = false;
+  try {
+    const N = 48;
+    for (let s = 0; s <= N; s++) {
+      const cam = camAt((s / N) * state.duration);
+      const lz = Math.log(Math.max(1e-4, cam.zoom));
+      const tx = (state.tiltX / 100) * 0.08 + cam.tiltAddX + cam.driftTX * PR;
+      const ty = (state.tiltY / 100) * 0.08 + cam.tiltAddY + cam.driftTY * PR;
+      const tm = Math.hypot(tx, ty);
+      for (let k = 0; k <= DEPTH_GAIN_N; k++) {
+        const ex = 1 + PR * (k / DEPTH_GAIN_N - 0.45);
+        const g = rmax / (cover * (cam.lens || 1) * Math.exp(lz * ex)) * Math.abs(lz) * PR + tm;
+        if (g > G[k]) G[k] = g;
+      }
+    }
+  } finally {
+    state.scenEdit = se;
+  }
+  return G;
+}
+
+// Alles, was |dq/dd| ueber den Flug veraendert (Signatur fuer den Neubau)
+function depthFlightSig() {
+  const s = state;
+  return [s.parallax, s.depthBoost, s.speed, s.duration, s.zoomBase, s.flightMode,
+    s.driftDir, s.loopMode, s.ease, s.easeMode, s.tiltX, s.tiltY, s.swayAmp,
+    s.swayTempo, s.swayDir, s.swayRandom, s.tiltRampAmp, s.tiltRampDir, s.aspect,
+    s.frameX, s.frameY, s.target.x, s.target.y, s.rotationSpeed, s.strictEdges,
+    s.scenarioOn, JSON.stringify(s.waypoints), s.dolly, s.reverse, s.zoomDrift, gal3dActive() ? "g3:" + s.gal3dAmt + galGeomSig() + (s.galaxies || []).map((g) => g.near || 1).join("") : "",
+    s.starless ? s.starless.width + "x" + s.starless.height : ""].join("|");
+}
+
+// Untere Lipschitz-Huelle (kleinste Funktion >= a mit Anstieg <= s je Pixel,
+// Schachbrett-Metrik): zwei Raster-Durchlaeufe wie bei einer Distanz-
+// transformation, O(n)
+function lowerEnvelope(src, w, h, s) {
+  const a = Float32Array.from(src);
+  if (!(s < 1)) return a;
+  const sd = s * Math.SQRT2;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      let v = a[i];
+      if (x > 0 && a[i - 1] - s > v) v = a[i - 1] - s;
+      if (y > 0) {
+        const u = i - w;
+        if (a[u] - s > v) v = a[u] - s;
+        if (x > 0 && a[u - 1] - sd > v) v = a[u - 1] - sd;
+        if (x < w - 1 && a[u + 1] - sd > v) v = a[u + 1] - sd;
+      }
+      a[i] = v;
+    }
+  }
+  for (let y = h - 1; y >= 0; y--) {
+    for (let x = w - 1; x >= 0; x--) {
+      const i = y * w + x;
+      let v = a[i];
+      if (x < w - 1 && a[i + 1] - s > v) v = a[i + 1] - s;
+      if (y < h - 1) {
+        const u = i + w;
+        if (a[u] - s > v) v = a[u] - s;
+        if (x < w - 1 && a[u + 1] - sd > v) v = a[u + 1] - sd;
+        if (x > 0 && a[u - 1] - sd > v) v = a[u - 1] - sd;
+      }
+      a[i] = v;
+    }
+  }
+  return a;
+}
+
+// Float-Textur (RGBA16F, bilinear, gespiegelt): die Tiefe braucht mehr als
+// 8 Bit - Stufen von 1/255 waeren bei flachen Verlaeufen als feine Kanten
+// in der Verschiebung sichtbar
+function makeTextureFloat(w, h, rgba) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.FLOAT, rgba);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.MIRRORED_REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.MIRRORED_REPEAT);
+  requestRender(); // neue Textur sofort zeigen, auch im Leerlauf
+  return t;
+}
+
+/**
+ * Aus der Rohkarte die Render-Tiefe bauen: Steilheitsgrenze fuer den
+ * aktuellen Flug (R), dazu die geglaettete Tiefe des Grund-Leuchtens fuer
+ * den volumetrischen Nebel (G). Laeuft beim Laden und - entprellt - wenn
+ * sich Flug- oder Parallaxe-Einstellungen aendern
+ */
+function finalizeDepthMap() {
+  const raw = state.depthRaw;
+  if (!raw) return;
+  const { w, h } = raw;
+  const n = w * h;
+  const G = depthFlightGain();
+  const NG = DEPTH_GAIN_N;
+  const rawF = gal3dActive() ? galDiscDepth(raw.f, w, h, G) : raw.f;
+  let gMax = 0;
+  for (let k = 0; k <= NG; k++) gMax = Math.max(gMax, G[k]);
+  let env;
+  if (gMax > 1e-5) {
+    // Tiefenabhaengige Steilheitsgrenze |grad d| <= L(d) = KMAX / (G(d) *
+    // SAFETY) ueber die Umparametrisierung phi(d) = Integral G * SAFETY /
+    // KMAX: dort lautet die Grenze einfach |grad phi| <= 1 (je Bildhoehe).
+    // Huelle in phi bilden, dann zurueck - monotone Abbildung, also bleibt
+    // es die kleinste zulaessige Anhebung
+    const phi = new Float32Array(NG + 1);
+    for (let k = 1; k <= NG; k++) phi[k] = phi[k - 1] + (G[k - 1] + G[k]) * 0.5 / NG * DEPTH_SAFETY / DEPTH_KMAX;
+    const toPhi = (d) => {
+      const x = Math.min(1, Math.max(0, d)) * NG, k = Math.min(NG - 1, Math.floor(x));
+      return phi[k] + (phi[k + 1] - phi[k]) * (x - k);
+    };
+    const p = new Float32Array(n);
+    for (let i = 0; i < n; i++) p[i] = toPhi(rawF[i]);
+    const pe = lowerEnvelope(p, w, h, 1 / h);
+    env = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const v = pe[i];
+      let lo = 0, hi = NG;
+      while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (phi[mid] <= v) lo = mid; else hi = mid; }
+      const span = phi[hi] - phi[lo];
+      env[i] = (lo + (span > 0 ? Math.min(1, Math.max(0, (v - phi[lo]) / span)) : 0)) / NG;
+    }
+  } else {
+    env = Float32Array.from(rawF);
+  }
+  // Grund-Leuchten: dieselbe Tiefe grossraeumig geglaettet (Glaetten erhaelt
+  // die Steilheitsgrenze)
+  const back = Float32Array.from(env), tmp = new Float32Array(n);
+  const rb = Math.max(2, Math.round(h * 0.025));
+  for (let pass = 0; pass < 3; pass++) {
+    boxBlurH(back, tmp, w, h, rb);
+    boxBlurV(tmp, back, w, h, rb);
+  }
+  const rgbaF = new Float32Array(n * 4);
+  const gray = new Uint8ClampedArray(n * 4);
+  for (let i = 0, j = 0; i < n; i++, j += 4) {
+    rgbaF[j] = env[i]; rgbaF[j + 1] = back[i]; rgbaF[j + 2] = env[i]; rgbaF[j + 3] = 1;
+    const v = Math.round(Math.min(1, Math.max(0, env[i])) * 255);
+    gray[j] = gray[j + 1] = gray[j + 2] = v; gray[j + 3] = 255;
+  }
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  c.getContext("2d").putImageData(new ImageData(gray, w, h), 0, 0);
+  state.depthCanvas = c;
+  // CPU-Kopie fuer Klick-Zuordnung und Beschriftungen (gleiche Tiefe wie der
+  // Shader: f in voller Genauigkeit)
+  state.depthData = { data: gray, f: env, w, h };
+  state.depthLimit = { gFar: +G[0].toFixed(4), gNear: +G[NG].toFixed(4), gMax: +gMax.toFixed(4) };
+  state.depthSig = depthFlightSig();
+  if (texDepth) gl.deleteTexture(texDepth);
+  texDepth = makeTextureFloat(w, h, rgbaF);
+  const pv = $("depthPreview");
+  pv.height = Math.round(160 * h / w) || 107;
+  pv.getContext("2d").drawImage(c, 0, 0, pv.width, pv.height);
+  requestRender();
+}
+
+// Mittlere Tiefe der Scheibenebene (Ring 0,3-0,6 der Ellipse: Neigung
+// hebt sich symmetrisch auf, der Bulge zaehlt nicht mit) - Drehpunkt fuer
+// den Orbit. Gemerkt je Tiefenkarte und Galaxie
+let galPivotCache = { dd: null, key: "", v: 0.45 };
+function galPivotDepth(g) {
+  const dd = state.depthData;
+  if (!dd || !dd.f || !state.starless) return 0.45;
+  const key = [g.x, g.y, g.rad, g.flat, g.tilt].map((v) => (+v).toFixed(4)).join(",");
+  if (galPivotCache.dd === dd && galPivotCache.key === key) return galPivotCache.v;
+  const { w, h, f } = dd;
+  const imgAspect = state.starless.width / state.starless.height;
+  const t = g.tilt * Math.PI / 180, cs = Math.cos(t), sn = Math.sin(t);
+  const flat = Math.max(0.05, g.flat), R = g.rad * 0.6;
+  const x0 = Math.max(0, Math.floor(((g.x - R) / imgAspect + 0.5) * w)), x1 = Math.min(w - 1, Math.ceil(((g.x + R) / imgAspect + 0.5) * w));
+  const y0 = Math.max(0, Math.floor((0.5 - (g.y + R)) * h)), y1 = Math.min(h - 1, Math.ceil((0.5 - (g.y - R)) * h));
+  let s = 0, c = 0;
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const dx = ((x + 0.5) / w - 0.5) * imgAspect - g.x, dy = 0.5 - (y + 0.5) / h - g.y;
+    const r = Math.hypot((cs * dx + sn * dy) / g.rad, (-sn * dx + cs * dy) / (flat * g.rad));
+    if (r < 0.3 || r > 0.6) continue;
+    s += f[y * w + x]; c++;
+  }
+  const v = c ? s / c : 0.45;
+  galPivotCache = { dd, key, v };
+  return v;
+}
+
+// Galaxien als 3D-Scheibe: aktiv, sobald Galaxien im Spiel sind (Drehung an
+// oder automatisch gefunden) - ein Standard-Kreis auf einem Nebelbild bleibt
+// unberuehrt
+function gal3dActive() {
+  return !!state.gal3d && state.gal3dAmt > 0 && Array.isArray(state.galaxies) && state.galaxies.length > 0 &&
+    (state.spinSpeed !== 0 || state.galaxies.some((g) => g.auto));
+}
+/**
+ * Tiefe jeder Galaxie als geneigte Scheibe mit Kern-Woelbung. Die Neigung
+ * folgt der Ellipse (cos i = b/a); die nahe Seite (g.near) steht vorn, die
+ * ferne Seite schliesst auf Hoehe des umgebenden Himmels an. Der Kern ist
+ * eine Kugel - rund im BILD, nicht in der Scheibenebene. Das Helligkeits-
+ * relief wird innerhalb der Galaxie ersetzt: sein steiler Kern haette sonst
+ * ueber die Steilheitsgrenze einen Kegel erzeugt, der die Neigung einebnet.
+ * Die Staerken passen sich der fuer den Flug erlaubten Steilheit an
+ * (G = Verschiebung je Tiefeneinheit): so bleibt die Neigung sichtbar und
+ * faltungsfrei, bei kraeftigen Fluegen entsprechend flacher
+ */
+function galDiscDepth(src, w, h, G) {
+  const f = Float32Array.from(src);
+  const imgAspect = state.starless.width / state.starless.height;
+  const amt = state.gal3dAmt / 100;
+  const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  const NG = DEPTH_GAIN_N;
+  const Lat = (d) => {
+    if (!G) return Infinity;
+    const x = Math.min(1, Math.max(0, d)) * NG, k = Math.min(NG - 1, Math.floor(x));
+    const gv = G[k] + (G[k + 1] - G[k]) * (x - k);
+    return gv > 1e-5 ? DEPTH_KMAX / (gv * DEPTH_SAFETY) : Infinity;
+  };
+  for (const g of state.galaxies.slice(0, 8)) {
+    const t = g.tilt * Math.PI / 180, cs = Math.cos(t), sn = Math.sin(t);
+    const flat = Math.max(0.05, g.flat), sinI = Math.sqrt(Math.max(0, 1 - flat * flat));
+    const near = g.near === -1 ? -1 : 1;
+    const R = g.rad * 1.12;
+    const x0 = Math.max(0, Math.floor(((g.x - R) / imgAspect + 0.5) * w)), x1 = Math.min(w - 1, Math.ceil(((g.x + R) / imgAspect + 0.5) * w));
+    const y0 = Math.max(0, Math.floor((0.5 - (g.y + R)) * h)), y1 = Math.min(h - 1, Math.ceil((0.5 - (g.y - R)) * h));
+    const pts = [], rim = [];
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      const qx = ((x + 0.5) / w - 0.5) * imgAspect, qy = 0.5 - (y + 0.5) / h;
+      const dx = qx - g.x, dy = qy - g.y;
+      const ex = (cs * dx + sn * dy) / g.rad, ey = (-sn * dx + cs * dy) / (flat * g.rad);
+      const r = Math.hypot(ex, ey);
+      if (r >= 1.1) continue;
+      pts.push(y * w + x, ex, ey, r);
+      if (r > 0.95) rim.push(src[y * w + x]);
+    }
+    if (!pts.length) continue;
+    rim.sort((p, q) => p - q);
+    const base = rim.length ? rim[Math.floor(rim.length / 2)] : src[pts[0]];
+    const L = Lat(base);
+    // Neigung: ferne Kante = Himmel, nahe Kante = base + 2*Atilt; Gefaelle
+    // ueber die kleine Achse hoechstens 80 % der erlaubten Steilheit
+    const Atilt = Math.min(0.15 * amt * sinI, 0.8 * L * flat * g.rad / 2);
+    const rb = 0.28;
+    const Ab = Math.min(0.18 * amt, 0.8 * L * rb * g.rad / 1.05);
+    for (let k = 0; k < pts.length; k += 4) {
+      const i = pts[k], ex = pts[k + 1], ey = pts[k + 2], r = pts[k + 3];
+      const rImg = Math.hypot(ex, ey * flat);
+      const model = base + Atilt * (1 + near * Math.max(-1, Math.min(1, ey))) + Ab * Math.exp(-1.5 * (rImg / rb) ** 2);
+      const wgt = 1 - smooth(0.8, 1.1, r);
+      f[i] = f[i] * (1 - wgt) + model * wgt;
+    }
+  }
+  return f;
+}
+
+// Flug-Einstellungen geaendert -> Huelle entprellt neu rechnen (beim Export
+// sofort, damit jedes Bild mit der passenden Karte entsteht)
+let depthSigTimer = 0;
+function checkDepthFlightSig() {
+  if (!state.depthRaw) return;
+  const sig = depthFlightSig();
+  if (sig === state.depthSig) return;
+  if (state.exporting) { clearTimeout(depthSigTimer); finalizeDepthMap(); return; }
+  if (depthSigTimer) return;
+  depthSigTimer = setTimeout(() => { depthSigTimer = 0; finalizeDepthMap(); }, 180);
+}
+
+/**
+ * Galaxien-Rotation v2: Himmel hinter den Galaxien. Innerhalb aller
+ * Ellipsen wird der Himmel aus der Umgebung aufgefuellt (Push-Pull auf einer
+ * geoeffneten Fassung ohne Sterne/Sternreste); gedreht wird im Shader nur
+ * das Licht der Galaxie ueber diesem Himmel. 512 px reichen - der Himmel ist
+ * glatt. Aufrufer beim Bild- oder Spiegelwechsel markieren nur als veraltet,
+ * gebaut wird entprellt im Renderer (auch bei Ellipsen-Aenderungen)
+ */
+function buildSpinMask() { galBkTex = null; }
+
+function galGeomSig() {
+  return JSON.stringify(state.galaxies.map((g) => [g.x, g.y, g.rad, g.flat, g.tilt].map((v) => +(+v).toFixed(4))));
+}
+
+function buildGalaxyBg() {
+  if (!state.starless) return;
+  const src = downscale(state.starless, 512);
+  const w = src.width, h = src.height, n = w * h;
+  const px = canvasPixels(src);
+  const imgAspect = state.starless.width / state.starless.height;
+  const rgbO = new Float32Array(n * 3), chn = new Float32Array(n);
+  const ro = Math.max(2, Math.round(w * 0.006));
+  for (let c = 0; c < 3; c++) {
+    for (let i = 0; i < n; i++) chn[i] = px[i * 4 + c] / 255;
+    const o = openChannel(chn, w, h, ro);
+    for (let i = 0; i < n; i++) rgbO[i * 3 + c] = o[i];
+  }
+  const valid = new Float32Array(n).fill(1);
+  for (const g of state.galaxies) {
+    const t = g.tilt * Math.PI / 180, cs = Math.cos(t), sn = Math.sin(t);
+    for (let y = 0; y < h; y++) {
+      const qy = 0.5 - (y + 0.5) / h;
+      for (let x = 0; x < w; x++) {
+        const qx = ((x + 0.5) / w - 0.5) * imgAspect;
+        const dx = qx - g.x, dy = qy - g.y;
+        const ex = cs * dx + sn * dy, ey = (-sn * dx + cs * dy) / g.flat;
+        // etwas Rand dazu: der Himmel darf die aeusseren Halo-Reste nicht
+        // als "Himmel" uebernehmen
+        if (Math.hypot(ex, ey) < g.rad * 1.04) valid[y * w + x] = 0;
+      }
+    }
+  }
+  const fill = pushPullFill(rgbO, valid, w, h);
+  const rgba = new Float32Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    rgba[i * 4] = fill[i * 3]; rgba[i * 4 + 1] = fill[i * 3 + 1]; rgba[i * 4 + 2] = fill[i * 3 + 2]; rgba[i * 4 + 3] = 1;
+  }
+  if (texGalBk) gl.deleteTexture(texGalBk);
+  texGalBk = makeTextureFloat(w, h, rgba);
+  // Begleitgalaxien: Maske + aufgefuelltes Wirtslicht (ohne Begleiter)
+  const lum = new Float32Array(n);
+  for (let i = 0; i < n; i++) lum[i] = 0.299 * rgbO[i * 3] + 0.587 * rgbO[i * 3 + 1] + 0.114 * rgbO[i * 3 + 2];
+  const sats = galFindSatellites(lum, rgbO, w, h, imgAspect);
+  state.galSats = sats;
+  { const el = $("galSatCount"); if (el) el.textContent = t("galSatCount", sats.length); }
+  if (texGalSat) { gl.deleteTexture(texGalSat); texGalSat = null; }
+  if (sats.length) {
+    // Maske: 1 bis 1,2 Begleiter-Radien (mit Halo), weich auf 0 bei 1,7
+    const sMask = new Float32Array(n), hv = new Float32Array(n).fill(1);
+    for (const S of sats) {
+      const c = Math.cos(S.phi), sn = Math.sin(S.phi);
+      const R = S.a * 1.75;
+      const x0 = Math.max(0, Math.floor(S.mx - R)), x1 = Math.min(w - 1, Math.ceil(S.mx + R));
+      const y0 = Math.max(0, Math.floor(S.my - R)), y1 = Math.min(h - 1, Math.ceil(S.my + R));
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+        const dx = x - S.mx, dy = y - S.my;
+        const r = Math.hypot(c * dx + sn * dy, (-sn * dx + c * dy) / S.flat) / S.a;
+        const u = Math.min(1, Math.max(0, (1.7 - r) / 0.5)), v = u * u * (3 - 2 * u), i = y * w + x;
+        if (v > sMask[i]) sMask[i] = v;
+        if (r < 1.75) hv[i] = 0;
+      }
+    }
+    // Wirtslicht = Bild minus Himmel. Unter einem Begleiter: glatte Flaeche
+    // (quadratisch je Farbkanal), angepasst an das Scheibenlicht im Ring
+    // direkt um ihn (1,8-2,8 Radien) - uebernimmt den oertlichen Verlauf der
+    // Scheibe. Ohne genug Ringpunkte (Bildrand): aus der Umgebung aufgefuellt
+    const host = new Float32Array(n * 3);
+    for (let i = 0; i < n * 3; i++) host[i] = Math.max(0, rgbO[i] - fill[i]);
+    const hostFill = pushPullFill(host, hv, w, h);
+    for (const S of sats) {
+      const c = Math.cos(S.phi), sn = Math.sin(S.phi), R = Math.ceil(S.a * 2.8);
+      const x0 = Math.max(0, Math.floor(S.mx - R)), x1 = Math.min(w - 1, Math.ceil(S.mx + R));
+      const y0 = Math.max(0, Math.floor(S.my - R)), y1 = Math.min(h - 1, Math.ceil(S.my + R));
+      // Normalgleichungen fuer f = b0 + b1 u + b2 v + b3 u^2 + b4 uv + b5 v^2 (u, v in Radien)
+      const A = new Float64Array(36), B = [new Float64Array(6), new Float64Array(6), new Float64Array(6)];
+      let cnt = 0;
+      const basis = (u, v) => [1, u, v, u * u, u * v, v * v];
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+        const dx = x - S.mx, dy = y - S.my;
+        const r = Math.hypot(c * dx + sn * dy, (-sn * dx + c * dy) / S.flat) / S.a;
+        if (r < 1.8 || r > 2.8 || !hv[y * w + x]) continue;
+        const f = basis(dx / S.a, dy / S.a), i = (y * w + x) * 3;
+        for (let k = 0; k < 6; k++) {
+          for (let l = 0; l < 6; l++) A[k * 6 + l] += f[k] * f[l];
+          for (let ch = 0; ch < 3; ch++) B[ch][k] += f[k] * host[i + ch];
+        }
+        cnt++;
+      }
+      if (cnt < 40) continue;
+      const coef = B.map((bv) => solveSym6(A, bv));
+      if (coef.some((q) => !q)) continue;
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+        const i = y * w + x;
+        if (hv[i]) continue;
+        const f = basis((x - S.mx) / S.a, (y - S.my) / S.a);
+        for (let ch = 0; ch < 3; ch++) {
+          let v = 0; for (let k = 0; k < 6; k++) v += coef[ch][k] * f[k];
+          hostFill[i * 3 + ch] = Math.max(0, v);
+        }
+      }
+    }
+    const sat = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) {
+      sat[i * 4] = hostFill[i * 3]; sat[i * 4 + 1] = hostFill[i * 3 + 1]; sat[i * 4 + 2] = hostFill[i * 3 + 2]; sat[i * 4 + 3] = sMask[i];
+    }
+    texGalSat = makeTextureFloat(w, h, sat);
+  }
+  galBkTex = texColor;
+  galBkSig = galGeomSig();
+}
+
+/** 6x6-Gleichungssystem (Gauss mit Spaltenpivot); null, wenn singulaer. */
+function solveSym6(A0, b0) {
+  const N = 6, A = Float64Array.from(A0), b = Float64Array.from(b0);
+  for (let c = 0; c < N; c++) {
+    let pr = c;
+    for (let r = c + 1; r < N; r++) if (Math.abs(A[r * N + c]) > Math.abs(A[pr * N + c])) pr = r;
+    if (Math.abs(A[pr * N + c]) < 1e-9) return null;
+    if (pr !== c) {
+      for (let k = 0; k < N; k++) { const t = A[c * N + k]; A[c * N + k] = A[pr * N + k]; A[pr * N + k] = t; }
+      const t = b[c]; b[c] = b[pr]; b[pr] = t;
+    }
+    for (let r = c + 1; r < N; r++) {
+      const f = A[r * N + c] / A[c * N + c];
+      for (let k = c; k < N; k++) A[r * N + k] -= f * A[c * N + k];
+      b[r] -= f * b[c];
+    }
+  }
+  const x = new Float64Array(N);
+  for (let r = N - 1; r >= 0; r--) {
+    let v = b[r];
+    for (let k = r + 1; k < N; k++) v -= A[r * N + k] * x[k];
+    x[r] = v / A[r * N + r];
+  }
+  return x;
+}
+
+/**
+ * Begleitgalaxien in grossen Galaxien finden (M32/M110 vor M31 u. a.): Sie
+ * liegen im Licht der Wirtsgalaxie, gehoeren aber nicht zu ihrer Scheibe und
+ * duerfen nicht mitkreisen. Gesucht wird im Zylinderhut (Bild minus
+ * morphologische Oeffnung) auf zwei Groessen - fein trennt nahe Begleiter vom
+ * Kern, grob erfasst ausgedehnte ganz. Kern, Spiralknoten und schwache
+ * Scheibenstrukturen fallen ueber Abstand, Helligkeit, Groesse und Form raus.
+ * Rueckgabe in Pixeln der Arbeitsgroesse: [{ mx, my, a, flat, phi }]
+ */
+function galFindSatellites(Lo, rgb, w, h, imgAspect) {
+  const n = w * h, out = [];
+  const tmp = new Float32Array(n), lab = new Int32Array(n), stack = new Int32Array(n);
+  for (const g of state.galaxies || []) {
+    if (!(g.rad >= 0.06)) continue;
+    const t = g.tilt * Math.PI / 180, cs = Math.cos(t), sn = Math.sin(t);
+    const reg = new Uint8Array(n);
+    for (let y = 0; y < h; y++) {
+      const qy = 0.5 - (y + 0.5) / h;
+      for (let x = 0; x < w; x++) {
+        const dx = ((x + 0.5) / w - 0.5) * imgAspect - g.x, dy = qy - g.y;
+        if (Math.hypot(cs * dx + sn * dy, (-sn * dx + cs * dy) / g.flat) < g.rad * 1.4) reg[y * w + x] = 1;
+      }
+    }
+    const hx = (g.x / imgAspect + 0.5) * w - 0.5, hy = (0.5 - g.y) * h - 0.5;
+    for (const rs of [Math.max(3, Math.round(w * 0.018)), Math.max(4, Math.round(w * 0.035))]) {
+      const M = openChannel(Lo, w, h, rs);
+      { const r = Math.max(2, Math.round(rs / 2)); for (let k = 0; k < 2; k++) { boxBlurH(M, tmp, w, h, r); boxBlurV(tmp, M, w, h, r); } }
+      const R = new Float32Array(n), vals = [];
+      for (let i = 0; i < n; i++) if (reg[i]) { R[i] = Lo[i] - M[i]; vals.push(Math.abs(R[i])); }
+      if (vals.length < 100) continue;
+      vals.sort((p, q) => p - q);
+      const sig = 1.4826 * vals[vals.length >> 1];
+      const th = Math.max(0.02, 5 * sig), pkMin = Math.max(0.06, 15 * sig);
+      lab.fill(-1);
+      for (let i0 = 0; i0 < n; i0++) {
+        if (!reg[i0] || lab[i0] >= 0 || R[i0] <= th) continue;
+        let sp = 0, cnt = 0, f = 0, fx = 0, fy = 0, fxx = 0, fyy = 0, fxy = 0, pk = 0, px = 0, py = 0, core = false;
+        stack[sp++] = i0; lab[i0] = i0;
+        while (sp) {
+          const i = stack[--sp], x = i % w, y = (i / w) | 0, v = R[i];
+          cnt++; f += v; fx += v * x; fy += v * y; fxx += v * x * x; fyy += v * y * y; fxy += v * x * y;
+          if (v > pk) { pk = v; px = x; py = y; }
+          if (Math.abs(x - hx) < 1.5 && Math.abs(y - hy) < 1.5) core = true;
+          for (let ddy = -1; ddy <= 1; ddy++) for (let ddx = -1; ddx <= 1; ddx++) {
+            const xx = x + ddx, yy = y + ddy;
+            if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+            const k = yy * w + xx;
+            if (lab[k] < 0 && reg[k] && R[k] > th) { lab[k] = i0; stack[sp++] = k; }
+          }
+        }
+        if (core || f <= 0) continue;
+        const mx = fx / f, my = fy / f;
+        const vxx = fxx / f - mx * mx, vyy = fyy / f - my * my, vxy = fxy / f - mx * my;
+        const tr = (vxx + vyy) / 2, dd = Math.sqrt(Math.max(0, ((vxx - vyy) / 2) ** 2 + vxy * vxy));
+        const l1 = Math.max(1e-6, tr + dd), l2 = Math.max(1e-6, tr - dd);
+        const a = 2.9 * Math.sqrt(l1), flat = Math.sqrt(l2 / l1);
+        if (Math.hypot(mx - hx, my - hy) / h < 0.08 || pk < pkMin || a < 0.025 * h ||
+          cnt < 0.0004 * n || flat < 0.4 || Math.hypot(px - mx, py - my) > 0.6 * a) continue;
+        const S = { mx, my, a, flat: Math.max(0.4, flat), phi: 0.5 * Math.atan2(2 * vxy, vxx - vyy) };
+        // Eigenes Licht gegen den Ring drumherum: Ein Begleiter hebt sich
+        // deutlich ab und hat die Farbe alter Sterne; Sternwolken der Scheibe
+        // (NGC 206 in M31) heben sich kaum ab und sind blau - sie kreisen mit
+        const ci = [0, 0, 0], cr = [0, 0, 0];
+        let ni = 0, nr = 0;
+        const R2 = Math.ceil(a * 1.7);
+        for (let y = Math.max(0, Math.floor(my - R2)); y <= Math.min(h - 1, Math.ceil(my + R2)); y++) {
+          for (let x = Math.max(0, Math.floor(mx - R2)); x <= Math.min(w - 1, Math.ceil(mx + R2)); x++) {
+            const d = Math.hypot(x - mx, y - my) / a, i = (y * w + x) * 3;
+            if (d < 0.5) { ci[0] += rgb[i]; ci[1] += rgb[i + 1]; ci[2] += rgb[i + 2]; ni++; }
+            else if (d > 1.3 && d < 1.7) { cr[0] += rgb[i]; cr[1] += rgb[i + 1]; cr[2] += rgb[i + 2]; nr++; }
+          }
+        }
+        if (!ni || !nr) continue;
+        const res = ci.map((v, k) => v / ni - cr[k] / nr);
+        const lumOf = (c) => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+        const ringL = lumOf(cr.map((v) => v / nr));
+        if (lumOf(res) < Math.max(0.05, 0.3 * ringL) || res[2] > 1.12 * Math.max(1e-3, res[0])) continue;
+        // auf beiden Skalen gefunden: die groessere (vollstaendigere) Form gilt
+        const dup = out.find((o) => Math.hypot(o.mx - mx, o.my - my) < 0.6 * Math.max(o.a, a));
+        if (!dup) out.push(S);
+        else if (a > dup.a) Object.assign(dup, S);
+      }
+    }
+  }
+  return out;
+}
+
+// Ausgewaehlte Galaxie <-> Regler: die bisherigen Regler (Zentrum, Radius,
+// Ellipse, Lage, Wirbel) bearbeiten immer die ausgewaehlte Galaxie. Ohne
+// Liste entsteht Galaxie 1 aus den Reglern (alte Projekte, Presets)
+function galEnsure() {
+  if (!Array.isArray(state.galaxies)) state.galaxies = [];
+  if (!state.galaxies.length) {
+    state.galaxies.push({ x: state.spinCenter.x, y: state.spinCenter.y,
+      rad: Math.max(0.0075, (state.spinRadius / 100) * 0.75), flat: 1 - (state.spinFlat / 100) * 0.7,
+      tilt: state.spinTilt, twist: state.spinDiff, dir: 1, name: "", auto: false });
+    state.galSel = 0;
+  }
+  if (!(state.galSel >= 0 && state.galSel < state.galaxies.length)) state.galSel = 0;
+}
+function galSyncFromState() {
+  galEnsure();
+  if (galSelecting) return;
+  const key = galSliderKey();
+  if (key === galSyncedKey) return;
+  galSyncedKey = key;
+  const g = state.galaxies[state.galSel];
+  g.x = state.spinCenter.x; g.y = state.spinCenter.y;
+  g.rad = Math.max(0.0075, (state.spinRadius / 100) * 0.75);
+  g.flat = 1 - (state.spinFlat / 100) * 0.7;
+  g.tilt = state.spinTilt;
+  g.twist = state.spinDiff;
+}
+// Waehrend der Auswahl setzen wir die Regler nacheinander - der Abgleich
+// Regler -> Galaxie darf dabei nicht laufen (sonst ueberschreibt der erste
+// Regler die noch alten Werte der anderen)
+let galSelecting = false;
+function galSelect(i) {
+  galEnsure();
+  state.galSel = Math.max(0, Math.min(state.galaxies.length - 1, i));
+  const g = { ...state.galaxies[state.galSel] };
+  galSelecting = true;
+  try {
+    state.spinCenter = { x: g.x, y: g.y };
+    setCtl("ctlSpinRadius", Math.max(1, Math.min(100, +(g.rad / 0.75 * 100).toFixed(1))));
+    setCtl("ctlSpinFlat", Math.max(0, Math.min(100, Math.round((1 - g.flat) / 0.7 * 100))));
+    setCtl("ctlSpinTilt", Math.round(((g.tilt % 180) + 180) % 180));
+    setCtl("ctlSpinDiff", Math.round(g.twist));
+  } finally {
+    galSelecting = false;
+  }
+  // Exakte Werte der Galaxie behalten (Regler runden auf ihre Schrittweite)
+  Object.assign(state.galaxies[state.galSel], { rad: g.rad, flat: g.flat, tilt: g.tilt, twist: g.twist });
+  galSyncedKey = galSliderKey();
+  if (typeof rebuildGalList === "function") rebuildGalList();
+}
+// Regler-Stand, mit dem die Auswahl zuletzt abgeglichen wurde: nur wenn sich
+// ein Regler wirklich bewegt, gehen seine (gerundeten) Werte in die Galaxie
+let galSyncedKey = "";
+function galSliderKey() {
+  return [state.spinCenter.x, state.spinCenter.y, state.spinRadius, state.spinFlat, state.spinTilt, state.spinDiff].join("|");
+}
+// Winkel je Galaxie zum Flugzeitpunkt te: starr (global in Grad/s, Richtung
+// je Galaxie) + begrenzter Wirbel innen (waechst mit dem Winkel, sattigt bei
+// 0,2 rad = 11,5 Grad - organisch, wickelt sich aber nie auf)
+function galAngles(te) {
+  const base = state.spinSpeed * Math.PI / 180 * te;
+  return state.galaxies.map((g) => {
+    const a = base * (g.dir === undefined ? 1 : g.dir);
+    const tw = (g.twist / 100) * Math.max(-0.2, Math.min(0.2, 0.35 * a));
+    return { a, tw };
+  });
+}
+function galUniforms(te, te2) {
+  const N = Math.min(8, state.galaxies.length);
+  const A = new Float32Array(32), B = new Float32Array(32), C = new Float32Array(32);
+  const g1 = galAngles(te), g2 = galAngles(te2 === undefined ? te : te2);
+  for (let k = 0; k < N; k++) {
+    const g = state.galaxies[k], t = g.tilt * Math.PI / 180;
+    A.set([g.x, g.y, g.rad, Math.max(0.05, g.flat)], k * 4);
+    B.set([Math.cos(t), Math.sin(t), g1[k].a, g1[k].tw], k * 4);
+    C.set([g2[k].a, g2[k].tw, 0, 0], k * 4);
+  }
+  return { N, A, B, C };
+}
+
+function boxBlurH(src, dst, w, h, r) {
+  const div = r * 2 + 1;
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    let acc = 0;
+    for (let x = -r; x <= r; x++) acc += src[row + clampi(x, w)];
+    for (let x = 0; x < w; x++) {
+      dst[row + x] = acc / div;
+      acc += src[row + clampi(x + r + 1, w)] - src[row + clampi(x - r, w)];
+    }
+  }
+}
+
+function boxBlurV(src, dst, w, h, r) {
+  const div = r * 2 + 1;
+  for (let x = 0; x < w; x++) {
+    let acc = 0;
+    for (let y = -r; y <= r; y++) acc += src[clampi(y, h) * w + x];
+    for (let y = 0; y < h; y++) {
+      dst[y * w + x] = acc / div;
+      acc += src[clampi(y + r + 1, h) * w + x] - src[clampi(y - r, h) * w + x];
+    }
+  }
+}
+
+function clampi(v, n) { return v < 0 ? 0 : (v >= n ? n - 1 : v); }
+
+// ---------------------------------------------------------------- Stern-Extraktion
+
+
+/**
+ * Textur-Atlas mit den echten Pixel-Abbildern der hellsten Sterne: je Stern
+ * wird ein Ausschnitt (inkl. Halo/Spikes-Rand) aus dem Sternmasken-Bild in
+ * einen 2048er-Atlas gepackt (Shelf-Packing, hellste zuerst). Die Eintraege
+ * speichern Zentrum (Textur-UV, y bereits geflippt wie makeTexture), halbe
+ * Groesse in Atlas-UV und halbe Groesse in Ebenen-Einheiten.
+ */
+/**
+ * Sternbibliothek: 16 prozedurale Strahlenkraenze (4x4 Kacheln je 256 px),
+ * nachempfunden echten Astrofotos heller Sterne (Plejaden, Deneb im
+ * Newton, Seestar): Dutzende hauchfeine Strahlen ungleicher Laenge und
+ * Staerke, teils als gegenueberliegende Paare (Mikrolinsen-Beugung), dazu
+ * eine faserige Winkel-Modulation des Hofs und eine leichte Ellipse.
+ * R = Strahlen (0..1, am Kern hell, zum Rand auslaufend), G = Halo-Fasern
+ * um 0,5, ausserhalb des Kreises neutral. Wird einmal pro Sitzung gebaut.
+ */
+function buildStarLib() {
+  const T = 256, N = 4, W = T * N;
+  const c = document.createElement("canvas");
+  c.width = W; c.height = W;
+  const g = c.getContext("2d");
+  const img = g.createImageData(W, W);
+  const d = img.data;
+  const TAU = Math.PI * 2;
+  for (let k = 0; k < N * N; k++) {
+    const rnd = mulberry32(1000 + k * 7919);
+    const rays = [];
+    const n = 36 + Math.floor(rnd() * 45);
+    for (let i = 0; i < n; i++) {
+      const a = rnd() * TAU;
+      const sig = (0.25 + rnd() * 0.6) * Math.PI / 180;
+      let L = 0.12 + Math.pow(rnd(), 2.2) * 0.75;
+      let st = 0.25 + rnd() * 0.75;
+      if (rnd() < 0.1) { L = 0.45 + rnd() * 0.35; st = 0.7 + rnd() * 0.4; }
+      rays.push([a, sig, L, st]);
+      if (rnd() < 0.5) rays.push([a + Math.PI, sig, L * (0.7 + rnd() * 0.5), st * (0.7 + rnd() * 0.5)]);
+    }
+    const harm = [3, 5, 7, 11, 13, 19].map((h) => [h, rnd() * TAU, rnd()]);
+    const ell = 1 + rnd() * 0.12, ea = rnd() * Math.PI;
+    const ce = Math.cos(ea), se = Math.sin(ea);
+    const ox = (k % N) * T, oy = Math.floor(k / N) * T;
+    for (let y = 0; y < T; y++) {
+      for (let x = 0; x < T; x++) {
+        const o = ((oy + y) * W + ox + x) * 4;
+        const dx = (x + 0.5) / T * 2 - 1, dy = (y + 0.5) / T * 2 - 1;
+        const ex = (dx * ce + dy * se) / ell, ey = -dx * se + dy * ce;
+        const r = Math.hypot(ex, ey);
+        d[o + 3] = 255;
+        if (r >= 1) { d[o] = 0; d[o + 1] = 128; d[o + 2] = 0; continue; }
+        const th = Math.atan2(ey, ex);
+        let acc = 0;
+        const wMin = 0.9 / Math.max(r * T * 0.5, 1);
+        for (let i = 0; i < rays.length; i++) {
+          const ry = rays[i];
+          let dd = th - ry[0];
+          dd -= Math.round(dd / TAU) * TAU;
+          const w = Math.max(ry[1], wMin);
+          if (Math.abs(dd) > 4 * w) continue;
+          acc += ry[3] * Math.exp(-dd * dd / (2 * w * w)) * Math.exp(-r / ry[2]) * (1 - r);
+        }
+        let gv = 0.5;
+        for (let i = 0; i < harm.length; i++) gv += harm[i][2] * 0.08 * Math.cos(harm[i][0] * th + harm[i][1]);
+        d[o] = Math.min(255, Math.round(acc * 255));
+        d[o + 1] = Math.round(Math.min(1, Math.max(0, gv)) * 255);
+        d[o + 2] = 0;
+      }
+    }
+  }
+  g.putImageData(img, 0, 0);
+  state.starLib = { tiles: N * N, size: T };
+  return makeTexture(c);
+}
+
+function buildStarAtlas(list, srcCanvas, srcData, labels) {
+  const A = 2048;
+  const c = document.createElement("canvas");
+  c.width = A; c.height = A;
+  const g = c.getContext("2d");
+  const entries = new Float32Array(list.length * 4).fill(-1);
+  const W = srcCanvas.width, h = srcCanvas.height;
+  const img = g.createImageData(A, A), out = img.data;
+  const coreR = (st) => Math.sqrt(st.area / Math.PI) * 0.9 + 2.5;
+  // Jeder Ausschnitt enthaelt NUR den eigenen Stern: Pixel, die laut
+  // Wasserscheide zu einem anderen Stern gehoeren, werden durch das
+  // radiale Profil des eigenen Sterns ersetzt (azimutaler Median - Spikes
+  // und Nachbarn verschieben ihn nicht). So schweben keine fremden Sterne
+  // mehr als Klumpen im Patch mit; jeder Nachbar wird mit seiner eigenen
+  // Tiefe gerendert. Die Naht liegt auf der Wasserscheide, wo beide Sterne
+  // ohnehin gleich hell sind - kein Loch, kein Rand
+  const px = (x, y, k) => (x < 0 || y < 0 || x >= W || y >= h) ? 0 : srcData[(y * W + x) * 4 + k];
+  let x = 0, y = 0, rowH = 0, packed = 0;
+  const N = Math.min(list.length, 2500);
+  for (let i = 0; i < N; i++) {
+    const st = list[i];
+    // Groesse aus der tatsaechlichen Ausdehnung des Sterns (weitester
+    // eigener Pixel, Spikes eingeschlossen) plus Saum fuer den Halo unter
+    // der Schwelle. Die hellsten Sterne duerfen fuer lange Spikes groesser
+    // werden
+    const cap = i < 4 ? 200 : i < 24 ? 120 : 90;
+    const rPx = Math.min(cap, Math.max(4, Math.ceil(Math.max(st.ext * 1.5 + 3, coreR(st) * 1.6))));
+    const s = 2 * rPx + 2;
+    if (x + s > A) { x = 0; y += rowH + 1; rowH = 0; }
+    if (y + s > A) break;
+    const sx = st.x - rPx, sy = st.y - rPx;
+    const ix0 = Math.floor(sx) - 1, iy0 = Math.floor(sy) - 1, span = 2 * rPx + 3;
+    // Radialprofil (Median je Ring) aus eigenen und Hintergrund-Pixeln
+    const bins = [];
+    for (let r = 0; r <= rPx + 2; r++) bins.push([]);
+    for (let yy = iy0; yy < iy0 + span; yy++) {
+      if (yy < 0 || yy >= h) continue;
+      for (let xx = ix0; xx < ix0 + span; xx++) {
+        if (xx < 0 || xx >= W) continue;
+        const l = labels[yy * W + xx];
+        if (l >= 0 && l !== st.lab) continue;
+        const r = Math.round(Math.hypot(xx - st.x, yy - st.y));
+        if (r < bins.length) bins[r].push(yy * W + xx);
+      }
+    }
+    const prof = new Float32Array(bins.length * 3);
+    let lastR = 0, lastG = 0, lastB = 0;
+    for (let r = 0; r < bins.length; r++) {
+      const b = bins[r];
+      if (b.length) {
+        const lumOf = (q) => srcData[q * 4] * 77 + srcData[q * 4 + 1] * 150 + srcData[q * 4 + 2] * 29;
+        b.sort((p, q) => lumOf(p) - lumOf(q));
+        const q = b[b.length >> 1] * 4;
+        lastR = srcData[q]; lastG = srcData[q + 1]; lastB = srcData[q + 2];
+        // Sternprofil faellt nach aussen: Ausreisser nach oben kappen
+        if (r > 0) {
+          lastR = Math.min(lastR, prof[(r - 1) * 3]); lastG = Math.min(lastG, prof[(r - 1) * 3 + 1]); lastB = Math.min(lastB, prof[(r - 1) * 3 + 2]);
+        }
+      }
+      prof[r * 3] = lastR; prof[r * 3 + 1] = lastG; prof[r * 3 + 2] = lastB;
+    }
+    // Pixelwert mit Fremd-Ersatz (fuer bilineares Abtasten)
+    const val = (xx, yy, k) => {
+      if (xx < 0 || yy < 0 || xx >= W || yy >= h) return 0;
+      const l = labels[yy * W + xx];
+      if (l >= 0 && l !== st.lab) {
+        const rr = Math.hypot(xx - st.x, yy - st.y), r0 = Math.min(bins.length - 1, Math.floor(rr));
+        const r1 = Math.min(bins.length - 1, r0 + 1), f = rr - Math.floor(rr);
+        return prof[r0 * 3 + k] * (1 - f) + prof[r1 * 3 + k] * f;
+      }
+      return px(xx, yy, k);
+    };
+    // Patch schreiben: Zielpixel k liegt ueber Quellkoordinate sx + k
+    // (wie drawImage(src, sx, sy, 2r, 2r, ...) im Pixelraster)
+    for (let ky = 0; ky < 2 * rPx; ky++) {
+      const fy = sy + ky, y0 = Math.floor(fy), ty = fy - y0;
+      for (let kx = 0; kx < 2 * rPx; kx++) {
+        const fx = sx + kx, x0 = Math.floor(fx), tx = fx - x0;
+        const o = ((y + 1 + ky) * A + (x + 1 + kx)) * 4;
+        for (let k = 0; k < 3; k++) {
+          const top = val(x0, y0, k) * (1 - tx) + val(x0 + 1, y0, k) * tx;
+          const bot = val(x0, y0 + 1, k) * (1 - tx) + val(x0 + 1, y0 + 1, k) * tx;
+          out[o + k] = top * (1 - ty) + bot * ty;
+        }
+        out[o + 3] = 255;
+      }
+    }
+    entries[i * 4]     = (x + 1 + rPx) / A;       // Zentrum u
+    entries[i * 4 + 1] = 1 - (y + 1 + rPx) / A;   // Zentrum v (Flip wie makeTexture)
+    entries[i * 4 + 2] = rPx / A;                 // halbe Groesse in Atlas-UV
+    entries[i * 4 + 3] = rPx / h;                 // halbe Groesse in Ebenen-Einheiten
+    x += s; rowH = Math.max(rowH, s);
+    packed++;
+  }
+  g.putImageData(img, 0, 0);
+  return { canvas: c, entries, packed };
+}
+
+/**
+ * Perzentil-Schwelle des "Kleinste Sterne ausblenden"-Reglers: Regler 0..100
+ * -> Anteil der auszublendenden (kleinsten) Sterne. Die Kurve ist unten
+ * flach, damit sich der Anfang fein dosieren laesst; am rechten Anschlag
+ * bleiben nur die hellsten ~1,5 %.
+ */
+function starCullFrac() {
+  const P = state.starCull / 100;
+  return P <= 0 ? 0 : Math.min(0.985, Math.pow(P, 1.35) * 0.985);
+}
+function starCullThreshold() {
+  const b = state.maskBrightSorted;
+  if (!b || !b.length) return 0;
+  const frac = starCullFrac();
+  if (frac <= 0) return 0;
+  const idx = Math.min(b.length - 1, Math.floor(b.length * frac));
+  // knapp ueber dem Perzentilwert, damit "aBright < Schwelle" ihn erfasst
+  return b[idx] + 1e-6;
+}
+function refreshStarCullOut() {
+  const out = $("outStarCull");
+  if (!out) return;
+  const n = state.maskStarCount || 0;
+  if (!n) { out.textContent = "\u2013"; return; }
+  const t = starCullThreshold();
+  let hidden = 0;
+  if (t > 0) {
+    const b = state.maskBrightSorted;
+    // erste Position >= Schwelle (binaere Suche)
+    let lo = 0, hi = b.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (b[m] < t) lo = m + 1; else hi = m; }
+    hidden = lo;
+  }
+  out.textContent = (n - hidden).toLocaleString() + " / " + n.toLocaleString();
+}
+
+/**
+ * Sterne in der Maske trennen (Wasserscheide wie in SExtractor/photutils):
+ * Jedes Pixel ueber der Grundschwelle "klettert" zum hellsten Nachbarn, bis
+ * es auf einem Gipfel ankommt - so gehoeren Halo und Spikes eines Sterns zu
+ * seinem eigenen Gipfel, ein schwacher Stern im Saum eines hellen bekommt
+ * dagegen sein eigenes Gebiet. Gipfel ohne echte Prominenz (Rauschhoecker
+ * auf Spikes, Plateaus gesaettigter Kerne, Buckel unter der Sternschwelle)
+ * verschmelzen ueber ihren Sattel mit dem Nachbarn. Liefert die Sterne und
+ * je Pixel das Gebiet (labels, -1 = Hintergrund) - der Atlas nimmt damit
+ * nur die eigenen Pixel eines Sterns in seinen Ausschnitt.
+ */
+function segmentStars(lum, data, w, h, THRESH) {
+  const LOW = Math.max(8, THRESH >> 1);
+  const PROM_ABS = 12, PROM_REL = 0.18;
+  const n = w * h;
+  const par = new Int32Array(n).fill(-1);
+  // 1) Bergauf-Zeiger: hellster 8er-Nachbar (Gleichstand -> kleinerer
+  // Index, damit Plateaus eindeutig ablaufen)
+  for (let y = 0; y < h; y++) {
+    const y0 = y > 0 ? -1 : 0, y1 = y < h - 1 ? 1 : 0;
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x, v = lum[i];
+      if (v < LOW) continue;
+      const x0 = x > 0 ? -1 : 0, x1 = x < w - 1 ? 1 : 0;
+      let best = i, bv = v;
+      for (let dy = y0; dy <= y1; dy++) {
+        for (let dx = x0; dx <= x1; dx++) {
+          const j = i + dy * w + dx, lj = lum[j];
+          if (lj > bv || (lj === bv && j < best)) { best = j; bv = lj; }
+        }
+      }
+      par[i] = best;
+    }
+  }
+  // 2) Gipfel aufloesen (Pfadkompression) und Gebiete nummerieren
+  const regOf = new Int32Array(n).fill(-1);
+  const peakV = [];
+  for (let i = 0; i < n; i++) {
+    if (par[i] < 0) continue;
+    let r = i;
+    while (par[r] !== r) r = par[r];
+    let k = i;
+    while (par[k] !== r) { const nx = par[k]; par[k] = r; k = nx; }
+    if (regOf[r] < 0) { regOf[r] = peakV.length; peakV.push(lum[r]); }
+  }
+  const R = peakV.length;
+  // 3) Saettel zwischen benachbarten Gebieten (hoechster Uebergang)
+  const sad = new Map();
+  const lab = new Int32Array(n).fill(-1);
+  for (let i = 0; i < n; i++) if (par[i] >= 0) lab[i] = regOf[par[i]];
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x, a = lab[i];
+      if (a < 0) continue;
+      const nb = [x < w - 1 ? i + 1 : -1, y < h - 1 ? i + w : -1,
+        x < w - 1 && y < h - 1 ? i + w + 1 : -1, x > 0 && y < h - 1 ? i + w - 1 : -1];
+      for (const j of nb) {
+        if (j < 0) continue;
+        const b = lab[j];
+        if (b < 0 || b === a) continue;
+        const sv = Math.min(lum[i], lum[j]);
+        const key = a < b ? a * R + b : b * R + a;
+        const old = sad.get(key);
+        if (old === undefined || sv > old) sad.set(key, sv);
+      }
+    }
+  }
+  // 4) Unechte Gipfel ueber den hoechsten Sattel zuerst verschmelzen
+  const uf = new Int32Array(R);
+  for (let r = 0; r < R; r++) uf[r] = r;
+  const find = (r) => { while (uf[r] !== r) { uf[r] = uf[uf[r]]; r = uf[r]; } return r; };
+  const pairs = [];
+  for (const [key, sv] of sad) pairs.push(sv, Math.floor(key / R), key % R);
+  const order = [];
+  for (let k = 0; k < pairs.length; k += 3) order.push(k);
+  order.sort((p, q) => pairs[q] - pairs[p]);
+  for (const k of order) {
+    const sv = pairs[k];
+    let ra = find(pairs[k + 1]), rb = find(pairs[k + 2]);
+    if (ra === rb) continue;
+    if (peakV[ra] < peakV[rb]) { const t = ra; ra = rb; rb = t; }
+    // Buckel unter der Sternschwelle gehen immer im Nachbarn auf; zwei
+    // Sterne, die sich erst unter der Schwelle beruehren, bleiben getrennt
+    // (sie waren schon als eigene Flecken erkennbar)
+    const low = peakV[rb];
+    if (low < THRESH || (sv >= THRESH && low - sv < Math.max(PROM_ABS, PROM_REL * low))) uf[rb] = ra;
+  }
+  // 5) Sterne = Gebiete mit Gipfel ueber der Sternschwelle; Kennzahlen nur
+  // aus Pixeln ueber der Schwelle (wie bisher), Ausdehnung fuer den Atlas
+  const starOf = new Int32Array(R).fill(-1);
+  const acc = [];
+  for (let i = 0; i < n; i++) {
+    let a = lab[i];
+    if (a < 0) continue;
+    a = find(a);
+    if (peakV[a] < THRESH) { lab[i] = -1; continue; }
+    if (starOf[a] < 0) { starOf[a] = acc.length; acc.push({ flux: 0, cx: 0, cy: 0, area: 0, peak: 0, sr: 0, sg: 0, sb: 0, d2: 0 }); }
+    const si = starOf[a];
+    lab[i] = si;
+    const v = lum[i];
+    if (v < THRESH) continue;
+    const st = acc[si], x = i % w, y = (i / w) | 0, j = i * 4;
+    st.flux += v; st.cx += x * v; st.cy += y * v; st.area++;
+    if (v > st.peak) st.peak = v;
+    st.sr += data[j] * v; st.sg += data[j + 1] * v; st.sb += data[j + 2] * v;
+  }
+  const found = acc.map((a, k) => ({
+    x: a.flux > 0 ? a.cx / a.flux : 0, y: a.flux > 0 ? a.cy / a.flux : 0,
+    flux: a.flux, area: a.area, peak: a.peak, lab: k, ext: 0,
+    r: a.flux > 0 ? a.sr / a.flux : 0, g: a.flux > 0 ? a.sg / a.flux : 0, b: a.flux > 0 ? a.sb / a.flux : 0,
+  }));
+  // Ausdehnung: weitester eigener Pixel ueber der Schwelle (Spikes zaehlen mit)
+  for (let i = 0; i < n; i++) {
+    const si = lab[i];
+    if (si < 0 || lum[i] < THRESH) continue;
+    const st = found[si], dx = (i % w) - st.x, dy = ((i / w) | 0) - st.y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 > st.ext) st.ext = d2;
+  }
+  for (const st of found) st.ext = Math.sqrt(st.ext);
+  return { found: found.filter((st) => st.flux > 0), labels: lab };
+}
+
+/**
+ * Findet Sterne in der Maske (Wasserscheide, segmentStars) und baut den
+ * GPU-Puffer: pro Stern [x, y, helligkeit, größe, r, g, b] in Ebenen-Einheiten.
+ * Die Tiefen-Ebene wird erst im Vertexshader aus Seed/Streuung/Abstand bestimmt.
+ */
+function buildStarBuffer() {
+  if (!state.stars) {
+    state.maskStarFloats = null; state.maskStarCount = 0;
+    state.maskBrightSorted = null; refreshStarCullOut();
+    uploadStars(); return;
+  }
+  const src = downscale(state.stars, 3000);
+  const w = src.width, h = src.height;
+  const data = canvasPixels(src);
+  const imgAspect = state.stars.width / state.stars.height;
+
+  const lum = new Uint8Array(w * h);
+  for (let i = 0, j = 0; i < lum.length; i++, j += 4) {
+    lum[i] = (data[j] * 77 + data[j + 1] * 150 + data[j + 2] * 29) >> 8;
+  }
+
+  const THRESH = 24;
+  const { found, labels } = segmentStars(lum, data, w, h, THRESH);
+
+  found.sort((p, q) => q.flux - p.flux);
+  // Obergrenze für Masken-Sterne: moderne GPUs schaffen das locker, das
+  // Gaia-Matching läuft über ein Suchgitter (linear) - bei dichten
+  // Milchstraßenfeldern schnitt die alte 9000er-Grenze real ab
+  const MAX = 25000;
+  const list = found.slice(0, MAX);
+
+  const FLOATS = 7;
+  const buf = new Float32Array(list.length * FLOATS);
+  // Bezugswert fuer die Helligkeit: der hellste Stern des Bildes (die Liste
+  // ist nach Fluss sortiert). Ein Sternfeld umspannt mehrere Groessenordnungen
+  // - die alte absolute Grenze (Fluss 20000) machte schon mittlere Sterne
+  // "maximal hell", ein Stern wie Sadr war dann nicht mehr davon zu
+  // unterscheiden
+  const fluxMax = Math.max(1, list.length ? list[0].flux : 1);
+  let o = 0;
+  for (const st of list) {
+    const u = st.x / w, v = st.y / h;
+    const rel = Math.min(1, st.flux / fluxMax);
+    const bright = Math.log10(1 + 999 * rel) / 3;
+    // Radius aus der Fleckgroesse plus Zuschlag fuer die hellsten Sterne,
+    // damit die Leitsterne eines Feldes auch als solche wirken
+    const radiusPx = Math.max(1.1, Math.sqrt(st.area / Math.PI) * 0.9 +
+      Math.pow(bright, 3) * 9);
+    const size = radiusPx / h; // Radius in Ebenen-Einheiten
+
+    const norm = Math.max(st.r, st.g, st.b, 1);
+    buf[o++] = (u - 0.5) * imgAspect;
+    buf[o++] = 0.5 - v;               // ImageData ist top-down, Ebene ist y-up
+    buf[o++] = bright;
+    buf[o++] = size;
+    buf[o++] = 0.35 + 0.65 * st.r / norm;
+    buf[o++] = 0.35 + 0.65 * st.g / norm;
+    buf[o++] = 0.35 + 0.65 * st.b / norm;
+  }
+
+  state.maskStarCount = list.length;
+  state.maskStarFloats = buf;
+  dropStarsImgTexture();
+  // Aufsteigend sortierte Helligkeiten fuer den "Kleinste Sterne
+  // ausblenden"-Regler: Perzentil-Schwelle und Anzahl-Anzeige
+  {
+    const b = new Float32Array(list.length);
+    for (let i = 0; i < list.length; i++) b[i] = buf[i * FLOATS + 2];
+    b.sort();
+    state.maskBrightSorted = b;
+  }
+  refreshStarCullOut();
+  // Echte Sternabbilder: Atlas aus demselben Arbeits-Canvas wie die Erkennung
+  state.starAtlas = buildStarAtlas(list, src, data, labels);
+  if (texStarAtlas) gl.deleteTexture(texStarAtlas);
+  texStarAtlas = makeTexture(state.starAtlas.canvas);
+  // Neue Maske -> alte Gaia-Zuordnung passt nicht mehr. Wenn der Katalog
+  // gecacht ist, gleichen wir sofort neu ab - der Wissenschafts-Modus soll
+  // einen Masken-Neuaufbau überleben, statt kommentarlos herauszufallen
+  state.gaiaDepth = null;
+  state.gaiaColorRGB = null;
+  state.gaiaPM = null;
+  if (state.gaiaCatalog && state.wcs && typeof matchGaia === "function") {
+    try { matchGaia(state.gaiaCatalog); } catch { /* dann eben neu abgleichen */ }
+  }
+  if (typeof updateGaiaStatus === "function") updateGaiaStatus();
+  uploadStars();
+}
+
+// ------------------------------------------------- Echte Tiefen (WCS + Gaia)
+
+/**
+ * Liest die Plate-Solve-Lösung (WCS) aus einem FITS-Header: CRVAL/CRPIX/CD-
+ * Matrix einer TAN-Projektion. Es werden nur die ersten Header-Blöcke gelesen,
+ * das Bild selbst bleibt unangetastet (funktioniert daher auch mit großen
+ * FITS-Dateien und mit reinen .wcs-Headerdateien von astrometry.net).
+ */
+function parseWcsHeader(bytes) {
+  const text = new TextDecoder("ascii").decode(bytes);
+  const h = {};
+  for (let off = 0; off + 80 <= text.length; off += 80) {
+    const card = text.slice(off, off + 80);
+    const key = card.slice(0, 8).trim();
+    if (key === "END") break;
+    if (card[8] !== "=") continue;
+    let val = card.slice(10).split("/")[0].trim();
+    if (val.startsWith("'")) val = val.slice(1, val.lastIndexOf("'")).trim();
+    h[key] = val;
+  }
+  const num = (k) => (h[k] !== undefined ? parseFloat(h[k]) : undefined);
+  const ctype = (h.CTYPE1 || "").toUpperCase();
+  if (h.CTYPE1 !== undefined && !ctype.includes("TAN")) {
+    throw new Error("CTYPE " + h.CTYPE1);
+  }
+  const crval1 = num("CRVAL1"), crval2 = num("CRVAL2");
+  const crpix1 = num("CRPIX1"), crpix2 = num("CRPIX2");
+  if ([crval1, crval2, crpix1, crpix2].some((v) => v === undefined || isNaN(v))) {
+    throw new Error("no WCS");
+  }
+  // CD-Matrix direkt, oder aus PC-Matrix/CDELT(+CROTA2) zusammensetzen
+  let cd11 = num("CD1_1"), cd12 = num("CD1_2"), cd21 = num("CD2_1"), cd22 = num("CD2_2");
+  if (cd11 === undefined) {
+    const cdelt1 = num("CDELT1"), cdelt2 = num("CDELT2");
+    if (cdelt1 === undefined || cdelt2 === undefined) throw new Error("no CD/CDELT");
+    const pc11 = num("PC1_1"), rot = (num("CROTA2") || 0) * Math.PI / 180;
+    if (pc11 !== undefined) {
+      cd11 = cdelt1 * pc11; cd12 = cdelt1 * (num("PC1_2") || 0);
+      cd21 = cdelt2 * (num("PC2_1") || 0); cd22 = cdelt2 * (num("PC2_2") || 1);
+    } else {
+      cd11 = cdelt1 * Math.cos(rot); cd12 = -cdelt2 * Math.sin(rot);
+      cd21 = cdelt1 * Math.sin(rot); cd22 = cdelt2 * Math.cos(rot);
+    }
+  }
+  cd12 = cd12 || 0; cd21 = cd21 || 0;
+  const det = cd11 * cd22 - cd12 * cd21;
+  if (!det) throw new Error("singular CD");
+  return {
+    crval1, crval2, crpix1, crpix2,
+    cd: [cd11, cd12, cd21, cd22],
+    icd: [cd22 / det, -cd12 / det, -cd21 / det, cd11 / det],
+    naxis1: num("NAXIS1") || num("IMAGEW") || 0,
+    naxis2: num("NAXIS2") || num("IMAGEH") || 0,
+  };
+}
+
+const D2R = Math.PI / 180, R2D = 180 / Math.PI;
+
+/** FITS-Pixel (1-basiert) -> RA/Dec in Grad (inverse Gnomonik). */
+function wcsPix2Sky(wcs, px, py) {
+  const xi = (wcs.cd[0] * (px - wcs.crpix1) + wcs.cd[1] * (py - wcs.crpix2)) * D2R;
+  const eta = (wcs.cd[2] * (px - wcs.crpix1) + wcs.cd[3] * (py - wcs.crpix2)) * D2R;
+  const ra0 = wcs.crval1 * D2R, dec0 = wcs.crval2 * D2R;
+  const rho = Math.hypot(xi, eta);
+  if (rho < 1e-12) return { ra: wcs.crval1, dec: wcs.crval2 };
+  const c = Math.atan(rho);
+  const dec = Math.asin(Math.cos(c) * Math.sin(dec0) + (eta * Math.sin(c) * Math.cos(dec0)) / rho);
+  const ra = ra0 + Math.atan2(xi * Math.sin(c),
+    rho * Math.cos(dec0) * Math.cos(c) - eta * Math.sin(dec0) * Math.sin(c));
+  return { ra: ((ra * R2D) % 360 + 360) % 360, dec: dec * R2D };
+}
+
+/** RA/Dec in Grad -> FITS-Pixel (1-basiert), null wenn hinter dem Himmelspol. */
+function wcsSky2Pix(wcs, ra, dec) {
+  const ra0 = wcs.crval1 * D2R, dec0 = wcs.crval2 * D2R;
+  const a = ra * D2R, d = dec * D2R;
+  const cosc = Math.sin(dec0) * Math.sin(d) + Math.cos(dec0) * Math.cos(d) * Math.cos(a - ra0);
+  if (cosc <= 1e-6) return null;
+  const xi = (Math.cos(d) * Math.sin(a - ra0)) / cosc * R2D;
+  const eta = (Math.cos(dec0) * Math.sin(d) - Math.sin(dec0) * Math.cos(d) * Math.cos(a - ra0)) / cosc * R2D;
+  return {
+    px: wcs.crpix1 + wcs.icd[0] * xi + wcs.icd[1] * eta,
+    py: wcs.crpix2 + wcs.icd[2] * xi + wcs.icd[3] * eta,
+  };
+}
+
+/** Winkelabstand zweier Himmelspositionen in Grad. */
+function angSep(ra1, dec1, ra2, dec2) {
+  const d1 = dec1 * D2R, d2 = dec2 * D2R, dra = (ra2 - ra1) * D2R;
+  const s = Math.sin((d2 - d1) / 2) ** 2 + Math.cos(d1) * Math.cos(d2) * Math.sin(dra / 2) ** 2;
+  return 2 * Math.asin(Math.min(1, Math.sqrt(s))) * R2D;
+}
+
+/**
+ * Gaia DR3 für das Bildfeld laden, hellste Sterne zuerst. Die TAP-Dienste
+ * scheiden im Browser aus: Das ESA-Archiv sendet keinen CORS-Header,
+ * TAPVizieR sendet ihn doppelt ("*, *") - beides blockiert der Browser. Die
+ * klassische VizieR-Schnittstelle (ASU) sendet ihn korrekt. Für "die hellsten
+ * N" muss der Server erst alle Sterne der Fläche lesen; ein großes, dichtes
+ * Milchstraßenfeld dauerte am Stück fast eine Minute. Darum wird das Bildfeld
+ * in Kacheln von etwa 1° zerlegt, die parallel laufen und je ihren
+ * Flächenanteil der hellsten Sterne liefern. Fällt eine Kachel bei CDS aus,
+ * springt das GAVO-Archiv (Heidelberg) für sie ein.
+ */
+async function queryGaia(wcs, nax1, nax2, maxStars, onProgress) {
+  // Bildfeld samt 3 % Rand (wie das Fenster in matchGaia) in Kacheln teilen.
+  // Das Raster liegt in der Tangentialebene (xi/eta, Grad) entlang RA/Dec -
+  // wie die Rechtecke, die VizieR versteht: Reihen von etwa 1° Höhe, jede
+  // genau so breit, wie das (oft gedrehte) Bild in dieser Höhe ist. Am Bild
+  // ausgerichtete Kacheln müssten bei gedrehten Bildern bis zu 56 % mehr
+  // Himmel abfragen.
+  const toPix = (xi, eta) => [wcs.crpix1 + wcs.icd[0] * xi + wcs.icd[1] * eta,
+    wcs.crpix2 + wcs.icd[2] * xi + wcs.icd[3] * eta];
+  let poly = [[-0.03, -0.03], [1.03, -0.03], [1.03, 1.03], [-0.03, 1.03]].map(([u, v]) => {
+    const dx = u * nax1 - wcs.crpix1, dy = v * nax2 - wcs.crpix2;
+    return [wcs.cd[0] * dx + wcs.cd[1] * dy, wcs.cd[2] * dx + wcs.cd[3] * dy];
+  });
+  // Weitwinkelfelder wie bisher auf 6° um die Bildmitte begrenzen - riesige
+  // Kacheln voller Milchstraße schafft kein Server im Zeitlimit
+  const mx = poly.reduce((s, p) => s + p[0], 0) / 4, my = poly.reduce((s, p) => s + p[1], 0) / 4;
+  const shrink = Math.min(1, 6 / Math.max(...poly.map(([x, e]) => Math.hypot(x - mx, e - my))));
+  poly = poly.map(([x, e]) => [mx + (x - mx) * shrink, my + (e - my) * shrink]);
+  const eMin = Math.min(...poly.map((p) => p[1])), eMax = Math.max(...poly.map((p) => p[1]));
+  // xi-Spanne des Bildes zwischen zwei eta-Linien (Ecken im Band plus
+  // Schnittpunkte der Kanten mit den Bandgrenzen)
+  const bandSpan = (b0, b1) => {
+    const xs = [];
+    poly.forEach(([x, e], k) => {
+      if (e >= b0 && e <= b1) xs.push(x);
+      const [x2, e2] = poly[(k + 1) % 4];
+      for (const b of [b0, b1]) if ((e - b) * (e2 - b) < 0) xs.push(x + (x2 - x) * (b - e) / (e2 - e));
+    });
+    return [Math.min(...xs), Math.max(...xs)];
+  };
+  let tile = 1.0, cells;
+  for (;;) {
+    const ny = Math.max(1, Math.ceil((eMax - eMin) / tile)), sy = (eMax - eMin) / ny;
+    cells = [];
+    for (let j = 0; j < ny; j++) {
+      const b = eMin + j * sy, [x0, x1] = bandSpan(b, b + sy);
+      const nx = Math.max(1, Math.ceil((x1 - x0) / tile)), sx = (x1 - x0) / nx;
+      for (let i = 0; i < nx; i++) {
+        const a = x0 + i * sx;
+        cells.push([[a, b], [a + sx, b], [a + sx, b + sy], [a, b + sy]]);
+      }
+    }
+    if (cells.length <= 48) break;
+    tile *= 1.15;
+  }
+  const perTile = Math.ceil((maxStars / cells.length) * 1.3);
+  const tiles = cells.map((quad) => {
+    const mid = toPix((quad[0][0] + quad[2][0]) / 2, (quad[0][1] + quad[2][1]) / 2);
+    const c = wcsPix2Sky(wcs, mid[0], mid[1]);
+    // RA/Dec-Rechteck um die vier Ecken (abseits der Bildmitte ist das
+    // Raster leicht gegen RA/Dec verdreht)
+    let hx = 0, hy = 0;
+    for (const [x, e] of quad) {
+      const s = wcsPix2Sky(wcs, ...toPix(x, e));
+      const dra = ((s.ra - c.ra + 540) % 360) - 180;
+      hx = Math.max(hx, Math.abs(dra * Math.cos(c.dec * D2R)));
+      hy = Math.max(hy, Math.abs(s.dec - c.dec));
+    }
+    return { ra: c.ra, dec: c.dec, w: 2 * hx + 0.002, h: 2 * hy + 0.002 };
+  });
+
+  const cols = (p, bprp) => ({ ra: +p[0], dec: +p[1], g: p[2].trim() === "" ? 99 : +p[2], plx: +p[3],
+    bprp: bprp(p), pmra: p[5].trim() === "" ? NaN : +p[5], pmde: p[6].trim() === "" ? NaN : +p[6] });
+  const viaVizier = async (tl) => {
+    const coord = `${tl.ra.toFixed(6)} ${tl.dec >= 0 ? "+" : ""}${tl.dec.toFixed(6)}`;
+    const txt = await fetchTapCsv("https://vizier.cds.unistra.fr/viz-bin/asu-tsv?-source=I/355/gaiadr3" +
+      `&-c=${encodeURIComponent(coord)}&-c.bd=${tl.w.toFixed(4)}x${tl.h.toFixed(4)}` +
+      `&-out=RA_ICRS,DE_ICRS,Gmag,Plx,BP-RP,pmRA,pmDE&-sort=Gmag&-out.max=${perTile}&Plx=%3E0.05`, 75000, 2);
+    // Auch eine leere Kachel trägt den Tabellenkopf - ohne ihn ging etwas schief
+    if (!/^#RESOURCE=/m.test(txt)) throw Object.assign(new Error("ASU-Fehler"), { server: true, status: 500 });
+    return txt.split("\n").filter((l) => l && l[0] !== "#").map((l) => l.split("\t"))
+      .filter((p) => p.length >= 7).map((p) => cols(p, (q) => (q[4].trim() === "" ? NaN : +q[4])));
+  };
+  const viaGavo = async (tl) => {
+    const r = Math.hypot(tl.w, tl.h) / 2;
+    const adql = `SELECT TOP ${perTile} ra,dec,phot_g_mean_mag,parallax,phot_bp_mean_mag,phot_rp_mean_mag,pmra,pmdec ` +
+      `FROM gaia.dr3lite WHERE 1=CONTAINS(POINT('ICRS',ra,dec),CIRCLE('ICRS',${tl.ra.toFixed(6)},${tl.dec.toFixed(6)},${r.toFixed(4)})) ` +
+      `AND parallax>0.05 ORDER BY phot_g_mean_mag`;
+    const csv = await fetchTapCsv("https://dc.zah.uni-heidelberg.de/tap/sync?REQUEST=doQuery&LANG=ADQL&FORMAT=csv" +
+      `&MAXREC=${perTile}&QUERY=${encodeURIComponent(adql)}`, 40000, 1);
+    if (/^\s*</.test(csv)) throw Object.assign(new Error("VOTable-Fehler"), { server: true, status: 500 });
+    // Spalten wie bei VizieR: BP-RP aus den beiden Einzelhelligkeiten
+    return csv.trim().split("\n").slice(1).map((l) => l.split(",")).filter((p) => p.length >= 8)
+      .map((p) => cols([p[0], p[1], p[2], p[3], "", p[6], p[7]],
+        () => (p[4] === "" || p[5] === "" ? NaN : p[4] - p[5])));
+  };
+
+  // Höchstens 6 Abfragen gleichzeitig (so viele Verbindungen öffnet der
+  // Browser ohnehin pro Server)
+  const seen = new Set(), out = [];
+  let done = 0, okTiles = 0, err = null, next = 0, vizierOk = false, vizierDown = false;
+  const worker = async () => {
+    while (next < tiles.length) {
+      const tl = tiles[next++];
+      let rows = null;
+      // Hängt CDS bis zum Zeitlimit, ohne je geliefert zu haben, gehen die
+      // übrigen Kacheln gleich nach Heidelberg, statt jede für sich zu warten.
+      // Hat CDS schon geliefert, war es nur eine besonders dichte Kachel.
+      if (!vizierDown) {
+        try { rows = await viaVizier(tl); vizierOk = true; } catch (e) { err = e; if (e.timeout && !vizierOk) vizierDown = true; }
+      }
+      if (!rows) try { rows = await viaGavo(tl); } catch (e) { if (!err || e.server || e.timeout) err = e; }
+      if (rows) {
+        okTiles++;
+        for (const s of rows) {
+          if (!isFinite(s.ra) || !isFinite(s.dec) || !(s.plx > 0)) continue;
+          // Nachbarkacheln überlappen: jeden Stern nur einmal
+          const key = Math.round(s.ra * 1e5) + ":" + Math.round(s.dec * 1e5);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push(s);
+        }
+      }
+      if (onProgress) onProgress(++done, tiles.length);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(6, tiles.length) }, worker));
+  // Ein paar ausgefallene Kacheln kosten nur dort die echten Tiefen; fehlt
+  // mehr als die Hälfte, lieber eine klare Fehlermeldung
+  if (okTiles * 2 < tiles.length) throw err || new Error("Gaia");
+  // matchGaia ordnet hellste zuerst zu
+  out.sort((a, b) => a.g - b.g);
+  return out.map(({ g, ...s }) => s);
+}
+
+/**
+ * Gaia-Farbindex BP-RP -> RGB-Farbton: Näherung der Farbtemperatur
+ * (Ballesteros-Formel über B-V) und daraus die Schwarzkörperfarbe.
+ * Zurückgegeben wird der auf max=1 normierte Farbton (Helligkeit kommt
+ * weiterhin aus dem Foto).
+ */
+function bprpToRgb(bprp) {
+  const bv = Math.min(2.0, Math.max(-0.4, 0.8 * bprp - 0.03));
+  let t = 4600 * (1 / (0.92 * bv + 1.7) + 1 / (0.92 * bv + 0.62)); // Kelvin
+  t = Math.min(30000, Math.max(2200, t)) / 100;
+  let r, g, b;
+  if (t <= 66) { r = 255; } else { r = 329.7 * Math.pow(t - 60, -0.1332); }
+  if (t <= 66) { g = 99.47 * Math.log(t) - 161.12; } else { g = 288.1 * Math.pow(t - 60, -0.0755); }
+  if (t >= 66) { b = 255; } else if (t <= 19) { b = 0; } else { b = 138.52 * Math.log(t - 10) - 305.04; }
+  const m = Math.max(r, g, b, 1);
+  return [
+    Math.min(1, Math.max(0, r / m)),
+    Math.min(1, Math.max(0, g / m)),
+    Math.min(1, Math.max(0, b / m)),
+  ];
+}
+
+/** 3x3-Gleichungssystem lösen (für die Affin-Anpassung). */
+function solve3(M, b) {
+  const [[a, c, d], [e, f, g], [h, k, l]] = M;
+  const det = a * (f * l - g * k) - c * (e * l - g * h) + d * (e * k - f * h);
+  if (Math.abs(det) < 1e-12) return null;
+  const inv = [
+    [(f * l - g * k) / det, (d * k - c * l) / det, (c * g - d * f) / det],
+    [(g * h - e * l) / det, (a * l - d * h) / det, (d * e - a * g) / det],
+    [(e * k - f * h) / det, (c * h - a * k) / det, (a * f - c * e) / det],
+  ];
+  return [
+    inv[0][0] * b[0] + inv[0][1] * b[1] + inv[0][2] * b[2],
+    inv[1][0] * b[0] + inv[1][1] * b[1] + inv[1][2] * b[2],
+    inv[2][0] * b[0] + inv[2][1] * b[1] + inv[2][2] * b[2],
+  ];
+}
+
+/**
+ * Affine Abbildung Katalog -> Maske per kleinster Quadrate aus groben
+ * Treffer-Paaren [gx, gy, dx, dy] schätzen.
+ */
+function affineFit(pairs) {
+  let sxx = 0, sxy = 0, sx = 0, syy = 0, sy = 0;
+  let bx0 = 0, bx1 = 0, bx2 = 0, by0 = 0, by1 = 0, by2 = 0;
+  for (const [gx, gy, dx, dy] of pairs) {
+    sxx += gx * gx; sxy += gx * gy; sx += gx; syy += gy * gy; sy += gy;
+    bx0 += gx * dx; bx1 += gy * dx; bx2 += dx;
+    by0 += gx * dy; by1 += gy * dy; by2 += dy;
+  }
+  const M = [[sxx, sxy, sx], [sxy, syy, sy], [sx, sy, pairs.length]];
+  const ax = solve3(M, [bx0, bx1, bx2]);
+  const ay = solve3(M, [by0, by1, by2]);
+  return ax && ay ? { ax, ay } : null;
+}
+
+/**
+ * Ordnet Gaia-Sterne den erkannten Masken-Sternen zu und leitet echte Tiefen
+ * ab. Die y-Orientierung des FITS (Zeile 1 unten oder oben) wird automatisch
+ * bestimmt: Es gewinnt die Variante mit den meisten Treffern. Ein zweiter
+ * Durchgang schätzt eine Affin-Korrektur aus den groben Treffern (gleicht
+ * kleine Crop-/Skalierungs-/Drehungs-Abweichungen aus) und ordnet dann mit
+ * enger Toleranz neu zu.
+ */
+function matchGaia(gaiaStars) {
+  const wcs = state.wcs, mask = state.maskStarFloats;
+  const n = state.maskStarCount;
+  const imgAspect = state.stars.width / state.stars.height;
+  const nax1 = wcs.naxis1 || state.stars.width, nax2 = wcs.naxis2 || state.stars.height;
+
+  // Erkannte Sterne in ein Suchgitter legen (Ebenen-Einheiten, Bildhöhe = 1)
+  const tolCoarse = 0.012; // Durchgang 1: ~1,2 % der Bildhöhe
+  const tolFine = 0.0045;  // Durchgang 2 (nach Affin-Korrektur)
+  const cell = tolCoarse;
+  const grid = new Map();
+  for (let i = 0; i < n; i++) {
+    const x = mask[i * 7], y = mask[i * 7 + 1];
+    const key = Math.round(x / cell) + ":" + Math.round(y / cell);
+    (grid.get(key) || grid.set(key, []).get(key)).push(i);
+  }
+  const nearest = (x, y, used, tol) => {
+    let best = -1, bd = tol * tol;
+    const gx = Math.round(x / cell), gy = Math.round(y / cell);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+      for (const i of grid.get((gx + dx) + ":" + (gy + dy)) || []) {
+        if (used[i]) continue;
+        const ddx = mask[i * 7] - x, ddy = mask[i * 7 + 1] - y;
+        const d2 = ddx * ddx + ddy * ddy;
+        if (d2 < bd) { bd = d2; best = i; }
+      }
+    }
+    return best;
+  };
+
+  // Katalogsterne in Ebenen-Koordinaten projizieren (je y-Konvention);
+  // Reihenfolge bleibt hellste zuerst (Abfrage ist nach Gmag sortiert)
+  const project = (flipY) => {
+    const pts = [];
+    for (const g of gaiaStars) {
+      const p = wcsSky2Pix(wcs, g.ra, g.dec);
+      if (!p) continue;
+      let u = p.px / nax1, v = flipY ? 1 - p.py / nax2 : p.py / nax2;
+      if (state.flipH && !state.flipOnlyStarless) u = 1 - u;
+      if (state.flipV && !state.flipOnlyStarless) v = 1 - v;
+      if (u < -0.03 || u > 1.03 || v < -0.03 || v > 1.03) continue;
+      pts.push({ ...g, x: (u - 0.5) * imgAspect, y: 0.5 - v });
+    }
+    return pts;
+  };
+  const runMatch = (pts, tol) => {
+    const used = new Uint8Array(n), pairs = [];
+    for (const g of pts) {
+      const i = nearest(g.x, g.y, used, tol);
+      if (i >= 0) { used[i] = 1; pairs.push({ i, g }); }
+    }
+    return pairs;
+  };
+
+  // Durchgang 1 (grob) für beide y-Konventionen, die bessere gewinnt
+  const ptsA = project(true), ptsB = project(false);
+  const pairsA = runMatch(ptsA, tolCoarse), pairsB = runMatch(ptsB, tolCoarse);
+  const flipUsed = pairsA.length >= pairsB.length;
+  const pts = flipUsed ? ptsA : ptsB;
+  let pairs = flipUsed ? pairsA : pairsB;
+  let fitUsed = null;
+
+  const rmsOf = (ps) => {
+    let s = 0;
+    for (const { i, g } of ps) {
+      const dx = mask[i * 7] - g.x, dy = mask[i * 7 + 1] - g.y;
+      s += dx * dx + dy * dy;
+    }
+    return Math.sqrt(s / Math.max(1, ps.length));
+  };
+  const warpAll = (f) => pts.map((g) => ({
+    ...g,
+    ox: g.ox === undefined ? g.x : g.ox,
+    oy: g.oy === undefined ? g.y : g.oy,
+    x: f.ax[0] * g.x + f.ax[1] * g.y + f.ax[2],
+    y: f.ay[0] * g.x + f.ay[1] * g.y + f.ay[2],
+  }));
+
+  // Durchgang 2: Affin-Korrektur schaetzen und enger neu zuordnen. Der erste
+  // Schaetzer sitzt schief, weil der grobe Durchgang bei einem systematischen
+  // Versatz reihenweise Nachbarsterne zuordnet - deshalb wird zweimal
+  // nachgezogen: jede Runde ordnet enger zu und schaetzt aus der saubereren
+  // Zuordnung neu.
+  const orig = (g) => [g.ox === undefined ? g.x : g.ox, g.oy === undefined ? g.y : g.oy];
+  // Erste Schaetzung als reine Verschiebung ueber den Median: die haelt auch
+  // dann, wenn der grobe Durchgang reihenweise Nachbarsterne zugeordnet hat.
+  const medianShift = (ps) => {
+    if (ps.length < 8) return null;
+    const dx = [], dy = [];
+    for (const { i, g } of ps) {
+      const [ox, oy] = orig(g);
+      dx.push(mask[i * 7] - ox);
+      dy.push(mask[i * 7 + 1] - oy);
+    }
+    dx.sort((a, b) => a - b); dy.sort((a, b) => a - b);
+    const mid = (a) => a[Math.floor(a.length / 2)];
+    return { ax: [1, 0, mid(dx)], ay: [0, 1, mid(dy)] };
+  };
+  if (pairs.length >= 20) {
+    const tolStep = [tolCoarse * 0.5, tolFine, tolFine];
+    let cur = pairs, best = null;
+    for (let it = 0; it < 3; it++) {
+      const fit = it === 0
+        ? medianShift(cur)
+        : affineFit(cur.map(({ i, g }) => {
+          const [ox, oy] = orig(g);
+          return [ox, oy, mask[i * 7], mask[i * 7 + 1]];
+        }));
+      if (!fit) break;
+      const refined = runMatch(warpAll(fit), tolStep[it]);
+      if (refined.length < 20) break;
+      cur = refined;
+      best = { fit, pairs: refined };
+    }
+    // Die Korrektur gewinnt, wenn sie mehr Sterne zuordnet oder die
+    // Restabweichung deutlich senkt, ohne nennenswert Treffer zu verlieren.
+    // Frueher zaehlte nur die Trefferzahl: traf schon der grobe Durchgang
+    // alles, wurde die Korrektur verworfen - und die Objekt-Marker blieben
+    // um den systematischen Versatz neben ihrem Objekt.
+    if (best) {
+      const better = best.pairs.length > pairs.length ||
+        (best.pairs.length >= pairs.length * 0.85 && rmsOf(best.pairs) < rmsOf(pairs) * 0.9);
+      if (better) { pairs = best.pairs; fitUsed = best.fit; }
+    }
+  }
+  if (pairs.length < 5) return null;
+
+  // Himmelskoordinate -> Ebenen-Position unter der Gewinner-Transformation
+  // (für die Eigenbewegungs-Vektoren)
+  const planeOf = (ra, dec) => {
+    const p = wcsSky2Pix(wcs, ra, dec);
+    if (!p) return null;
+    let u = p.px / nax1, v = flipUsed ? 1 - p.py / nax2 : p.py / nax2;
+    if (state.flipH && !state.flipOnlyStarless) u = 1 - u;
+    if (state.flipV && !state.flipOnlyStarless) v = 1 - v;
+    let x = (u - 0.5) * imgAspect, y = 0.5 - v;
+    if (fitUsed) {
+      const nx = fitUsed.ax[0] * x + fitUsed.ax[1] * y + fitUsed.ax[2];
+      const ny = fitUsed.ay[0] * x + fitUsed.ay[1] * y + fitUsed.ay[2];
+      x = nx; y = ny;
+    }
+    return { x, y };
+  };
+
+  // Entfernungen (pc) logarithmisch auf die Tiefenebenen mappen: nahe Sterne
+  // (10. Perzentil) -> vorn, ferne (90. Perzentil) -> hinten
+  const dists = pairs.map(({ g }) => 1000 / g.plx).sort((x, y) => x - y);
+  const p10 = Math.log(dists[Math.floor(dists.length * 0.1)]);
+  const p90 = Math.log(dists[Math.min(dists.length - 1, Math.floor(dists.length * 0.9))]);
+  const span = Math.max(0.2, p90 - p10);
+  const depth = new Float32Array(n).fill(-1);
+  const colors = new Float32Array(n * 3).fill(-1);
+  const pm = new Float32Array(n * 2); // Ebenen-Einheiten pro Jahr (0 = keine)
+  const K = 20000; // Jahre für den Differenzenquotienten
+  for (const { i, g } of pairs) {
+    const t = Math.min(1, Math.max(0, (Math.log(1000 / g.plx) - p10) / span));
+    depth[i] = 0.98 - t * 0.93; // nah = 0.98, fern = 0.05
+    if (isFinite(g.bprp)) {
+      const [cr, cg, cb] = bprpToRgb(g.bprp);
+      colors[i * 3] = cr; colors[i * 3 + 1] = cg; colors[i * 3 + 2] = cb;
+    }
+    // Eigenbewegung (mas/Jahr, pmRA inkl. cos δ) -> Ebenen-Vektor pro Jahr
+    if (isFinite(g.pmra) && isFinite(g.pmde) && Math.hypot(g.pmra, g.pmde) < 10000) {
+      const cosd = Math.max(0.05, Math.cos(g.dec * D2R));
+      const p0 = planeOf(g.ra, g.dec);
+      const p1 = planeOf(g.ra + (g.pmra / 3.6e6) * K / cosd, g.dec + (g.pmde / 3.6e6) * K);
+      if (p0 && p1) { pm[i * 2] = (p1.x - p0.x) / K; pm[i * 2 + 1] = (p1.y - p0.y) / K; }
+    }
+  }
+  state.gaiaDepth = depth;
+  state.gaiaColorRGB = colors;
+  state.gaiaPM = pm;
+  // Gewinner-Transformation merken (für Objekt-Beschriftungen)
+  state.wcsFlip = flipUsed;
+  state.wcsFit = fitUsed;
+  state.gaiaInfo = {
+    matched: pairs.length, total: n,
+    dMin: Math.round(Math.exp(p10) * 3.262), dMax: Math.round(Math.exp(p90) * 3.262), // Lichtjahre
+  };
+  reprojectLabels();
+  uploadStars();
+  return state.gaiaInfo;
+}
+
+/**
+ * Himmelskoordinate -> Ebenen-Position mit der aktuell bekannten Transformation
+ * (y-Konvention und Affin-Korrektur aus dem Gaia-Abgleich, sonst Standard).
+ */
+/**
+ * Beschriftungs-Positionen mit der aktuell besten Transformation neu
+ * berechnen: Der Gaia-Abgleich ermittelt y-Konvention (Flip) und
+ * Affin-Korrektur erst NACH einer evtl. schon gelaufenen Objekterkennung -
+ * ohne Reprojektion blieben die Marker auf gespiegelten Positionen stehen.
+ */
+/** Nebeldichte (0..1) an einem Ebenen-Punkt - Gegenstück zum Dichte-Gate
+ *  des Anker-Features im Stern-Shader (Luminanz des Starless-Bilds). */
+function lumDensAtPlane(x, y, imgAspect) {
+  const img = state.starless;
+  if (!img) return 0;
+  const uu = x / imgAspect + 0.5, vv = 0.5 - y;
+  if (uu <= 0 || uu >= 1 || vv <= 0 || vv >= 1) return 0;
+  const c = lumDensAtPlane._c || (lumDensAtPlane._c = document.createElement("canvas"));
+  c.width = 1; c.height = 1;
+  const cx = c.getContext("2d", { willReadFrequently: true });
+  cx.drawImage(img.canvas, uu * img.width, vv * img.height, 1, 1, 0, 0, 1, 1);
+  const d = cx.getImageData(0, 0, 1, 1).data;
+  const lum = (0.299 * d[0] + 0.587 * d[1] + 0.114 * d[2]) / 255;
+  const t = Math.min(1, Math.max(0, (lum - 0.05) / 0.25));
+  return t * t * (3 - 2 * t);
+}
+
+function reprojectLabels() {
+  if (!state.wcs) return;
+  for (const list of [state.objChoices, state.labels]) {
+    if (!list) continue;
+    for (const it of list) {
+      if (it.ra === undefined) continue;
+      const p = planeOfSky(it.ra, it.dec);
+      if (p) { it.x = p.x; it.y = p.y; }
+      delete it._chipSide; delete it._up; // Seitenwahl neu treffen lassen
+      delete it._msN; delete it._dens;     // Sterntiefe/Dichte neu ermitteln
+    }
+  }
+}
+
+function planeOfSky(ra, dec) {
+  const wcs = state.wcs;
+  const img = state.starless || state.stars;
+  if (!wcs || !img) return null;
+  const nax1 = wcs.naxis1 || img.width, nax2 = wcs.naxis2 || img.height;
+  const imgAspect = img.width / img.height;
+  const p = wcsSky2Pix(wcs, ra, dec);
+  if (!p) return null;
+  const flip = state.wcsFlip !== false; // Standard: FITS-Zeile 1 unten
+  let u = p.px / nax1, v = flip ? 1 - p.py / nax2 : p.py / nax2;
+  if (state.flipH && !state.flipOnlyStarless) u = 1 - u;
+  if (state.flipV && !state.flipOnlyStarless) v = 1 - v;
+  let x = (u - 0.5) * imgAspect, y = 0.5 - v;
+  const fit = state.wcsFit;
+  if (fit) {
+    const nx = fit.ax[0] * x + fit.ax[1] * y + fit.ax[2];
+    const ny = fit.ay[0] * x + fit.ay[1] * y + fit.ay[2];
+    x = nx; y = ny;
+  }
+  return { x, y };
+}
+
+// ---------------------------------------------------------------- Stern-Generator
+
+/** Deterministischer Zufallsgenerator (für reproduzierbare Sternfelder). */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Erzeugt synthetische Sterne: Helligkeit nach Potenzgesetz (viele schwache,
+ * wenige helle), Farben entlang der Sternsequenz (blau-weiß bis rötlich),
+ * Positionen mit Rand über das Bild hinaus, damit beim seitlichen Flug und
+ * bei starker Parallaxe neue Sterne ins Bild nachrücken. Der 🎲-Button
+ * (Seed) würfelt eine neue Anordnung.
+ */
+function generateStars() {
+  const n = state.genStars;
+  if (n <= 0) return new Float32Array(0);
+  const imgAspect = state.starless
+    ? state.starless.width / state.starless.height
+    : (state.stars ? state.stars.width / state.stars.height : 16 / 9);
+  const rnd = mulberry32(Math.floor(state.seed * 65536) + 7);
+  const M = 1.3; // 30 % Rand jenseits der Bildkanten
+  const buf = new Float32Array(n * 7);
+  let o = 0;
+  for (let i = 0; i < n; i++) {
+    const x = (rnd() - 0.5) * imgAspect * M;
+    const y = (rnd() - 0.5) * M;
+    const bright = Math.pow(rnd(), 3.2) * 0.9 + 0.03;
+    const radiusPx = 0.8 + bright * 3.2 + rnd() * 0.9;
+    const pick = rnd();
+    let r, g, b;
+    if (pick < 0.22)      { r = 0.72; g = 0.80; b = 1.00; } // blau-weiß
+    else if (pick < 0.55) { r = 0.95; g = 0.95; b = 1.00; } // weiß
+    else if (pick < 0.78) { r = 1.00; g = 0.93; b = 0.80; } // gelblich-weiß
+    else if (pick < 0.93) { r = 1.00; g = 0.82; b = 0.62; } // orange
+    else                  { r = 1.00; g = 0.66; b = 0.48; } // rötlich
+    buf[o++] = x;
+    buf[o++] = y;
+    buf[o++] = bright;
+    buf[o++] = radiusPx / 1500; // Radius in Ebenen-Einheiten (nominale Höhe)
+    buf[o++] = r;
+    buf[o++] = g;
+    buf[o++] = b;
+  }
+  return buf;
+}
+
+/**
+ * Sterne in den Galaxienscheiben ("Sterne ziehen durch die Arme"): je
+ * Galaxie nach ihrem Licht verteilt (Arme und Kern dichter), Farbe aus dem
+ * Bild, schwach und klein. Nur waehrend der Drehung und fuer drehende
+ * Galaxien. Rueckgabe: 7 Floats je Stern + Galaxie-Index je Stern
+ */
+function generateGalaxyStars() {
+  const out = { buf: new Float32Array(0), gal: [] };
+  if (!state.starless || !state.spinSpeed || state.galStars <= 0 || !state.galaxies.length) return out;
+  const src = downscale(state.starless, 512);
+  const w = src.width, h = src.height;
+  const px = canvasPixels(src);
+  const imgAspect = state.starless.width / state.starless.height;
+  const rnd = mulberry32(Math.floor(state.seed * 65536) + 911);
+  const list = [], gals = [];
+  state.galaxies.slice(0, 8).forEach((g, k) => {
+    if ((g.dir === undefined ? 1 : g.dir) === 0) return;
+    const t = g.tilt * Math.PI / 180, c = Math.cos(t), sn = Math.sin(t), flat = Math.max(0.05, g.flat);
+    const sample = (u, v) => {
+      const ex = u * g.rad, ey = v * g.rad * flat;
+      const qx = g.x + c * ex - sn * ey, qy = g.y + sn * ex + c * ey;
+      const x = Math.round((qx / imgAspect + 0.5) * w - 0.5), y = Math.round((0.5 - qy) * h - 0.5);
+      if (x < 0 || y < 0 || x >= w || y >= h) return null;
+      const j = (y * w + x) * 4;
+      return { qx, qy, r: px[j] / 255, g: px[j + 1] / 255, b: px[j + 2] / 255, L: (0.299 * px[j] + 0.587 * px[j + 1] + 0.114 * px[j + 2]) / 255 };
+    };
+    // Himmel am Rand der Ellipse als Nullpunkt des Galaxienlichts
+    let rim = [];
+    for (let i = 0; i < 64; i++) { const a = i / 64 * Math.PI * 2, sp = sample(Math.cos(a) * 0.97, Math.sin(a) * 0.97); if (sp) rim.push(sp.L); }
+    rim.sort((p, q) => p - q);
+    const sky = rim.length ? rim[Math.floor(rim.length / 2)] : 0;
+    let peak = 0;
+    for (let i = 0; i < 200; i++) { const sp = sample((rnd() * 2 - 1) * 0.3, (rnd() * 2 - 1) * 0.3); if (sp) peak = Math.max(peak, sp.L - sky); }
+    if (peak <= 0.01) return;
+    const want = Math.round(Math.min(1200, Math.max(30, (state.galStars / 100) * 900 * Math.pow(g.rad / 0.3, 1.2))));
+    let got = 0;
+    for (let tries = 0; tries < want * 40 && got < want; tries++) {
+      const u = rnd() * 2 - 1, v = rnd() * 2 - 1, r = Math.hypot(u, v);
+      if (r > 0.95 || r < 0.04) continue;
+      const sp = sample(u, v);
+      if (!sp) continue;
+      const wgt = Math.pow(Math.max(0, sp.L - sky) / peak, 0.7);
+      if (rnd() > wgt) continue;
+      const m = Math.max(sp.r, sp.g, sp.b, 1e-3);
+      const bright = 0.05 + 0.28 * Math.pow(rnd(), 2) * (0.4 + 0.6 * Math.sqrt(wgt));
+      const radiusPx = 0.6 + bright * 2.2;
+      list.push(sp.qx, sp.qy, bright, radiusPx / 1500,
+        0.45 + 0.55 * sp.r / m, 0.45 + 0.55 * sp.g / m, 0.45 + 0.55 * sp.b / m);
+      gals.push(k);
+      got++;
+    }
+  });
+  out.buf = Float32Array.from(list); out.gal = gals;
+  return out;
+}
+function galStarSig() {
+  return [state.spinSpeed !== 0, state.galStars, state.seed, galGeomSig(),
+    (state.galaxies || []).map((g) => g.dir === undefined ? 1 : g.dir).join(","), texColor ? 1 : 0].join("|");
+}
+let galStarsKey = "", galStarsTex = null, galStarTimer = 0;
+
+/**
+ * Masken-Sterne + generierte Sterne in den GPU-Puffer laden.
+ * GPU-Layout: 8 Floats pro Stern [x, y, helligkeit, größe, r, g, b, gaia];
+ * gaia = echte Tiefe 0..1 (aus state.gaiaDepth) oder -1, wenn nicht zugeordnet.
+ */
+function uploadStars() {
+  requestRender();
+  const mask = state.maskStarFloats || new Float32Array(0);
+  const gen = generateStars();
+  const gst = generateGalaxyStars();
+  galStarsKey = galStarSig(); galStarsTex = texColor;
+  const nMask = mask.length / 7, nGen = gen.length / 7, nGal = gst.buf.length / 7;
+  const n = nMask + nGen + nGal;
+  state.starCount = n;
+  state.galStarCount = nGal;
+  if (!n) return;
+
+  const F = 14; // [x, y, hell, größe, r, g, b, gaia, pmx, pmy, atlasU, atlasV, atlasHalfUv, atlasHalfPlane]
+  const buf = new Float32Array(n * F);
+  const gcol = state.gaiaColors && state.gaiaColorRGB ? state.gaiaColorRGB : null;
+  const gpm = state.gaiaPM;
+  const atl = state.starAtlas ? state.starAtlas.entries : null;
+  for (let i = 0; i < nMask; i++) {
+    buf.set(mask.subarray(i * 7, i * 7 + 7), i * F);
+    buf[i * F + 7] = state.gaiaDepth ? state.gaiaDepth[i] : -1;
+    if (atl && i * 4 + 3 < atl.length) {
+      buf[i * F + 10] = atl[i * 4];
+      buf[i * F + 11] = atl[i * 4 + 1];
+      buf[i * F + 12] = atl[i * 4 + 2];
+      buf[i * F + 13] = atl[i * 4 + 3];
+    } else {
+      buf[i * F + 10] = -1;
+    }
+    // Echte Katalogfarbe (nur Farbton) statt Fotofarbe, wenn aktiviert
+    if (gcol && gcol[i * 3] >= 0) {
+      buf[i * F + 4] = 0.35 + 0.65 * gcol[i * 3];
+      buf[i * F + 5] = 0.35 + 0.65 * gcol[i * 3 + 1];
+      buf[i * F + 6] = 0.35 + 0.65 * gcol[i * 3 + 2];
+    }
+    if (gpm) { buf[i * F + 8] = gpm[i * 2]; buf[i * F + 9] = gpm[i * 2 + 1]; }
+  }
+  for (let i = 0; i < nGen; i++) {
+    buf.set(gen.subarray(i * 7, i * 7 + 7), (nMask + i) * F);
+    buf[(nMask + i) * F + 7] = -1;
+    buf[(nMask + i) * F + 10] = -1;
+  }
+  // Scheibensterne: Atlas-Feld markiert Galaxie (+10) und Korotationsradius
+  for (let i = 0; i < nGal; i++) {
+    const o = (nMask + nGen + i) * F;
+    buf.set(gst.buf.subarray(i * 7, i * 7 + 7), o);
+    buf[o + 7] = -1;
+    buf[o + 10] = -1; buf[o + 11] = gst.gal[i] + 10; buf[o + 12] = 0.55; buf[o + 13] = 0;
+  }
+  state.galStarCount = nGal;
+
+  gl.bindVertexArray(starVao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, starBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, buf, gl.STATIC_DRAW);
+  const stride = F * 4;
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, stride, 0);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 1, gl.FLOAT, false, stride, 8);
+  gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 1, gl.FLOAT, false, stride, 12);
+  gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 3, gl.FLOAT, false, stride, 16);
+  gl.enableVertexAttribArray(4); gl.vertexAttribPointer(4, 1, gl.FLOAT, false, stride, 28);
+  gl.enableVertexAttribArray(5); gl.vertexAttribPointer(5, 2, gl.FLOAT, false, stride, 32);
+  gl.enableVertexAttribArray(6); gl.vertexAttribPointer(6, 4, gl.FLOAT, false, stride, 40);
+  gl.bindVertexArray(null);
+}
+
+// ------------------------------------------ Objekt-Overlay (Infokarte + Labels)
+
+function overlayActive() {
+  return (state.showLabels && state.labels && state.labels.some((l) => l.on)) ||
+    (state.showInfo && (state.objInfo || cardHasCustom()));
+}
+
+/**
+ * Zeichnet Infokarte und Feld-Beschriftungen in einen 2D-Kontext –
+ * auflösungsunabhängig (alles relativ zur Höhe H), identisch für Vorschau
+ * und Export. Die Labels folgen der Kamerafahrt (neutrale Tiefe).
+ */
+function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
+  if (!state.starless || !overlayActive()) return;
+  // Schwarzblende des Videos mitmachen: Overlay nie vor dem Bild sichtbar
+  const baseA = fade === undefined ? 1 : fade;
+  if (baseA <= 0.01) return;
+  // Beim Neustart der Zeitachse (Loop-Wiederholung, Export ab 0) die
+  // gemerkten Chip-Seiten vergessen, damit jeder Durchlauf gleich aussieht
+  if (state.labels && loopT + 0.5 < (drawOverlayTo._lastT || 0)) {
+    for (const L of state.labels) { delete L._chipSide; delete L._up; }
+  }
+  drawOverlayTo._lastT = loopT;
+  const lang = I18N.lang === "de" ? "de" : "en";
+  const viewAspect = state.aspect;
+  const imgAspect = state.starless.width / state.starless.height;
+  const cover = coverBase(viewAspect, imgAspect);
+  const scale = cover * cam.zoom * (cam.lens || 1);
+  const rc = Math.cos(cam.angle), rs = Math.sin(cam.angle);
+  // Marker exakt auf das Objekt pinnen: dieselbe tiefenabhängige
+  // Transformation wie der Hintergrund-Shader (Parallaxe-Exponent + Kippen).
+  // Eine tiefenneutrale Projektion würde beim Zoomen/Schwenken sichtbar
+  // gegen das Objekt driften ("die Schrift springt").
+  const parallax = state.parallax / 100;
+  const depthRange = 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
+  const drK = parallax * depthRange;
+  const bgTiltX = (state.tiltX / 100) * 0.08 + cam.tiltAddX + cam.driftTX * drK;
+  const bgTiltY = (state.tiltY / 100) * 0.08 + cam.tiltAddY + cam.driftTY * drK;
+  // Galaxien-Rotation: Objekte im Spin-Bereich wandern im Bild mit -
+  // die Marker müssen dieselbe Verschiebung mitmachen wie der Hintergrund
+  const spinTe = cam.te;
+  const toScreen = (P) => {
+    const S = spinDisplace(P.x, P.y, spinTe, false);
+    const d = state.objFar ? 0.02 : depthAtPlane(S.x, S.y, imgAspect);
+    const ex = 1 + parallax * (d - 0.45) * depthRange;
+    const scaleD = cover * Math.pow(cam.zoom, ex);
+    const prx = (S.x - cam.cx - bgTiltX * (d - 0.45)) * scaleD;
+    const pry = (S.y - cam.cy - bgTiltY * (d - 0.45)) * scaleD;
+    const px = rc * prx - rs * pry, py = rs * prx + rc * pry;
+    return { x: (px / viewAspect + 0.5) * W, y: (1 - (py + 0.5)) * H, scaleD };
+  };
+  // Stern-Labels folgen der STERN-Ebene: Sterne parallaxieren stärker als
+  // der Nebel (Faktor 2,6 x Regler) - ein an den Nebel geklebter Marker
+  // läuft seinem Stern beim Flug sichtbar davon. Tiefe wie im Stern-Shader:
+  // Hash des nächstliegenden Maskensterns, ggf. Gaia-Tiefe, plus Verankerung
+  const starParL = state.starPar / 100;
+  const drKStarL = drK * 2.6 * starParL;
+  const stTiltX = (state.tiltX / 100) * 0.08 + cam.tiltAddX + cam.driftTX * drKStarL;
+  const stTiltY = (state.tiltY / 100) * 0.08 + cam.tiltAddY + cam.driftTY * drKStarL;
+  const warpK = state.warp / 100;
+  const sstep = (a, b, x) => {
+    const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+    return t * t * (3 - 2 * t);
+  };
+  const starLabelDepth = (L) => {
+    const m = state.maskStarFloats, n = state.maskStarCount;
+    if (!m || !n) return null;
+    if (L._msN !== n) {
+      L._msN = n; L._msIdx = -1;
+      let bd = 0.015 * 0.015; // nächster Maskenstern, max ~1,5 % Bildhöhe
+      for (let i = 0; i < n; i++) {
+        const dx = m[i * 7] - L.x, dy = m[i * 7 + 1] - L.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < bd) { bd = d2; L._msIdx = i; }
+      }
+    }
+    if (L._msIdx < 0) return null;
+    const i = L._msIdx;
+    const ax = m[i * 7], ay = m[i * 7 + 1], bright = m[i * 7 + 2];
+    let h = Math.sin(ax * 127.1 + ay * 311.7 + state.seed * 17.0) * 43758.5453;
+    h -= Math.floor(h);
+    let bs = bright * 0.12;
+    if (state.starLayers > 0.5) { h = (Math.floor(h * state.starLayers) + 0.5) / state.starLayers; bs = 0; }
+    let depth = Math.min(1, Math.max(0.02, state.starDist / 100 + (h - 0.5) * (state.spread / 100) * 1.15 + bs));
+    const gd = state.gaiaDepth ? state.gaiaDepth[i] : -1;
+    if (gd >= 0) {
+      const amt = Math.max(state.gaiaAmt / 100, state.gaiaOnly ? 1 : 0);
+      depth += (Math.min(1, Math.max(0.02, gd)) - depth) * amt;
+    }
+    return { depth, gd };
+  };
+  const toScreenStar = (L) => {
+    const sd = starLabelDepth(L);
+    if (!sd) return toScreen(L); // kein Maskenstern gefunden -> wie Nebel
+    const S = state.spinStars ? spinDisplace(L.x, L.y, spinTe, true) : { x: L.x, y: L.y };
+    const dN = state.objFar ? 0.02 : depthAtPlane(L.x, L.y, imgAspect);
+    let w = 0;
+    if (state.anchorStars > 0) {
+      if (L._dens === undefined) L._dens = lumDensAtPlane(L.x, L.y, imgAspect);
+      const agree = sd.gd >= 0
+        ? 1 - sstep(0.10, 0.28, Math.abs(Math.min(1, Math.max(0.02, sd.gd)) - dN))
+        : 1;
+      w = (state.anchorStars / 100) * L._dens * agree;
+    }
+    let ex = 1 + parallax * (sd.depth - 0.45) * depthRange * 2.6 * starParL + warpK * (0.4 + sd.depth);
+    ex = ex * (1 - w) + (1 + parallax * (dN - 0.45) * depthRange) * w;
+    ex = Math.max(ex, 0.12);
+    const scaleD = cover * Math.pow(cam.zoom, ex);
+    const tx = stTiltX * (sd.depth - 0.45) * (1 - w) + bgTiltX * (dN - 0.45) * w;
+    const ty = stTiltY * (sd.depth - 0.45) * (1 - w) + bgTiltY * (dN - 0.45) * w;
+    const prx = (S.x - cam.cx - tx) * scaleD;
+    const pry = (S.y - cam.cy - ty) * scaleD;
+    const px = rc * prx - rs * pry, py = rs * prx + rc * pry;
+    return { x: (px / viewAspect + 0.5) * W, y: (1 - (py + 0.5)) * H, scaleD };
+  };
+  const u = H / 1000; // Skalierungseinheit (1000er-Referenzhöhe)
+  const ACC = "rgba(157,184,255,";
+  ctx.save();
+  ctx.textBaseline = "alphabetic";
+  ctx.globalAlpha = baseA;
+
+  // ---- Infokarte (blendet ein und wieder aus) ----
+  // Vor den Beschriftungen gezeichnet, damit Chips ihr ausweichen können
+  let cardRect = null;
+  if (state.showInfo && (state.objInfo || cardHasCustom())) {
+    const outStart = Math.min(7, state.duration - 2);
+    const a = Math.min(1, Math.max(0, (loopT - 0.8) / 0.8)) *
+      Math.min(1, Math.max(0, (outStart + 1 - loopT) / 1));
+    if (a > 0.01) {
+      ctx.globalAlpha = a * baseA;
+      // Ohne erkanntes Objekt traegt die Karte allein die eigenen Felder
+      const info = state.objInfo || { id: "", facts: null, otype: "", user: true };
+      const f = info.facts ? info.facts[lang] : null;
+      // Vorrang: eigene Felder der Infokarte, dann bearbeitete Felder des
+      // zugehoerigen Labels, dann die automatischen Angaben
+      const cLab = (state.labels || []).find((l) => l.id === info.id && (info.user ? l.user : !l.user));
+      const cf = { ...labelCustom(cLab), ...labelCustom({ custom: state.cardCustom }) };
+      const title = info.user ? (cf.name || info.id)
+        : (cf.name ? `${cf.name} · ${info.id}` : (f ? `${info.id} · ${f.name}` : info.id));
+      const typeLine = cf.type || (f ? f.type : (OTYPE_NAMES[lang][info.otype] || ""));
+      const facts = [];
+      const LBL = lang === "de"
+        ? { dist: "Entfernung", size: "Durchmesser", radius: "Gr\u00f6\u00dfe", stars: "Sterne", mass: "Masse", age: "Alter" }
+        : { dist: "Distance", size: "Diameter", radius: "Size", stars: "Stars", mass: "Mass", age: "Age" };
+      if (f) {
+        for (const k of ["dist", "size", "radius", "stars", "mass", "age"]) {
+          const v = (k === "dist" && cf.dist) || (k === "size" && cf.size) || (k === "age" && cf.age) || f[k];
+          if (v) facts.push([LBL[k], v]);
+        }
+      }
+      const FLc = customFieldLabels(lang);
+      for (const k of ["dist", "size", "age"]) {
+        if (cf[k] && !facts.some(([kk]) => kk === LBL[k] || kk === FLc[k])) facts.push([FLc[k], cf[k]]);
+      }
+      if (cf.note) facts.push([FLc.note, cf.note]);
+      const pad = 20 * u, colW = 195 * u;
+      const cardW = Math.min(W - 40 * u, Math.max(300 * u, 2 * colW + 2 * pad));
+      const rows = Math.ceil(facts.length / 2);
+      const cardH = (56 + (typeLine ? 20 : 0) + rows * 40 + 14) * u;
+      // Bei Hochformat (Reels/Shorts/TikTok) liegt unten die Bedienleiste
+      // der Apps (Username, Audio, Caption) über dem Video – die Karte
+      // sitzt dort in der Schutzzone, damit sie nicht verdeckt wird
+      const bottomOff = (viewAspect < 1 ? 200 : 24) * u;
+      const x0 = 24 * u, y0 = H - cardH - bottomOff;
+      cardRect = { x0, y0, w: cardW, h: cardH };
+
+      // Die Karte folgt dem gewählten Beschriftungs-Stil, damit die
+      // Video-Overlays wie aus einem Guss wirken
+      const style = state.labelStyle || "editorial";
+      const monoF = `"Cascadia Code", "SF Mono", Consolas, monospace`;
+      const T = {
+        classic:   { box: "solid", fill: "rgba(8,10,16,0.74)", border: ACC + "0.5)", radius: 14,
+                     tW: "800", tCol: "#eef2ff", subCol: "#aab8d8", kCol: "#ffffff", vCol: "#c6cfe4", accCol: ACC + "0.75)" },
+        editorial: { box: "none", rule: "rgba(234,240,255,0.7)",
+                     tW: "650", tCol: "#f2f5ff", subCol: "#c3cde6", kCol: "#eef2ff", vCol: "#c3cde6", accCol: "rgba(234,240,255,0.65)", shadow: true },
+        glass:     { box: "solid", fill: "rgba(18,24,38,0.55)", border: "rgba(220,232,255,0.3)", radius: 18,
+                     tW: "650", tCol: "#f2f6ff", subCol: "#b9c6e4", kCol: "#f2f6ff", vCol: "#b9c6e4", accCol: "rgba(220,232,255,0.6)" },
+        hud:       { box: "hud", fill: "rgba(6,16,22,0.5)", border: "rgba(159,232,255,0.55)", radius: 2,
+                     tW: "600", tCol: "#d9f4ff", subCol: "#8fd2ea", kCol: "#d9f4ff", vCol: "#9fdcf2", accCol: "rgba(159,232,255,0.7)", font: monoF, upper: true },
+        micro:     { box: "none", rule: "rgba(255,255,255,0.5)",
+                     tW: "600", tCol: "#ffffff", subCol: "#c9d2e8", kCol: "#ffffff", vCol: "#c9d2e8", accCol: "rgba(255,255,255,0.6)", shadow: true, upper: true },
+        focus:     { box: "accent", fill: "rgba(16,21,34,0.85)", border: "rgba(167,196,255,0.45)", radius: 6,
+                     tW: "650", tCol: "#eef3ff", subCol: "#a9b8d9", kCol: "#eef3ff", vCol: "#a9b8d9", accCol: ACC + "0.9)" },
+      }[style] || { box: "solid", fill: "rgba(8,10,16,0.74)", border: ACC + "0.5)", radius: 14,
+        tW: "800", tCol: "#eef2ff", subCol: "#aab8d8", kCol: "#ffffff", vCol: "#c6cfe4", accCol: ACC + "0.75)" };
+      const fam = T.font || "system-ui, sans-serif";
+
+      if (T.box !== "none") {
+        ctx.fillStyle = T.fill;
+        ctx.strokeStyle = T.border;
+        ctx.lineWidth = 1.2 * u;
+        ctx.beginPath();
+        ctx.roundRect(x0, y0, cardW, cardH, T.radius * u);
+        ctx.fill();
+        ctx.stroke();
+        if (T.box === "accent") {
+          ctx.fillStyle = T.accCol;
+          ctx.fillRect(x0, y0 + 5 * u, 3 * u, cardH - 10 * u);
+        }
+        if (T.box === "hud") {
+          // Eckklammern wie bei den HUD-Labels
+          ctx.strokeStyle = T.border;
+          ctx.lineWidth = 1.8 * u;
+          const arm = 15 * u;
+          for (const [ex, ey] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+            const cxp = x0 + ex * cardW, cyp = y0 + ey * cardH;
+            ctx.beginPath();
+            ctx.moveTo(cxp, cyp + (ey ? -arm : arm));
+            ctx.lineTo(cxp, cyp);
+            ctx.lineTo(cxp + (ex ? -arm : arm), cyp);
+            ctx.stroke();
+          }
+        }
+      }
+      if (T.shadow) {
+        ctx.shadowColor = "rgba(0,0,0,0.85)";
+        ctx.shadowBlur = 8 * u;
+      }
+      const titleTxt = T.upper ? title.toUpperCase() : title;
+      ctx.fillStyle = T.tCol;
+      ctx.font = `${T.tW} ${(T.upper ? 19 : 22) * u}px ${fam}`;
+      ctx.fillText(titleTxt, x0 + pad, y0 + 33 * u, cardW - 2 * pad);
+      if (T.box === "none") {
+        // Feine Linie unter dem Titel ersetzt den Kasten
+        ctx.strokeStyle = T.rule;
+        ctx.lineWidth = 1 * u;
+        ctx.beginPath();
+        ctx.moveTo(x0 + pad, y0 + 41 * u);
+        ctx.lineTo(x0 + cardW - pad, y0 + 41 * u);
+        ctx.stroke();
+      }
+      if (typeLine) {
+        ctx.fillStyle = T.subCol;
+        ctx.font = `${13 * u}px ${fam}`;
+        ctx.fillText(T.upper ? typeLine.toUpperCase() : typeLine, x0 + pad, y0 + 55 * u, cardW - 2 * pad);
+      }
+      facts.forEach(([k, v], i) => {
+        const fx = x0 + pad + (i % 2) * colW;
+        const fy = y0 + (typeLine ? 76 : 58) * u + Math.floor(i / 2) * 40 * u;
+        ctx.fillStyle = T.kCol;
+        ctx.font = `700 ${13.5 * u}px ${fam}`;
+        ctx.fillText(T.upper ? k.toUpperCase() : k, fx, fy);
+        ctx.fillStyle = T.vCol;
+        ctx.font = `${13.5 * u}px ${fam}`;
+        ctx.fillText(v, fx, fy + 17 * u, colW - 14 * u);
+      });
+      ctx.shadowBlur = 0;
+      // Datenquelle dezent unter der Karte
+      ctx.globalAlpha = a * 0.8 * baseA;
+      ctx.fillStyle = T.accCol;
+      ctx.font = `${10.5 * u}px ${fam}`;
+      if (!info.user && f) ctx.fillText("Data: SIMBAD/CDS · ESA Gaia DR3", x0 + 2 * u, y0 + cardH + 15 * u);
+      ctx.globalAlpha = baseA;
+    }
+  }
+
+  // ---- Feld-Beschriftungen (6 wählbare Stile) ----
+  if (state.showLabels && state.labels) {
+    const style = state.labelStyle || "editorial";
+    const chipSafe = (viewAspect < 1 ? 200 : 8) * u; // Social-UI-Schutzzone
+    // Platzierungs-System: belegte Flaechen (Infokarte + bereits gesetzte
+    // Labels) sammeln und Kollisionen durch vertikales Ausweichen aufloesen -
+    // Beschriftungen konnten sich sonst ueberlappen
+    const placed = [];
+    if (cardRect) placed.push({ x: cardRect.x0, y: cardRect.y0, w: cardRect.w, h: cardRect.h });
+    const claim = (x, y, w, h, anchorY) => {
+      const rr = { x, y, w, h };
+      for (let it = 0; it < 5; it++) {
+        let hit = null;
+        for (const p of placed) {
+          if (rr.x < p.x + p.w + 6 * u && rr.x + rr.w + 6 * u > p.x &&
+              rr.y < p.y + p.h + 6 * u && rr.y + rr.h + 6 * u > p.y) { hit = p; break; }
+        }
+        if (!hit) break;
+        rr.y = anchorY >= hit.y + hit.h / 2 ? hit.y + hit.h + 7 * u : hit.y - rr.h - 7 * u;
+      }
+      rr.y = Math.min(Math.max(rr.y, 8 * u), H - rr.h - chipSafe);
+      placed.push(rr);
+      return rr.y;
+    };
+    for (const L of state.labels) {
+      if (!L.on) continue;
+      const sp = L.star ? toScreenStar(L) : toScreen(L);
+      if (sp.x < -80 * u || sp.x > W + 80 * u || sp.y < -80 * u || sp.y > H + 80 * u) continue;
+      // Sanft ausblenden, wenn der Anker das Bild verlässt - vorher
+      // verschwand die Beschriftung von einem Frame auf den nächsten
+      const dOut = Math.max(0, -sp.x, sp.x - W, -sp.y, sp.y - H);
+      const edgeA = 1 - Math.min(1, dOut / (70 * u));
+      if (edgeA <= 0.01) continue;
+      ctx.globalAlpha = edgeA * baseA;
+      const r = Math.max(16 * u, (L.sizePlane * (L.sizeMul || 1) * sp.scaleD * H) / 2);
+      const facts = OBJECT_FACTS[normObjId(L.id)];
+      const cf = labelCustom(L);
+      const FL = customFieldLabels(lang);
+      const name = cf.name || L.id;
+      // Unterzeile: Typ und Entfernung (automatisch oder vom Nutzer), dazu
+      // die ausgefuellten Freitext-Felder - leere erscheinen nicht
+      const parts = [];
+      parts.push(cf.type || (facts ? facts[lang].name : (OTYPE_NAMES[lang][L.otype] || L.otype || "")));
+      if (cf.dist) parts.push(`${FL.dist} ${cf.dist}`);
+      else if (facts && facts[lang].dist) parts.push(facts[lang].dist);
+      if (cf.size) parts.push(`${FL.size} ${cf.size}`);
+      if (cf.age) parts.push(`${FL.age} ${cf.age}`);
+      if (cf.note) parts.push(cf.note);
+      let sub = parts.filter(Boolean).join(" · ");
+      if (L.star && L.phys && state.starDetails) sub += starPhysShort(L.phys, lang);
+
+      // Seite/Richtung EINMAL pro Durchlauf waehlen und behalten: Ein
+      // Wechsel mitten im Flug liess die Beschriftung auf die andere Seite
+      // springen, sobald der Text den Rand beruehrte - die Klemmung haelt
+      // sie stattdessen kontinuierlich im Bild.
+      const pickSide = (fitsRight) => {
+        if (!L._chipSide) L._chipSide = fitsRight ? 1 : -1;
+        return L._chipSide;
+      };
+      const pickUp = (fitsUp) => {
+        if (!L._up) L._up = fitsUp ? 1 : -1;
+        return L._up;
+      };
+      const measure = (fName, fSub, subText) => {
+        ctx.font = fName;
+        const wn = ctx.measureText(name).width;
+        ctx.font = fSub;
+        return { wn, ws: ctx.measureText(subText || sub).width };
+      };
+
+      if (style === "classic") {
+        ctx.strokeStyle = ACC + "0.75)";
+        ctx.lineWidth = 1.6 * u;
+        ctx.beginPath();
+        ctx.arc(sp.x, sp.y, r, 0, Math.PI * 2);
+        ctx.stroke();
+        const { wn, ws } = measure(`700 ${15 * u}px system-ui, sans-serif`, `${11.5 * u}px system-ui, sans-serif`);
+        const chipW = Math.max(wn, ws) + 24 * u;
+        const chipH = 40 * u;
+        const side = pickSide(sp.x + r + 14 * u + chipW < W - 8 * u);
+        const right = side > 0;
+        const cx0 = Math.min(Math.max(right ? sp.x + r + 14 * u : sp.x - r - 14 * u - chipW,
+          8 * u), W - chipW - 8 * u);
+        const cy0 = claim(cx0, sp.y - chipH / 2, chipW, chipH, sp.y);
+        ctx.strokeStyle = ACC + "0.7)";
+        ctx.lineWidth = 1.4 * u;
+        ctx.beginPath();
+        ctx.moveTo(right ? sp.x + r : sp.x - r, sp.y);
+        ctx.lineTo(right ? cx0 : cx0 + chipW, cy0 + chipH / 2);
+        ctx.stroke();
+        ctx.fillStyle = "rgba(8,10,16,0.72)";
+        ctx.strokeStyle = ACC + "0.55)";
+        ctx.beginPath();
+        ctx.roundRect(cx0, cy0, chipW, chipH, 8 * u);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = "#e8eeff";
+        ctx.font = `700 ${15 * u}px system-ui, sans-serif`;
+        ctx.fillText(name, cx0 + 12 * u, cy0 + 17 * u);
+        ctx.fillStyle = "#aab8d8";
+        ctx.font = `${11.5 * u}px system-ui, sans-serif`;
+        ctx.fillText(sub, cx0 + 12 * u, cy0 + 32 * u);
+
+      } else if (style === "editorial") {
+        // Punkt am Objekt, abgewinkelte Linie, freier Text ohne Box
+        const { wn, ws } = measure(`650 ${17 * u}px system-ui, sans-serif`, `${12.5 * u}px system-ui, sans-serif`);
+        const textW = Math.max(wn, ws);
+        const diag = 52 * u;
+        const side = pickSide(sp.x + 10 * u + diag + textW + 18 * u < W - 8 * u);
+        const up = pickUp(sp.y - diag - 46 * u > 8 * u);
+        let by = sp.y - up * (10 * u + diag);
+        // Text (und Linie) horizontal ins Bild klemmen - lange Untertitel
+        // wurden sonst am Bildrand abgeschnitten
+        let tx = sp.x + side * (10 * u + diag) + side * 2 * u;
+        if (side > 0) tx = Math.min(tx, W - textW - 10 * u);
+        else tx = Math.max(tx, textW + 10 * u);
+        const bx = tx - side * 2 * u;
+        by = claim(side > 0 ? tx : tx - textW, by - 36 * u, textW + 8 * u, 42 * u, sp.y) + 36 * u;
+        ctx.strokeStyle = "rgba(234,240,255,0.8)";
+        ctx.lineWidth = 1.2 * u;
+        ctx.beginPath();
+        ctx.moveTo(sp.x + side * 8 * u, sp.y - up * 8 * u);
+        ctx.lineTo(bx, by);
+        ctx.lineTo(bx + side * (textW + 8 * u), by);
+        ctx.stroke();
+        ctx.fillStyle = "#eaf0ff";
+        ctx.beginPath();
+        ctx.arc(sp.x, sp.y, 3.2 * u, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(234,240,255,0.65)";
+        ctx.lineWidth = 1.2 * u;
+        ctx.beginPath();
+        ctx.arc(sp.x, sp.y, 7.5 * u, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.textAlign = side > 0 ? "left" : "right";
+        ctx.shadowColor = "rgba(0,0,0,0.8)";
+        ctx.shadowBlur = 8 * u;
+        ctx.fillStyle = "#f2f5ff";
+        ctx.font = `650 ${17 * u}px system-ui, sans-serif`;
+        ctx.fillText(name, tx, by - 22 * u);
+        ctx.fillStyle = "#c3cde6";
+        ctx.font = `${12.5 * u}px system-ui, sans-serif`;
+        ctx.fillText(sub, tx, by - 6 * u);
+        ctx.shadowBlur = 0;
+        ctx.textAlign = "left";
+
+      } else if (style === "glass") {
+        // Dünner Ring + Glas-Kapsel (Blur wird im Canvas durch dunklere
+        // Halbtransparenz ersetzt)
+        ctx.strokeStyle = "rgba(207,224,255,0.5)";
+        ctx.lineWidth = 1.1 * u;
+        ctx.beginPath(); ctx.arc(sp.x, sp.y, r, 0, Math.PI * 2); ctx.stroke();
+        ctx.strokeStyle = "rgba(207,224,255,0.08)";
+        ctx.lineWidth = 5 * u;
+        ctx.beginPath(); ctx.arc(sp.x, sp.y, r, 0, Math.PI * 2); ctx.stroke();
+        const { wn, ws } = measure(`650 ${15 * u}px system-ui, sans-serif`, `${11.5 * u}px system-ui, sans-serif`);
+        const gap = 9 * u, pad = 15 * u;
+        const pillW = wn + ws + gap + 2 * pad;
+        const pillH = 32 * u;
+        const diag = 40 * u;
+        const side = pickSide(sp.x + (r + diag) * 0.71 + pillW + 16 * u < W - 8 * u);
+        const ax = sp.x + side * r * 0.71, ay = sp.y - r * 0.71;
+        const bx2 = ax + side * diag * 0.71, by2 = ay - diag * 0.71;
+        ctx.strokeStyle = "rgba(207,224,255,0.55)";
+        ctx.lineWidth = 1.1 * u;
+        ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx2, by2); ctx.stroke();
+        const px0 = Math.min(Math.max(side > 0 ? bx2 + 6 * u : bx2 - 6 * u - pillW, 8 * u), W - pillW - 8 * u);
+        const py0 = claim(px0, by2 - pillH / 2, pillW, pillH, sp.y);
+        ctx.fillStyle = "rgba(18,24,38,0.55)";
+        ctx.strokeStyle = "rgba(220,232,255,0.3)";
+        ctx.lineWidth = 1 * u;
+        ctx.beginPath();
+        ctx.roundRect(px0, py0, pillW, pillH, pillH / 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = "#f2f6ff";
+        ctx.font = `650 ${15 * u}px system-ui, sans-serif`;
+        ctx.fillText(name, px0 + pad, py0 + 21 * u);
+        ctx.fillStyle = "#b9c6e4";
+        ctx.font = `${11.5 * u}px system-ui, sans-serif`;
+        ctx.fillText(sub, px0 + pad + wn + gap, py0 + 21 * u);
+
+      } else if (style === "hud") {
+        // Eckklammern + Monospace-Typo mit Trennlinie
+        const arm = Math.max(12 * u, r * 0.3);
+        ctx.strokeStyle = "rgba(159,232,255,0.85)";
+        ctx.lineWidth = 1.6 * u;
+        for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+          ctx.beginPath();
+          ctx.moveTo(sp.x + sx * r, sp.y + sy * r - sy * arm);
+          ctx.lineTo(sp.x + sx * r, sp.y + sy * r);
+          ctx.lineTo(sp.x + sx * r - sx * arm, sp.y + sy * r);
+          ctx.stroke();
+        }
+        const mono = `600 ${14 * u}px "Cascadia Code", "SF Mono", Consolas, monospace`;
+        const monoSub = `${10.5 * u}px "Cascadia Code", "SF Mono", Consolas, monospace`;
+        const subUp = sub.toUpperCase();
+        const { wn, ws } = measure(mono, monoSub, subUp);
+        const textW = Math.max(wn, ws);
+        const diag = 26 * u;
+        const side = pickSide(sp.x + r + diag + textW + 14 * u < W - 8 * u);
+        const up = pickUp(sp.y - r - diag - 40 * u > 8 * u);
+        ctx.strokeStyle = "rgba(159,232,255,0.7)";
+        ctx.lineWidth = 1.2 * u;
+        ctx.beginPath();
+        ctx.moveTo(sp.x + side * r, sp.y - up * r);
+        ctx.lineTo(sp.x + side * (r + diag), sp.y - up * (r + diag));
+        ctx.stroke();
+        const tx = Math.min(Math.max(side > 0 ? sp.x + side * (r + diag) + 6 * u
+          : sp.x + side * (r + diag) - 6 * u - textW, 8 * u), W - textW - 8 * u);
+        let ty = sp.y - up * (r + diag) - (up > 0 ? 24 * u : -14 * u);
+        ty = claim(tx, ty - 16 * u, textW, 42 * u, sp.y) + 16 * u;
+        ctx.shadowColor = "rgba(120,220,255,0.35)";
+        ctx.shadowBlur = 10 * u;
+        ctx.fillStyle = "#d9f4ff";
+        ctx.font = mono;
+        ctx.fillText(name, tx, ty);
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = "rgba(140,220,250,0.4)";
+        ctx.lineWidth = 1 * u;
+        ctx.beginPath();
+        ctx.moveTo(tx, ty + 7 * u);
+        ctx.lineTo(tx + textW, ty + 7 * u);
+        ctx.stroke();
+        ctx.fillStyle = "#8fd2ea";
+        ctx.font = monoSub;
+        ctx.fillText(subUp, tx, ty + 21 * u);
+
+      } else if (style === "micro") {
+        // Nur Typografie: gesperrte Versalien über feiner Linie + Zeiger
+        const nameSp = name.split("").join("  ");
+        const subUp = sub.toUpperCase().split("").join(" ");
+        ctx.font = `600 ${14.5 * u}px system-ui, sans-serif`;
+        const wn = ctx.measureText(nameSp).width;
+        ctx.font = `${9.5 * u}px system-ui, sans-serif`;
+        const ws = ctx.measureText(subUp).width;
+        const halfW = Math.max(wn, ws) / 2 + 14 * u;
+        const lift = 78 * u;
+        const up = pickUp(sp.y - lift - 44 * u > 8 * u);
+        let lineY = Math.min(Math.max(sp.y - up * lift, 44 * u), H - chipSafe - 10 * u);
+        const cx1 = Math.min(Math.max(sp.x, halfW + 8 * u), W - halfW - 8 * u);
+        const blockTop0 = up > 0 ? lineY - 40 * u : lineY - 4 * u;
+        lineY += claim(cx1 - halfW, blockTop0, 2 * halfW, 46 * u, sp.y) - blockTop0;
+        ctx.strokeStyle = "rgba(255,255,255,0.55)";
+        ctx.lineWidth = 1 * u;
+        ctx.beginPath();
+        ctx.moveTo(sp.x, sp.y - up * 6 * u);
+        ctx.lineTo(sp.x, lineY);
+        ctx.moveTo(cx1 - halfW, lineY);
+        ctx.lineTo(cx1 + halfW, lineY);
+        ctx.stroke();
+        ctx.fillStyle = "rgba(255,255,255,0.9)";
+        ctx.beginPath(); ctx.arc(sp.x, sp.y, 3 * u, 0, Math.PI * 2); ctx.fill();
+        ctx.textAlign = "center";
+        ctx.shadowColor = "rgba(0,0,0,0.9)";
+        ctx.shadowBlur = 8 * u;
+        const tBase = up > 0 ? lineY - 8 * u : lineY + 30 * u;
+        ctx.fillStyle = "#ffffff";
+        ctx.font = `600 ${14.5 * u}px system-ui, sans-serif`;
+        ctx.fillText(nameSp, cx1, tBase - 14 * u);
+        ctx.fillStyle = "#c9d2e8";
+        ctx.font = `${9.5 * u}px system-ui, sans-serif`;
+        ctx.fillText(subUp, cx1, tBase);
+        ctx.shadowBlur = 0;
+        ctx.textAlign = "left";
+
+      } else { // "focus"
+        // Gestrichelter Fokus-Ring + Karte mit Akzentkante
+        ctx.strokeStyle = "rgba(167,196,255,0.9)";
+        ctx.lineWidth = 1.4 * u;
+        ctx.lineCap = "round";
+        ctx.setLineDash([3 * u, 7 * u]);
+        ctx.beginPath(); ctx.arc(sp.x, sp.y, r, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.lineCap = "butt";
+        ctx.strokeStyle = "rgba(167,196,255,0.3)";
+        ctx.lineWidth = 0.8 * u;
+        ctx.beginPath(); ctx.arc(sp.x, sp.y, Math.max(6 * u, r - 7 * u), 0, Math.PI * 2); ctx.stroke();
+        const { wn, ws } = measure(`650 ${15 * u}px system-ui, sans-serif`, `${11.5 * u}px system-ui, sans-serif`);
+        const boxW = Math.max(wn, ws) + 30 * u;
+        const boxH = 42 * u;
+        const bx3 = Math.min(Math.max(sp.x - boxW / 2, 8 * u), W - boxW - 8 * u);
+        const below = pickUp(sp.y + r + 12 * u + boxH <= H - chipSafe) > 0;
+        const by3 = claim(bx3, below ? sp.y + r + 12 * u : sp.y - r - 12 * u - boxH, boxW, boxH, sp.y);
+        ctx.fillStyle = "rgba(16,21,34,0.85)";
+        ctx.strokeStyle = "rgba(167,196,255,0.45)";
+        ctx.lineWidth = 1 * u;
+        ctx.beginPath();
+        ctx.roundRect(bx3, by3, boxW, boxH, 6 * u);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = ACC + "0.9)";
+        ctx.fillRect(bx3, by3 + 4 * u, 3 * u, boxH - 8 * u);
+        ctx.fillStyle = "#eef3ff";
+        ctx.font = `650 ${15 * u}px system-ui, sans-serif`;
+        ctx.fillText(name, bx3 + 14 * u, by3 + 18 * u);
+        ctx.fillStyle = "#a9b8d9";
+        ctx.font = `${11.5 * u}px system-ui, sans-serif`;
+        ctx.fillText(sub, bx3 + 14 * u, by3 + 33 * u);
+      }
+    }
+  }
+
+  ctx.restore();
+}
+
+// Transparente Overlay-Ebene über der Vorschau
+const overlayCanvas = document.createElement("canvas");
+overlayCanvas.id = "overlayCanvas";
+overlayCanvas.style.cssText = "position:absolute; pointer-events:none; left:0; top:0;";
+canvas.parentElement.style.position = "relative";
+canvas.parentElement.appendChild(overlayCanvas);
+const overlayCtx = overlayCanvas.getContext("2d");
+
+let overlaySyncAt = -1e9;
+function drawPreviewOverlay(loopT, cam, fade) {
+  // Lage des Overlays nur bei Groessenwechsel und sonst hoechstens alle
+  // 200 ms abgleichen: offsetLeft/clientWidth erzwingen bei jedem Lesen ein Layout
+  const resized = overlayCanvas.width !== canvas.width || overlayCanvas.height !== canvas.height;
+  if (resized) {
+    overlayCanvas.width = canvas.width;
+    overlayCanvas.height = canvas.height;
+  }
+  const nowMs = performance.now();
+  if (resized || nowMs - overlaySyncAt > 200) {
+    overlaySyncAt = nowMs;
+    const L = canvas.offsetLeft + "px", T = canvas.offsetTop + "px";
+    const W = canvas.clientWidth + "px", H = canvas.clientHeight + "px";
+    const st = overlayCanvas.style;
+    if (st.left !== L) st.left = L;
+    if (st.top !== T) st.top = T;
+    if (st.width !== W) st.width = W;
+    if (st.height !== H) st.height = H;
+  }
+  overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+  drawOverlayTo(overlayCtx, overlayCanvas.width, overlayCanvas.height, loopT, cam, fade);
+  if (state.scenEdit && state.starless && !state.exporting && state.waypoints.length) {
+    drawWaypointOverlay(overlayCtx, overlayCanvas.width, overlayCanvas.height, cam);
+  }
+}
+
+// ---------------------------------------------------------------- Kamera & Zeit
+
+function currentTime() {
+  if (!state.playing) return state.pausedAt;
+  return (performance.now() - state.t0) / 1000;
+}
+
+function smoothstep(x) {
+  x = Math.min(1, Math.max(0, x));
+  return x * x * (3 - 2 * x);
+}
+
+/**
+ * Grund-Überdeckung des Ausschnitts. Mit "strikte Ränder" (Standard) wird sie
+ * so weit vergrößert, dass Rotation, Kippen, Schwenk und Fahrt-Parallaxe den
+ * sichtbaren Ausschnitt nie über die echte Bildfläche hinausschieben - sonst
+ * spiegelt die Textur an den Rändern (sichtbar v. a. bei 21:9). Der Faktor
+ * ist über den ganzen Flug konstant (Worst Case), damit nichts "pumpt".
+ */
+function coverBase(viewAspect, imgAspect) {
+  const base = Math.max(viewAspect / imgAspect, 1) * 1.02;
+  if (!state.strictEdges) return base;
+
+  // Rotation: benötigte Halbbreite/-höhe des gedrehten Ausschnitts (bei
+  // Zoom 1); über den Drehbereich des Flugs abgetastet
+  const rotSpan = Math.abs(state.rotationSpeed) * state.duration * (state.loopMode ? 0.5 : 1);
+  let needW = viewAspect / 2, needH = 0.5;
+  const steps = 24;
+  for (let i = 0; i <= steps; i++) {
+    const th = (state.orientation + (rotSpan * i) / steps) * Math.PI / 180;
+    const ca = Math.abs(Math.cos(th)), sa = Math.abs(Math.sin(th));
+    needW = Math.max(needW, (viewAspect * ca + sa) / 2);
+    needH = Math.max(needH, (viewAspect * sa + ca) / 2);
+  }
+
+  // Seitliche Verschiebungen in Ebenen-Einheiten (Faktor 0.55 = max |d-0.45|)
+  const drK = (state.parallax / 100) * 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
+  const tilt = (Math.abs(state.tiltX) + Math.abs(state.tiltY)) / 100 * 0.08;
+  const sway = (state.swayAmp / 100) * 0.06 * 1.6;
+  const ramp = (state.tiltRampAmp / 100) * 0.08;
+  const T0 = (tilt + sway + ramp) * 0.55;
+
+  // Fahrt-Parallaxe (Lateral) hängt von der erlaubten Strecke ab, die
+  // wiederum mit der Überdeckung wächst -> kurze Fixpunkt-Iteration
+  let cover = base;
+  for (let i = 0; i < 6; i++) {
+    let tx = T0, ty = T0;
+    if (state.flightMode === "lateral" || state.flightMode === "diagonal") {
+      const sc = cover * (state.flightMode === "diagonal" ? diagStartZoom() : state.zoomBase);
+      const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.92;
+      const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.92;
+      tx += drK * 0.55 * freeX;
+      ty += drK * 0.55 * freeY;
+    }
+    const cx = needW / Math.max(0.05, imgAspect / 2 - tx);
+    const cy = needH / Math.max(0.05, 0.5 - ty);
+    const next = Math.max(base, cx, cy);
+    if (Math.abs(next - cover) < 1e-4) { cover = next; break; }
+    cover = next;
+  }
+  return Math.min(cover, base * 2.5);
+}
+
+/**
+ * Kamerazustand zu einem Zeitpunkt (für Rendering und Bewegungsunschärfe).
+ * Ablauf: Rohzeit -> Loop-Dreieck (hin & zurück) -> Easing -> effektive
+ * Flugzeit te, aus der Zoom, Rotation, Ziel-Fahrt und Schwenk berechnet werden.
+ */
+
+// ------------------------------------------------- Szenario-Flug (Wegpunkte)
+
+
+/**
+ * Kubisches Bezier-Easing wie CSS cubic-bezier(x1,y1,x2,y2):
+ * P0=(0,0), P3=(1,1); fuer die Zeit k wird t mit Newton-Iteration
+ * (Bisektion als Rueckfall) aus x(t)=k bestimmt, Ergebnis ist y(t).
+ */
+function bezierEase(x1, y1, x2, y2, k) {
+  if (k <= 0) return 0;
+  if (k >= 1) return 1;
+  const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx;
+  const cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
+  const sampleX = (t) => ((ax * t + bx) * t + cx) * t;
+  const sampleY = (t) => ((ay * t + by) * t + cy) * t;
+  const slopeX = (t) => (3 * ax * t + 2 * bx) * t + cx;
+  let t = k;
+  for (let i = 0; i < 6; i++) {
+    const d = slopeX(t);
+    if (Math.abs(d) < 1e-6) break;
+    t -= (sampleX(t) - k) / d;
+    t = Math.min(1, Math.max(0, t));
+  }
+  if (Math.abs(sampleX(t) - k) > 1e-4) {
+    let lo = 0, hi = 1;
+    for (let i = 0; i < 24; i++) {
+      t = (lo + hi) / 2;
+      if (sampleX(t) < k) lo = t; else hi = t;
+    }
+  }
+  return sampleY(t);
+}
+
+/** Position entlang einer Etappe: Gerade oder Bogen durch wp.via. */
+function scenLegPos(a, b, k) {
+  if (b.via) {
+    const cx = 2 * b.via.x - (a.x + b.x) / 2;
+    const cy = 2 * b.via.y - (a.y + b.y) / 2;
+    const u = 1 - k;
+    return { x: u * u * a.x + 2 * u * k * cx + k * k * b.x,
+             y: u * u * a.y + 2 * u * k * cy + k * k * b.y };
+  }
+  return { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k };
+}
+
+/** Gesamtdauer des Wegpunkt-Plans in Sekunden (Etappen + Pausen). */
+function scenarioTotal() {
+  const wps = state.waypoints;
+  let total = 0;
+  for (let i = 0; i < wps.length; i++) {
+    total += Math.max(0, wps[i].hold || 0);
+    if (i > 0) total += Math.max(0.2, wps[i].dur || 0.2);
+  }
+  return Math.max(0.4, total);
+}
+
+/**
+ * Kameraposition entlang des Wegpunkt-Plans bei Fortschritt p (0..1).
+ * Jede Etappe hat eigenes Easing; der Zoom interpoliert geometrisch
+ * (wirkt gleichmaessig statt am Ende zu rasen) und die Position wird
+ * zoom-kompensiert gefuehrt, damit ein Schwenk mit gleichzeitigem Zoom
+ * auf dem Schirm gleichmaessig laeuft. Position wird wie im Zoom-Modus
+ * an die Bildkanten geklemmt.
+ */
+function scenarioAt(p) {
+  const wps = state.waypoints;
+  const total = scenarioTotal();
+  let s = Math.min(1, Math.max(0, p)) * total;
+  let ax = wps[0].x, ay = wps[0].y, zoom = Math.max(1, wps[0].zoom || 1);
+  let ang = wps[0].angle || 0;
+  outer:
+  for (let i = 0; i < wps.length; i++) {
+    if (i > 0) {
+      const dur = Math.max(0.2, wps[i].dur || 0.2);
+      if (s <= dur) {
+        let k = s / dur;
+        const easeMode = wps[i].ease || "smooth";
+        if (easeMode === "custom") {
+          const cv = wps[i].curve || [0.42, 0, 0.58, 1];
+          k = bezierEase(cv[0], cv[1], cv[2], cv[3], k);
+        } else if (easeMode !== "linear") {
+          k = smoothstep(k);
+        }
+        const a = wps[i - 1], b = wps[i];
+        const za = Math.max(1, a.zoom || 1), zb = Math.max(1, b.zoom || 1);
+        // Zoom-kompensierter Weg: der Zoom laeuft geometrisch, deshalb wuerde
+        // eine Position, die linear in Bildkoordinaten laeuft, auf dem Schirm
+        // ungleichmaessig wirken (erst kaum Bewegung, dann Heranrasen). Die
+        // Umrechnung haelt die wahrgenommene Geschwindigkeit konstant.
+        const r = zb / za;
+        const kp = Math.abs(r - 1) < 1e-4 ? k : (1 - Math.pow(r, -k)) / (1 - 1 / r);
+        const P = scenLegPos(a, b, kp);
+        ax = P.x;
+        ay = P.y;
+        zoom = za * Math.pow(r, k);
+        ang = (a.angle || 0) + ((b.angle || 0) - (a.angle || 0)) * k;
+        break outer;
+      }
+      s -= dur;
+    }
+    ax = wps[i].x; ay = wps[i].y; zoom = Math.max(1, wps[i].zoom || 1);
+    ang = wps[i].angle || 0;
+    const hold = Math.max(0, wps[i].hold || 0);
+    if (s <= hold) {
+      // Schwebe-Effekt (optional je Wegpunkt): sanftes Treiben waehrend der
+      // Pause, wie eine schwebende Kamera - weich ein- und ausblendend,
+      // damit der Uebergang in die Etappen nahtlos bleibt
+      if (wps[i].floatOn && hold > 0.4) {
+        const ramp = smoothstep(Math.min(1, s / 1.2)) * smoothstep(Math.min(1, (hold - s) / 1.2));
+        const amp = 0.006 / zoom;
+        ax += amp * ramp * (Math.sin(s * 0.9 + i * 2.1) + 0.5 * Math.sin(s * 0.47 + 1.3));
+        ay += amp * ramp * 0.8 * (Math.sin(s * 0.73 + i * 1.4 + 0.9) + 0.5 * Math.sin(s * 0.31 + 0.4));
+      }
+      break;
+    }
+    s -= hold;
+  }
+  const viewAspect = state.aspect;
+  const imgAspect = state.starless
+    ? state.starless.width / state.starless.height : 16 / 9;
+  const cover = coverBase(viewAspect, imgAspect);
+  const sc = cover * zoom;
+  const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.98;
+  const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.98;
+  return { zoom, angle: ang, cx: Math.min(freeX, Math.max(-freeX, ax)), cy: Math.min(freeY, Math.max(-freeY, ay)) };
+}
+
+function scenarioActive() {
+  return state.scenarioOn && state.waypoints.length >= 2;
+}
+// Sobald der Flugplan eingeschaltet ist, fuehrt NUR er die Kamera: ohne
+// Wegpunkt steht das Bild still (keine Bewegungsinformation), mit einem
+// Wegpunkt steht die Kamera auf diesem Wegpunkt - vorher lief bis zum
+// zweiten Wegpunkt die alte Preset-Animation weiter und Aenderungen am
+// ersten Wegpunkt blieben unsichtbar
+function scenarioCam() {
+  return state.scenarioOn;
+}
+
+// Tiefe des Dolly-Ziels: Mittel der Tiefenkarte um das Zoomziel (bzw. die
+// Bildmitte), gemerkt je Tiefenkarte und Ziel
+let dollyPivotCache = { dd: null, key: "", v: 0.45 };
+function dollyPivotDepth() {
+  const dd = state.depthData;
+  if (!dd || !dd.f || !state.starless) return 0.45;
+  const key = state.target.x.toFixed(4) + "," + state.target.y.toFixed(4);
+  if (dollyPivotCache.dd === dd && dollyPivotCache.key === key) return dollyPivotCache.v;
+  const { w, h, f } = dd;
+  const imgAspect = state.starless.width / state.starless.height;
+  const px = Math.round((state.target.x / imgAspect + 0.5) * w), py = Math.round((0.5 - state.target.y) * h);
+  const R = Math.max(2, Math.round(h * 0.03));
+  let s = 0, c = 0;
+  for (let y = Math.max(0, py - R); y <= Math.min(h - 1, py + R); y++) {
+    for (let x = Math.max(0, px - R); x <= Math.min(w - 1, px + R); x++) { s += f[y * w + x]; c++; }
+  }
+  const v = c ? s / c : 0.45;
+  dollyPivotCache = { dd, key, v };
+  return v;
+}
+
+// Startzoom des Schraegflugs: mindestens 1,25x, damit vom Bildrand aus
+// ueberhaupt eine Fahrstrecke frei ist
+function diagStartZoom() {
+  return Math.max(state.zoomBase, 1.25);
+}
+
+function camAt(loopT) {
+  // Flugplan-Einrichtung: feste Kamera aus dem Steuerkreuz statt Animation
+  if (state.scenEdit) {
+    const v = state.scenView;
+    return { zoom: v.zoom, angle: (state.orientation + v.angle) * Math.PI / 180,
+      rate: 0, te: 0, tiltAddX: 0, tiltAddY: 0,
+      cx: v.x, cy: v.y, driftTX: 0, driftTY: 0, lens: 1 };
+  }
+  const D = state.duration;
+  // Rueckwaerts: derselbe Flug in umgekehrter Zeit - aus der Naehe
+  // zurueck ins Gesamtbild (Reveal / Pull-out wie am Ende vieler Filme)
+  const u0 = Math.min(1, Math.max(0, loopT / D));
+  const u = state.reverse ? 1 - u0 : u0;
+  const p = state.loopMode ? 1 - Math.abs(1 - 2 * u) : u;
+  let curve;
+  switch (state.easeMode) {
+    case "linear": curve = p; break;
+    case "in":     curve = p * p; break;
+    case "out":    curve = 1 - (1 - p) * (1 - p); break;
+    default:       curve = smoothstep(p); // sanft beschleunigen & abbremsen
+  }
+  const e = state.ease / 100;
+  const pe = p + (curve - p) * e;
+  const te = pe * D * (state.loopMode ? 0.5 : 1);
+
+  const rate = (state.speed / 100) * 0.09;
+  let angle = (state.orientation + state.rotationSpeed * te) * Math.PI / 180;
+
+  // Flugmodus: entweder in den Nebel zoomen oder seitlich übers Bild gleiten
+  let zoom, cx, cy, driftTX = 0, driftTY = 0;
+  if (scenarioCam()) {
+    const sp = state.waypoints.length ? scenarioAt(p) : { zoom: state.zoomBase, angle: 0, cx: 0, cy: 0 };
+    zoom = sp.zoom; cx = sp.cx; cy = sp.cy;
+    angle = (state.orientation + sp.angle) * Math.PI / 180;
+  } else if (state.flightMode === "orbit") {
+    // Orbit um die ausgewaehlte Galaxie: die Kamera rahmt sie ein und
+    // kreist auf einem Bogen um sie herum. Im 2,5D-Modell ist das eine
+    // kreisende Parallaxe-Verschiebung (wie beim seitlichen Flug): nahe
+    // Teile der 3D-Scheibe und der Kern schwingen staerker als ferne -
+    // man sieht die geneigte Scheibe aus wechselnden Winkeln. Tempo =
+    // Bogenweite und Ausschlag, Flugrichtung = Startwinkel
+    galEnsure();
+    const g = state.galaxies[state.galSel] || state.galaxies[0];
+    const viewAspect = state.aspect;
+    const imgAspect = state.starless ? state.starless.width / state.starless.height : 16 / 9;
+    const cover = coverBase(viewAspect, imgAspect);
+    const fit = Math.min(6, Math.max(1, 0.8 / (cover * 2.2 * g.rad)));
+    zoom = state.zoomBase * fit * Math.exp(0.004 * state.speed * (pe - 0.5));
+    const sc = cover * zoom;
+    const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.98;
+    const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.98;
+    const sweep = (60 + 1.2 * state.speed) * Math.PI / 180;
+    const th = state.driftDir * Math.PI / 180 + sweep * (pe - 0.5);
+    const A = g.rad * (0.6 + 1.4 * state.speed / 100);
+    driftTX = A * Math.cos(th);
+    driftTY = A * Math.sin(th);
+    // Drehpunkt = Scheibenebene der Galaxie: die Parallaxe verschiebt um
+    // Tiefe 0,45; das Ziel um denselben Betrag bei Galaxientiefe
+    // nachfuehren, damit die Galaxie ruhig an ihrem Platz bleibt und Himmel
+    // und nahe Scheibenseite gegeneinander um sie kreisen (reine
+    // Verschiebung - an der Steilheitsgrenze aendert sich nichts). Liegt
+    // die Galaxie nah am Bildrand, haelt das Ziel Abstand fuer diese
+    // Nachfuehrung, statt sie am Rand abzuschneiden
+    const PR = (state.parallax / 100) * 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
+    const kG = PR * (galPivotDepth(g) - 0.45), comp = A * Math.abs(kG);
+    // Platz fuer das Ziel beim kleinsten Zoom des Flugs messen: so steht
+    // die Galaxie ueber den ganzen Orbit still (sonst wandert sie mit dem
+    // leichten Heranzoomen zur Mitte)
+    const sc0 = cover * state.zoomBase * fit * Math.exp(-0.002 * Math.abs(state.speed));
+    const fx = Math.max(0, Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc0) * 0.98 - comp);
+    const fy = Math.max(0, Math.max(0, 0.5 - 0.5 / sc0) * 0.98 - comp);
+    cx = Math.min(freeX, Math.max(-freeX, Math.min(fx, Math.max(-fx, g.x)) - driftTX * kG));
+    cy = Math.min(freeY, Math.max(-freeY, Math.min(fy, Math.max(-fy, g.y)) - driftTY * kG));
+  } else if (state.flightMode === "diagonal") {
+    // Schraegflug: Start am Bildrand, gerade Bahn zur Gegenseite, dabei ein
+    // leichter Zoom. Von der ersten Sekunde an gleichmaessig:
+    //  - Zoom exponentiell (konstante Zoomrate, wie beim Zoom-Flug)
+    //  - Seitfahrt mit konstanter Geschwindigkeit AUF DEM BILDSCHIRM: in
+    //    Bildkoordinaten wird sie im Mass des Zooms langsamer
+    //    (Anteil g = (1 - e^-k*pe) / (1 - e^-k)), sonst wuerde der Drift mit
+    //    wachsendem Zoom immer schneller
+    //  - die ganze Bahn liegt im freien Bereich des START-Ausschnitts (der
+    //    kleinste des Flugs), damit nie eine Randklemme die Fahrt festhaelt.
+    //    Genau das liess beim Zoom-Flug mit Randziel die Sterne erst
+    //    "einschwenken" und erst ab der Mitte gleichmaessig ziehen
+    const viewAspect = state.aspect;
+    const imgAspect = state.starless ? state.starless.width / state.starless.height : 16 / 9;
+    const cover = coverBase(viewAspect, imgAspect);
+    const z0 = diagStartZoom();
+    const kz = Math.log(1 + Math.max(0, state.zoomDrift) / 100);
+    zoom = z0 * Math.exp(kz * pe);
+    const sc0 = cover * z0;
+    const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc0) * 0.97;
+    const freeY = Math.max(0, 0.5 - 0.5 / sc0) * 0.97;
+    const dir = state.driftDir * Math.PI / 180;
+    const ux = Math.cos(dir), uy = Math.sin(dir);
+    // Bahnmitte: Klickziel (quer zur Fahrt verschiebbar), sonst Bildmitte
+    const tx = Math.min(freeX, Math.max(-freeX, state.target.x));
+    const ty = Math.min(freeY, Math.max(-freeY, state.target.y));
+    let half = Infinity;
+    if (Math.abs(ux) > 1e-6) half = Math.min(half, (freeX - Math.abs(tx)) / Math.abs(ux));
+    if (Math.abs(uy) > 1e-6) half = Math.min(half, (freeY - Math.abs(ty)) / Math.abs(uy));
+    if (!isFinite(half)) half = 0;
+    const g = kz > 1e-6 ? (1 - Math.exp(-kz * pe)) / (1 - Math.exp(-kz)) : pe;
+    // Start immer am Rand; die Geschwindigkeit bestimmt, wie weit die
+    // Kamera Richtung Gegenseite kommt (100 = ganz hinueber)
+    const off = -half + 2 * half * (Math.max(0, state.speed) / 100) * g;
+    cx = tx + off * ux;
+    cy = ty + off * uy;
+    driftTX = off * ux;
+    driftTY = off * uy;
+  } else if (state.flightMode === "lateral") {
+    // Die Kamera fährt entlang der eingestellten Richtung durch das Ziel
+    // (Klickpunkt) und zoomt dabei langsam heran ("Zoom-Fahrt", 0 = fester
+    // Zoom). Die Strecke ist auf den Startausschnitt begrenzt (der kleinste
+    // des Flugs), damit nie eine Randklemme greift; mit Zoom laeuft die
+    // Seitfahrt bildschirm-gleichmaessig (wie beim Schraegflug)
+    const kzL = Math.log(1 + Math.max(0, state.zoomDrift) / 100);
+    zoom = state.zoomBase * Math.exp(kzL * pe);
+    const viewAspect = state.aspect;
+    const imgAspect = state.starless
+      ? state.starless.width / state.starless.height : 16 / 9;
+    const cover = coverBase(viewAspect, imgAspect);
+    // Freier Bereich des Startausschnitts (kleinster Zoom des Flugs) - mit
+    // dem aktuellen Zoom wuerde die Bahn waehrend des Flugs wachsen
+    const sc = cover * state.zoomBase;
+    const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.92;
+    const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.92;
+    const tx = Math.min(freeX, Math.max(-freeX, state.target.x + (state.frameX / 100) * freeX));
+    const ty = Math.min(freeY, Math.max(-freeY, state.target.y + (state.frameY / 100) * freeY));
+    const dir = state.driftDir * Math.PI / 180;
+    const ux = Math.cos(dir), uy = Math.sin(dir);
+    let half = Infinity;
+    if (Math.abs(ux) > 1e-6) half = Math.min(half, (freeX - Math.abs(tx)) / Math.abs(ux));
+    if (Math.abs(uy) > 1e-6) half = Math.min(half, (freeY - Math.abs(ty)) / Math.abs(uy));
+    if (!isFinite(half)) half = 0;
+    half *= state.speed / 100;
+    const gL = kzL > 1e-6 ? (1 - Math.exp(-kzL * pe)) / (1 - Math.exp(-kzL)) : pe;
+    const off = (gL - 0.5) * 2 * half;
+    cx = tx + off * ux;
+    cy = ty + off * uy;
+    // Fahrt-Parallaxe: wirkt wie ein animiertes Kippen – nahe Bereiche und
+    // nahe Sterne ziehen schneller vorbei als ferne (Skalierung im Renderer)
+    driftTX = off * ux;
+    driftTY = off * uy;
+  } else {
+    zoom = state.zoomBase * Math.exp(rate * te);
+  }
+
+  // Schwenk-Animation: langsame elliptische Kippbewegung (Funktion von te,
+  // dadurch im Loop-Modus automatisch nahtlos)
+  let tiltAddX = 0, tiltAddY = 0;
+  const swayA = scenarioCam() ? 0 : (state.swayAmp / 100) * 0.06;
+  if (swayA > 0) {
+    // Kreisende Kippbewegung statt Hin-und-her-Pendeln: Der Kipp-Vektor
+    // läuft auf einer flachen Ellipse (Hauptachse = eingestellte Richtung).
+    // Ohne Umkehrpunkte wirkt der Schwenk ruhig statt wackelig - das
+    // Pendeln kehrte selbst bei langsamem Tempo sichtbar "hart" um.
+    const period = 24 - (state.swayTempo / 100) * 18; // 24 s .. 6 s
+    const ph = te * 2 * Math.PI / period;
+    const dir = state.swayDir * Math.PI / 180;
+    const rnd = state.swayRandom / 100;
+    // Zufalls-Anteil: zweite, inkommensurable Frequenz macht die Bahn organisch
+    const ex = Math.cos(ph) + rnd * 0.5 * Math.sin(ph * 0.63 + 1.3);
+    const ey = 0.55 * Math.sin(ph) + rnd * 0.35 * Math.sin(ph * 0.41 + 0.7);
+    // Sanft einschwingen (und im Loop-Modus über te wieder aus), damit der
+    // Flug nicht mit bereits gekippter Kamera beginnt
+    const ramp = smoothstep(Math.min(1, te / (period * 0.35)));
+    tiltAddX = swayA * ramp * (Math.cos(dir) * ex - Math.sin(dir) * ey);
+    tiltAddY = swayA * ramp * (Math.sin(dir) * ex + Math.cos(dir) * ey);
+  }
+
+  // Gerichteter Kipp-Schwenk: die Kamera kippt über die gesamte Flugdauer
+  // langsam in eine Richtung (folgt der Beschleunigungskurve; basiert auf pe,
+  // das im Loop-Modus hin & zurück läuft -> nahtlos). Volle Stärke entspricht
+  // einer Fahrt des Kipp-Reglers von -100 nach +100, mittig neutral.
+  const rampA = scenarioCam() ? 0 : (state.tiltRampAmp / 100) * 0.08;
+  if (rampA > 0) {
+    const rdir = state.tiltRampDir * Math.PI / 180;
+    const q = (pe - 0.5) * 2; // -1 .. +1 über die Flugdauer
+    tiltAddX += rampA * Math.cos(rdir) * q;
+    tiltAddY += rampA * Math.sin(rdir) * q;
+  }
+
+  // Dolly-Zoom (Vertigo-Effekt, Hitchcock/Spielberg): die Kamera faehrt
+  // heran, das Objektiv zoomt gleichzeitig heraus - das Ziel behaelt seine
+  // Groesse, nahe Schichten wachsen, ferne schrumpfen: der Raum "atmet".
+  // Im 2,5D-Modell ein gemeinsamer Objektivfaktor auf alle Tiefen, der die
+  // Vergroesserung der Zieltiefe aufhebt. Damit ferne Schichten nie unter
+  // die Bildflaeche schrumpfen, startet die Kamera um genau den noetigen
+  // Rand naeher (lensMargin)
+  let lens = 1;
+  if (state.dolly > 0 && state.flightMode === "zoom" && !scenarioCam()) {
+    const P = (state.parallax / 100) * 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
+    const exS = 1 + P * (dollyPivotDepth() - 0.45);
+    const ex0 = 1 - P * 0.45;
+    const zr = zoom / state.zoomBase;
+    const zrEnd = Math.exp(Math.abs(rate) * D * (state.loopMode ? 0.5 : 1));
+    const lzb = ex0 * Math.log(state.zoomBase);
+    // Rand hoechstens 1,4x: liegt das Ziel weit vorn (heller Kern) oder ist
+    // die Fahrt sehr lang, wird der Effekt so weit gedrosselt, dass der
+    // Start nicht zu stark herangezoomt beginnt
+    const DOLLY_MAX_MARGIN = 1.4;
+    let amt = state.dolly / 100;
+    if (zrEnd > 1.0001) {
+      const amtMax = (ex0 + (Math.log(DOLLY_MAX_MARGIN) + lzb) / Math.log(zrEnd)) / exS;
+      amt = Math.max(0, Math.min(amt, amtMax));
+    }
+    const e = ex0 - exS * amt;
+    const margin = Math.max(1, Math.exp(Math.max(0, -e) * Math.log(zrEnd) - lzb));
+    lens = Math.pow(zr, -exS * amt) * margin;
+  }
+
+  // Kamerafahrt zum Zoomziel (nur Zoom-Modus): Die Kamera schwenkt über die
+  // gesamte Flugdauer langsam zum Ziel (folgt der Beschleunigungskurve, im
+  // Loop-Modus nahtlos hin & zurück). Startpunkt ist der per Regler
+  // verschiebbare Ausschnitt; beides wird an die Bildkanten geklemmt, damit
+  // nie über den Bildrand hinaus geschwenkt wird.
+  if (state.flightMode === "zoom" && !scenarioCam()) {
+    const viewAspect = state.aspect;
+    const imgAspect = state.starless
+      ? state.starless.width / state.starless.height : 16 / 9;
+    const cover = coverBase(viewAspect, imgAspect);
+    const sc = cover * zoom * lens;
+    const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.98;
+    const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.98;
+    const fx = (state.frameX / 100) * freeX;
+    const fy = (state.frameY / 100) * freeY;
+    const hasTarget = state.target.x !== 0 || state.target.y !== 0;
+    if (hasTarget) {
+      cx = Math.min(freeX, Math.max(-freeX, fx + (state.target.x - fx) * pe));
+      cy = Math.min(freeY, Math.max(-freeY, fy + (state.target.y - fy) * pe));
+    } else {
+      // Ohne Klick-Ziel zoomt die Kamera GERADE in die Mitte des
+      // verschobenen Ausschnitts: Der Punkt, den der Nutzer per Regler in
+      // die Mitte geschoben hat, bleibt fest im Zentrum (Bezug ist der
+      // Start-Zoom, sonst wandert er mit dem wachsenden Spielraum) -
+      // vorher driftete die Kamera stattdessen seitlich zur Bildmitte.
+      // Wer diesen Drift-Effekt will, klickt einfach ein Zoomziel an.
+      const sc0 = cover * state.zoomBase * (lens > 1 ? lens : 1);
+      const freeX0 = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc0) * 0.98;
+      const freeY0 = Math.max(0, 0.5 - 0.5 / sc0) * 0.98;
+      cx = Math.min(freeX, Math.max(-freeX, (state.frameX / 100) * freeX0));
+      cy = Math.min(freeY, Math.max(-freeY, (state.frameY / 100) * freeY0));
+    }
+  }
+  return { zoom, angle, rate, te, tiltAddX, tiltAddY, cx, cy, driftTX, driftTY, lens };
+}
+
+// Kamera um dt voraus (fuer Bewegungsunschaerfe und Stern-Streifen). Am
+// Flugende gibt es kein "danach": frueher wurde dort auf die Endposition
+// geklemmt - Bewegung 0, das letzte Bild war ploetzlich scharf und sprang
+// sichtbar. Stattdessen die letzte Bewegung fortschreiben
+function camAhead(loopT, cam, dt) {
+  const D = state.duration;
+  if (loopT + dt <= D || state.loopMode) return camAt(Math.min(loopT + dt, D));
+  const a = camAt(Math.max(0, D - dt)), b = camAt(D);
+  const out = {};
+  for (const k in cam) {
+    const v = cam[k];
+    if (typeof v !== "number") { out[k] = v; continue; }
+    if ((k === "zoom" || k === "lens") && a[k] > 0) out[k] = v * b[k] / a[k];
+    else out[k] = v + (b[k] - a[k]);
+  }
+  return out;
+}
+
+function animParams(t) {
+  const loopT = state.exporting ? t : t % state.duration;
+  const cam = camAt(loopT);
+  let fade = 1;
+  const fadeDur = state.fade / 10;
+  if (!state.loopMode && fadeDur > 0) {
+    const fadeIn = Math.min(1, loopT / fadeDur);
+    const fadeOut = Math.min(1, Math.max(0, (state.duration - loopT) / fadeDur));
+    fade = Math.min(fadeIn, fadeOut);
+  }
+  return { loopT, cam, fade };
+}
+
+// ---------------------------------------------------------------- Rendering
+
+// Größte darstellbare Punktgröße der GPU (einmalig abgefragt): Intel-GPUs
+// melden z. B. nur 255 px - längere Streifen-Sprites würden gekappt
+let _maxPoint = 0;
+function maxPointSize() {
+  if (!_maxPoint) {
+    const r = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE);
+    _maxPoint = Math.min(r ? r[1] : 1024, 2048);
+  }
+  return _maxPoint;
+}
+
+function render(forcedT) {
+  const w = canvas.width, h = canvas.height;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, w, h);
+  gl.clearColor(0, 0, 0, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  if (!texColor || !texDepth) return;
+
+  ensureFbos();
+  checkDepthFlightSig();
+  // Volumetrik haengt nur am Bild: bei neuem oder gespiegeltem Bild (neue
+  // Farbtextur) einmal neu aufbauen - nicht bei jeder Tiefenaenderung
+  if (state.vol && state.starless && volBuiltTex !== texColor) buildVolLayers();
+
+  const t = forcedT !== undefined ? forcedT : currentTime();
+  const { loopT, cam, fade } = animParams(t);
+  // Supersampling: alle in Pixeln definierten Radien (Bloom, Klarheit,
+  // Struktur, Schaerfe, Korn) mitskalieren, damit der Export so aussieht
+  // wie die Vorschau
+  const ssc = state.renderScale || 1;
+  const viewAspect = state.aspect;
+  const imgAspect = state.starless.width / state.starless.height;
+  const cover = coverBase(viewAspect, imgAspect) * (cam.lens || 1);
+  const parallax = state.parallax / 100;
+  const warp = state.warp / 100;
+  const depthRange = 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
+  const tiltX = (state.tiltX / 100) * 0.08 + cam.tiltAddX;
+  const tiltY = (state.tiltY / 100) * 0.08 + cam.tiltAddY;
+  // Seitlicher Flug: die Fahrt-Parallaxe nutzt den Kipp-Mechanismus
+  // (tiefenabhängige Verschiebung); Sterne reagieren wie beim Zoom stärker
+  const drK = parallax * depthRange;
+  const drKStar = drK * 2.6 * (state.starPar / 100);
+  const bgTiltX = tiltX + cam.driftTX * drK;
+  const bgTiltY = tiltY + cam.driftTY * drK;
+  const starTiltX = tiltX + cam.driftTX * drKStar;
+  const starTiltY = tiltY + cam.driftTY * drKStar;
+  const dSKino = Math.min(1, Math.max(0.02, state.starDist / 100));
+
+  // ---- Pass 1: Szene in FBO ----
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbScene.fb);
+  gl.viewport(0, 0, fbScene.w, fbScene.h);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  // Galaxien-Rotation v2 (te-basiert -> im Loop-Modus nahtlos hin & zurueck).
+  // Aktiv bei Drehung oder zum Einrichten (Ellipsen-Vorschau). Neuaufbau der
+  // Galaxien-Texturen VOR dem Binden: makeTexture* bindet an die gerade
+  // aktive Einheit 0 und verdraengte dort sonst fuer dieses Bild das Foto
+  // (dunkles Bild, v. a. im Export nach einer Aenderung)
+  galSyncFromState();
+  const galShow = (state.spinShow || state.spinPick) && !state.exporting;
+  const galOn = state.spinSpeed !== 0 || galShow || state.galaxies.some((g) => g.auto);
+  if (galOn && state.starless && (galBkTex !== texColor || galBkSig !== galGeomSig())) {
+    if (state.exporting || !texGalBk) { clearTimeout(galBkTimer); galBkTimer = 0; buildGalaxyBg(); }
+    else if (!galBkTimer) galBkTimer = setTimeout(() => { galBkTimer = 0; buildGalaxyBg(); }, 250);
+  }
+  if (state.starless && (galStarSig() !== galStarsKey || galStarsTex !== texColor) && !galStarTimer) {
+    if (state.exporting) uploadStars();
+    else galStarTimer = setTimeout(() => { galStarTimer = 0; uploadStars(); }, 200);
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbScene.fb);
+  gl.viewport(0, 0, fbScene.w, fbScene.h);
+  gl.disable(gl.BLEND);
+  gl.useProgram(bgProg);
+  gl.bindVertexArray(quadVao);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, texColor);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, texDepth);
+  gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, texGalBk || texBlack);
+  gl.activeTexture(gl.TEXTURE5);
+  gl.bindTexture(gl.TEXTURE_2D, (state.galSatOn !== false && texGalSat) || texClear);
+  gl.activeTexture(gl.TEXTURE0);
+  u1i(bgProg, "uColor", 0);
+  u1i(bgProg, "uDepth", 1);
+  u1i(bgProg, "uGalBk", 2);
+  u1i(bgProg, "uGalSat", 5);
+  u1f(bgProg, "uViewAspect", viewAspect);
+  u1f(bgProg, "uImgAspect", imgAspect);
+  u1f(bgProg, "uZoom", cam.zoom);
+  u1f(bgProg, "uParallax", parallax);
+  u1f(bgProg, "uAngle", cam.angle);
+  u1f(bgProg, "uCover", cover);
+  u2f(bgProg, "uCenter", cam.cx, cam.cy);
+  u2f(bgProg, "uTilt", bgTiltX, bgTiltY);
+  u1f(bgProg, "uDepthRange", depthRange);
+  // Bikubisch abtasten, sobald die Textur vergrößert dargestellt wird
+  const texH = state.texColorH || 2048;
+  const magnify = (cover * cam.zoom * fbScene.h) / texH;
+  u2f(bgProg, "uColorTexel", 1 / (state.texColorW || 2048), 1 / texH);
+  u1f(bgProg, "uBicubic", magnify > 1.05 ? 1 : 0);
+  u1f(bgProg, "uObjFar", state.objFar ? 1 : 0);
+  const GU = galUniforms(cam.te);
+  u1i(bgProg, "uGalN", galOn ? GU.N : 0);
+  u4fv(bgProg, "uGalA", GU.A);
+  u4fv(bgProg, "uGalB", GU.B);
+  u1f(bgProg, "uGalSel", state.galSel);
+  u1f(bgProg, "uGal3D", gal3dActive() ? 1 : 0);
+  // Kern-Gluehen waechst mit dem Anflug (Zoom relativ zum Flugbeginn)
+  {
+    // Bezug: kleinster Zoom des Flugs (rueckwaerts liegt er am Ende)
+    const z0 = Math.min(camAt(0).zoom, camAt(state.duration).zoom) || 1;
+    const k = Math.min(1, Math.max(0, Math.log(Math.max(1e-3, cam.zoom / z0)) / Math.log(2.5)));
+    u1f(bgProg, "uGalGlow", galOn ? (state.galGlow / 100) * 0.45 * k : 0);
+  }
+  const mdU = state.moonMode && state.moonDisk ? state.moonDisk : null;
+  u1f(bgProg, "uMoonMode", mdU ? 1 : 0);
+  u2f(bgProg, "uMoonC", mdU ? mdU.cx : 0, mdU ? 1 - mdU.cy : 0);
+  u1f(bgProg, "uMoonR", mdU ? mdU.r : 1);
+  // Ellipsen-Vorschau nie im Export; beim Setzen/Hinzufuegen automatisch an
+  u1f(bgProg, "uSpinShow", galShow ? 1 : 0);
+  // Nebelfarben (HII/OIII/SII): Sättigung als Faktor, Farbton als Kreisanteil
+  const bandSat = [state.h2Sat / 100, state.o3Sat / 100, state.s2Sat / 100];
+  const bandHue = [state.h2Hue / 360, state.o3Hue / 360, state.s2Hue / 360];
+  const bandShow = state.exporting ? 0 : ({ h2: 1, o3: 2, s2: 3 }[state.bandShow] || 0);
+  u3f(bgProg, "uBandSat", bandSat[0], bandSat[1], bandSat[2]);
+  u3f(bgProg, "uBandHue", bandHue[0], bandHue[1], bandHue[2]);
+  u3f(bgProg, "uBandCen", state.h2Det / 360, state.o3Det / 360, state.s2Det / 360);
+  u3f(bgProg, "uBandWidth", state.h2Width / 360, state.o3Width / 360, state.s2Width / 360);
+  u1f(bgProg, "uBandShow", bandShow);
+  u1f(bgProg, "uBandFeather", state.bandFeather / 100);
+  u1f(bgProg, "uBandOn",
+    bandSat.some((v) => v !== 1) || bandHue.some((v) => v !== 0) || bandShow ? 1 : 0);
+  // Volumetrischer Nebel v2: entstaubtes Leuchten + Grund-Leuchten (3, 4)
+  const volOn = state.vol && texVolL.length === 2 && volBuiltN > 0;
+  for (let k = 0; k < 2; k++) {
+    gl.activeTexture(gl.TEXTURE3 + k);
+    gl.bindTexture(gl.TEXTURE_2D, texVolL[k] || texBlack);
+  }
+  gl.activeTexture(gl.TEXTURE0);
+  u1i(bgProg, "uVolD", 3);
+  u1i(bgProg, "uVolB", 4);
+  u1f(bgProg, "uVol", volOn ? 1 : 0);
+  u1f(bgProg, "uVolSep", 0.3 * state.volSpread / 100);
+  u1f(bgProg, "uVolDustZ", 0.08 * state.volDust / 100);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // Bewegungsgrößen numerisch aus der Kamerakurve ableiten (für die
+  // Geschwindigkeits-Streifen der Sterne und die Composite-Unschärfe)
+  const dt = 0.05;
+  const cam2 = camAhead(loopT, cam, dt);
+
+  // "Nur Sterne"-Unschärfe: Sterne als Geschwindigkeits-Streifen in eine
+  // eigene Ebene rendern – Streifenlänge pro Stern nach seiner echten
+  // Bildschirmgeschwindigkeit (nahe Sterne lang, ferne fast punktförmig)
+  const splitBlur = state.mblurStars && state.mblur > 0 && state.starCount > 0;
+  const tilt2X = (state.tiltX / 100) * 0.08 + cam2.tiltAddX;
+  const tilt2Y = (state.tiltY / 100) * 0.08 + cam2.tiltAddY;
+  const starTilt2X = tilt2X + cam2.driftTX * drKStar;
+  const starTilt2Y = tilt2Y + cam2.driftTY * drKStar;
+
+  // Sterne IMMER in die eigene Ebene rendern (nicht nur bei "nur Sterne"-
+  // Unschärfe): Klarheit/Struktur/Schärfe im Look-Tab treffen so nur das
+  // Starless-Bild - die Sternbearbeitung wohnt im Sterne-Tab
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbStars.fb);
+  gl.viewport(0, 0, fbStars.w, fbStars.h);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  if (state.starImage && state.stars) {
+    // Kino-Modus: die Sternmaske als Bildebene mit fester Tiefe - jeder
+    // Stern behaelt seine fotografische Abbildung. Exponent wie bei den
+    // Partikeln (staerkere Parallaxe der Sternebene), Tiefe aus dem
+    // Abstand-zum-Nebel-Regler
+    ensureStarsImgTexture();
+    const dS = dSKino;
+    const exS = Math.max(0.12, 1 + parallax * (dS - 0.45) * depthRange * 2.6 * (state.starPar / 100));
+    gl.useProgram(starImgProg);
+    gl.bindVertexArray(quadVao);
+    gl.activeTexture(gl.TEXTURE9);
+    gl.bindTexture(gl.TEXTURE_2D, texStarsImg || texBlack);
+    u1i(starImgProg, "uColor", 9);
+    gl.activeTexture(gl.TEXTURE0);
+    u2f(starImgProg, "uColorTexel", 1 / (state.texStarsW || 1), 1 / (state.texStarsH || 1));
+    u1f(starImgProg, "uBicubic", cam.zoom * Math.pow(cam.zoom, exS - 1) > 1.05 ? 1 : 0);
+    u1f(starImgProg, "uViewAspect", viewAspect);
+    u1f(starImgProg, "uImgAspect", imgAspect);
+    u1f(starImgProg, "uZoom", cam.zoom);
+    u1f(starImgProg, "uAngle", cam.angle);
+    u1f(starImgProg, "uCover", cover);
+    u2f(starImgProg, "uCenter", cam.cx, cam.cy);
+    u2f(starImgProg, "uTilt", starTiltX * (dS - 0.45), starTiltY * (dS - 0.45));
+    u1f(starImgProg, "uEx", exS);
+    u1f(starImgProg, "uBright", state.starBright / 100);
+    u1f(starImgProg, "uSat", state.starSat / 100);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  } else if (state.starCount > 0) {
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);
+    gl.useProgram(starProg);
+    gl.bindVertexArray(starVao);
+    u1f(starProg, "uViewAspect", viewAspect);
+    u1f(starProg, "uZoom", cam.zoom);
+    u1f(starProg, "uParallax", parallax);
+    u1f(starProg, "uAngle", cam.angle);
+    u1f(starProg, "uCover", cover);
+    u1f(starProg, "uPixelsY", fbScene.h);
+    u1f(starProg, "uTime", cam.te); // effektive Flugzeit: im Loop-Modus nahtlos
+    u1f(starProg, "uSeed", state.seed);
+    u1f(starProg, "uStarBase", state.starDist / 100);
+    u1f(starProg, "uSpread", (state.spread / 100) * 1.15);
+    u1f(starProg, "uLayers", state.starLayers);
+    u1f(starProg, "uStarPar", state.starPar / 100);
+    u1f(starProg, "uTwinkle", state.twinkle / 100);
+    u1f(starProg, "uTwSpeed", state.twinkleSpeed / 100);
+    u1f(starProg, "uWarp", warp);
+    u1f(starProg, "uDepthRange", depthRange);
+    u1f(starProg, "uStarSize", state.starSize / 100);
+    u1f(starProg, "uStarBright", state.starBright / 100);
+    u1f(starProg, "uCullBright", starCullThreshold());
+    // Mindestgroesse in AUSGABE-Pixeln: beim Supersampling entsprechend
+    // groesser rendern, sonst holt das Herunterrechnen das Flackern zurueck
+    u1f(starProg, "uPxMin", 2.6 * ssc);
+    // Optik-Simulation: Airy-Kern und Beugungsspikes (Zusatzlaenge der
+    // hellsten Sterne 40 % der Bildhoehe wie bei Deneb im Newton; Breite in
+    // Ausgabepixeln, beim Supersampling entsprechend mitskaliert)
+    u1f(starProg, "uAiry", state.airy ? 1 : 0);
+    u1f(starProg, "uSpikes", state.spikes / 100);
+    u1f(starProg, "uSpikeMax", 0.4 * fbScene.h);
+    u1f(starProg, "uSpikeW", ssc);
+    u1f(starProg, "uSpikeWF", ssc);
+    u1f(starProg, "uSpikeArms", state.spikeArms);
+    u1f(starProg, "uOrganic", state.organic / 100);
+    u1f(starProg, "uSpikeRot", state.spikeRot * Math.PI / 180);
+    u1f(starProg, "uStarSat", state.starSat / 100);
+    u2f(starProg, "uCenter", cam.cx, cam.cy);
+    u2f(starProg, "uTilt", starTiltX, starTiltY);
+    u1f(starProg, "uZoom2", cam2.zoom);
+    u1f(starProg, "uAngle2", cam2.angle);
+    u2f(starProg, "uCenter2", cam2.cx, cam2.cy);
+    u2f(starProg, "uTilt2", starTilt2X, starTilt2Y);
+    u1f(starProg, "uStreak", splitBlur ? (state.mblur / 100) / dt : 0);
+    u1f(starProg, "uMaxPoint", maxPointSize());
+    u1f(starProg, "uGaiaAmt", state.gaiaAmt / 100);
+    u1f(starProg, "uGaiaOnly", state.gaiaOnly && state.gaiaDepth ? 1 : 0);
+    // Sterne mit der Galaxien-Rotation mitdrehen (gleiche Parameter wie bgFS)
+    u1f(starProg, "uSpinStars", state.spinStars && state.spinSpeed !== 0 ? 1 : 0);
+    const GS = galUniforms(cam.te, cam2.te);
+    u1i(starProg, "uGalNS", state.spinSpeed !== 0 ? GS.N : 0);
+    u4fv(starProg, "uGalAS", GS.A);
+    u4fv(starProg, "uGalBS", GS.B);
+    u4fv(starProg, "uGalCS", GS.C);
+    u1f(starProg, "uImgAspectS", imgAspect);
+    // Eigenbewegungs-Zeitraffer: Jahre wachsen mit der Flugzeit (loop-sicher)
+    const pmSpan = state.duration * (state.loopMode ? 0.5 : 1);
+    u1f(starProg, "uPmYears", state.gaiaPmYears * (cam.te / pmSpan));
+    u1f(starProg, "uPmYears2", state.gaiaPmYears * (cam2.te / pmSpan));
+    // Nebel-Okklusion: Tiefe + Dichte des Nebels an der Sternposition
+    u1f(starProg, "uOcclude", state.occlude / 100);
+    const mdS = state.moonMode && state.moonDisk ? state.moonDisk : null;
+    u1f(starProg, "uMoonMode", mdS ? 1 : 0);
+    u2f(starProg, "uMoonCS", mdS ? mdS.cx : 0, mdS ? 1 - mdS.cy : 0);
+    u1f(starProg, "uMoonRS", mdS ? mdS.r : 1);
+    u1f(starProg, "uAnchor", state.anchorStars / 100);
+    u2f(starProg, "uTiltB2", tilt2X + cam2.driftTX * drK, tilt2Y + cam2.driftTY * drK);
+    u1f(starProg, "uObjFarS", state.objFar ? 1 : 0);
+    u2f(starProg, "uTiltB", bgTiltX, bgTiltY);
+    gl.activeTexture(gl.TEXTURE6);
+    gl.bindTexture(gl.TEXTURE_2D, texDepth);
+    gl.activeTexture(gl.TEXTURE7);
+    gl.bindTexture(gl.TEXTURE_2D, texColor);
+    if (texStarAtlas) {
+      gl.activeTexture(gl.TEXTURE8);
+      gl.bindTexture(gl.TEXTURE_2D, texStarAtlas);
+      u1i(starProg, "uAtlas", 8);
+    }
+    if (!texStarLib) texStarLib = buildStarLib();
+    gl.activeTexture(gl.TEXTURE9);
+    gl.bindTexture(gl.TEXTURE_2D, texStarLib);
+    u1i(starProg, "uStarLib", 9);
+    gl.activeTexture(gl.TEXTURE0);
+    u1i(starProg, "uDepthS", 6);
+    u1i(starProg, "uColorS", 7);
+    u1f(starProg, "uRealStars", state.realStars && texStarAtlas ? 1 : 0);
+    u1f(starProg, "uStarBrightF", state.starBright / 100);
+    u1f(starProg, "uAngleF", cam.angle);
+    gl.drawArrays(gl.POINTS, 0, state.starCount);
+    gl.disable(gl.BLEND);
+  }
+
+  // ---- Pass 2: Bloom (Viertelauflösung) ----
+  // Sanfter als früher: die niedrigere Bright-Pass-Schwelle bringt die
+  // Empfindlichkeit, die Stärke bleibt zurückhaltend
+  // Vier Oktaven: Bright-Pass in halber Aufloesung, dann je Stufe halbieren
+  // und weichzeichnen, zum Schluss von unten nach oben gewichtet aufsummieren.
+  // Die Gewichte sind so normiert, dass die Gesamtstaerke der alten
+  // Einzelstufe entspricht - nur der Hof reicht jetzt weit und weich hinaus
+  // Gewichte: die zwei feinen Oktaven ergeben zusammen das bisherige Nahfeld
+  // (Normierung auf W0 + W1), die tiefen Oktaven werden bewusst angehoben -
+  // ihre Energie verteilt sich auf eine riesige Flaeche und waere sonst
+  // unsichtbar. Das ist der weite, weiche Hof heller Sterne
+  const BLOOM_W = [1.0, 0.85, 1.1, 1.4];
+  const bloomNorm = 1 / (BLOOM_W[0] + BLOOM_W[1]);
+  const bloomStrength = (state.bloom / 100) * 0.7;
+  if (bloomStrength > 0) {
+    gl.bindVertexArray(quadVao);
+    gl.activeTexture(gl.TEXTURE0);
+
+    const L0 = fbBloom[0];
+    gl.bindFramebuffer(gl.FRAMEBUFFER, L0.a.fb);
+    gl.viewport(0, 0, L0.w, L0.h);
+    gl.useProgram(brightProg);
+    gl.bindTexture(gl.TEXTURE_2D, fbScene.tex);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, fbStars.tex);
+    gl.activeTexture(gl.TEXTURE0);
+    u1i(brightProg, "uScene", 0);
+    u1i(brightProg, "uStarsTex", 1);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    gl.useProgram(blurProg);
+    u1i(blurProg, "uScene", 0);
+    for (let k = 0; k < BLOOM_LEVELS; k++) {
+      const L = fbBloom[k];
+      gl.viewport(0, 0, L.w, L.h);
+      if (k > 0) {
+        // Halbieren: bilineares Kopieren der vorigen Stufe
+        gl.bindFramebuffer(gl.FRAMEBUFFER, L.a.fb);
+        gl.bindTexture(gl.TEXTURE_2D, fbBloom[k - 1].a.tex);
+        u2f(blurProg, "uDir", 0, 0);
+        u1f(blurProg, "uGain", 1);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
+      // tiefe Oktaven zweimal weichzeichnen: der Hof soll weit hinausreichen
+      const passes = k >= 2 ? 2 : 1;
+      for (let p = 0; p < passes; p++) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, L.b.fb);
+        gl.bindTexture(gl.TEXTURE_2D, L.a.tex);
+        u2f(blurProg, "uDir", ssc / L.w, 0);
+        u1f(blurProg, "uGain", 1);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, L.a.fb);
+        gl.bindTexture(gl.TEXTURE_2D, L.b.tex);
+        u2f(blurProg, "uDir", 0, ssc / L.h);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
+    }
+    // Aufsummieren von der kleinsten Stufe nach oben (additiv, gewichtet)
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);
+    u2f(blurProg, "uDir", 0, 0);
+    for (let k = BLOOM_LEVELS - 1; k >= 1; k--) {
+      const dst = fbBloom[k - 1];
+      gl.bindFramebuffer(gl.FRAMEBUFFER, dst.a.fb);
+      gl.viewport(0, 0, dst.w, dst.h);
+      gl.bindTexture(gl.TEXTURE_2D, fbBloom[k].a.tex);
+      u1f(blurProg, "uGain", BLOOM_W[k] / BLOOM_W[k - 1]);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+    gl.disable(gl.BLEND);
+  }
+
+  // ---- Pass 2b: weichgezeichnete Szene für "Klarheit" (Viertelauflösung) ----
+  const clarity = (state.clarity / 100) * 0.8;
+  if (clarity !== 0) {
+    gl.bindVertexArray(quadVao);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.useProgram(blurProg);
+    u1i(blurProg, "uScene", 0);
+    u1f(blurProg, "uGain", 1);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbSoftA.fb);
+    gl.viewport(0, 0, fbSoftA.w, fbSoftA.h);
+    gl.bindTexture(gl.TEXTURE_2D, fbScene.tex);
+    u2f(blurProg, "uDir", 2 * ssc / fbSoftA.w, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbSoftB.fb);
+    gl.bindTexture(gl.TEXTURE_2D, fbSoftA.tex);
+    u2f(blurProg, "uDir", 0, 2 * ssc / fbSoftA.h);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  // ---- Pass 2c: mittel weichgezeichnete Szene für "Struktur" (halbe Auflösung) ----
+  const structure = (state.structure / 100) * 0.9;
+  if (structure !== 0) {
+    gl.bindVertexArray(quadVao);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.useProgram(blurProg);
+    u1i(blurProg, "uScene", 0);
+    u1f(blurProg, "uGain", 1);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbMedA.fb);
+    gl.viewport(0, 0, fbMedA.w, fbMedA.h);
+    gl.bindTexture(gl.TEXTURE_2D, fbScene.tex);
+    u2f(blurProg, "uDir", ssc / fbMedA.w, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbMedB.fb);
+    gl.bindTexture(gl.TEXTURE_2D, fbMedA.tex);
+    u2f(blurProg, "uDir", 0, ssc / fbMedA.h);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  // ---- Pass 3: Composite auf den Bildschirm ----
+  const zoomRate = Math.log(cam2.zoom / cam.zoom) / dt + warp * 0.6;
+  const rotRate = (cam2.angle - cam.angle) / dt;
+  // Fahrt zum Ziel: Inhalt wandert entgegen der Zielrichtung über den Schirm
+  const panX = -(cam2.cx - cam.cx) / dt * cover * cam.zoom;
+  const panY = -(cam2.cy - cam.cy) / dt * cover * cam.zoom;
+  // gleiche inverse Rotation wie im Stern-Shader (Bildebene -> Canvas)
+  const rc = Math.cos(cam.angle), rs = Math.sin(cam.angle);
+  const pvx = rc * panX - rs * panY;
+  const pvy = rs * panX + rc * panY;
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, w, h);
+  gl.useProgram(compProg);
+  gl.bindVertexArray(quadVao);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, fbScene.tex);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, fbBloom[0].a.tex);
+  gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, clarity !== 0 ? fbSoftB.tex : fbScene.tex);
+  gl.activeTexture(gl.TEXTURE3);
+  gl.bindTexture(gl.TEXTURE_2D, structure !== 0 ? fbMedB.tex : fbScene.tex);
+  gl.activeTexture(gl.TEXTURE4);
+  gl.bindTexture(gl.TEXTURE_2D, fbStars.tex);
+  gl.activeTexture(gl.TEXTURE0);
+  u1i(compProg, "uScene", 0);
+  u1i(compProg, "uBloom", 1);
+  u1i(compProg, "uSoft", 2);
+  u1i(compProg, "uMed", 3);
+  u1i(compProg, "uStarsTex", 4);
+  u1f(compProg, "uSplit", splitBlur ? 1 : 0);
+  u1f(compProg, "uViewAspect", viewAspect);
+  u1f(compProg, "uBloomStrength", bloomStrength * bloomNorm);
+  u1f(compProg, "uFilmic", state.filmic / 100);
+  u1f(compProg, "uShutter", (state.mblur / 100) * 1.5);
+  u1f(compProg, "uZoomRate", zoomRate);
+  u1f(compProg, "uRotRate", rotRate);
+  u2f(compProg, "uPanVel", pvx, pvy);
+  u1f(compProg, "uChroma", warp * 0.5);
+  u1f(compProg, "uVignette", state.vignette / 100);
+  u1f(compProg, "uFade", fade);
+  // Korn: beim Herunterrechnen mitteln sich ssc*ssc Samples -> Amplitude anheben
+  u1f(compProg, "uGrain", (state.grain / 100) * 0.12 * ssc);
+  // Frame-Index als Rausch-Seed: beim Export deterministisch pro Frame,
+  // in der Vorschau aus der Zeit
+  u1f(compProg, "uNoiseSeed", (Math.floor(t * 60) % 4096) + 1);
+  u1f(compProg, "uExposure", (state.exposure / 100) * 2);
+  u1f(compProg, "uContrast", 1 + (state.contrast / 100) * 0.6);
+  u1f(compProg, "uSaturation", 1 + state.saturation / 100);
+  u1f(compProg, "uClarity", clarity);
+  u1f(compProg, "uStructure", structure);
+  u1f(compProg, "uSharpen", (state.sharpen / 100) * 1.2);
+  u2f(compProg, "uTexel", ssc / fbScene.w, ssc / fbScene.h);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // Objekt-Overlay (Infokarte + Labels) über der Vorschau
+  drawPreviewOverlay(loopT, cam, fade);
+
+  // Transport-UI
+  const prog = (loopT / state.duration) * 100;
+  $("timelineFill").style.width = prog + "%";
+  $("timecode").textContent = loopT.toFixed(1) + " s";
+}
+
+// Leerlauf: pausiert und unveraendert muss nicht jedes Bild neu gezeichnet
+// werden (spart GPU und Akku). Jede Eingabe und jeder Zeitsprung weckt
+// sofort; zusaetzlich alle 250 ms ein Bild, damit asynchron fertig
+// gewordene Texturen (KI-Tiefe, Gaia, Bild laden) und entprellte
+// Neuberechnungen auch ohne eigenes Signal erscheinen
+// var statt let: requestRender() wird schon beim Start aus makeTexture()
+// gerufen, bevor diese Zeile erreicht ist
+var renderWanted = true, lastRenderAt = 0, lastRenderT = -1;
+function requestRender() { renderWanted = true; }
+for (const ev of ["input", "change", "click", "pointerdown", "pointermove", "pointerup", "wheel", "keydown", "resize"]) {
+  window.addEventListener(ev, requestRender, { capture: true, passive: true });
+}
+function frame(now) {
+  if (!state.offlineExport) {
+    const tNow = currentTime();
+    if (state.playing || state.exporting || renderWanted || tNow !== lastRenderT || now - lastRenderAt > 250) {
+      renderWanted = false;
+      lastRenderAt = now;
+      lastRenderT = tNow;
+      render();
+    }
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ---------------------------------------------------------------- Canvas-Größe
+
+function fitCanvas() {
+  if (state.exporting) return;
+  const wrap = $("canvasWrap");
+  // Mobil (schmale Bildschirme) nutzt die Vorschau immer die volle Fläche
+  const mobile = window.innerWidth <= 820;
+  const scaleView = (mobile ? 100 : state.viewScale) / 100;
+  const bar = $("transport").offsetHeight || 46;
+  const availW = (wrap.clientWidth - (mobile ? 16 : 36)) * scaleView;
+  // Mobil richtet sich die Buehne nach dem Bild, damit ueber der Vorschau
+  // kein toter Raum steht - die Obergrenze bleibt der CSS-Anteil der Hoehe
+  const limitH = mobile
+    ? window.innerHeight * ($("app").classList.contains("sheetup") ? 0.30 : 0.52)
+    : wrap.clientHeight;
+  const chips = mobile ? $("stageChips").offsetHeight : 0;
+  const availH = (limitH - (mobile ? 16 : 36) - bar - chips) * scaleView;
+  let w = availW, h = w / state.aspect;
+  if (h > availH) { h = availH; w = h * state.aspect; }
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  canvas.style.width = Math.round(w) + "px";
+  canvas.style.height = Math.round(h) + "px";
+  if (mobile) $("stage").style.height = Math.round(h + bar + chips + 16) + "px";
+  else $("stage").style.height = "";
+}
+window.addEventListener("resize", fitCanvas);
+fitCanvas();
+
+// ---------------------------------------------------------------------------
+// Mobil: die Bedienung ist ein Blatt unter der Vorschau. Der Griff zieht es
+// hoch (mehr Regler) oder runter (groesseres Bild); die Gruppenleiste wandert
+// dabei in den Blattkopf, damit die Reihenfolge stimmt.
+// ---------------------------------------------------------------------------
+function isNarrow() { return window.innerWidth <= 820; }
+
+function placeRail() {
+  const rail = $("proRail");
+  if (isNarrow()) {
+    if (rail.parentElement !== $("panel")) $("panel").insertBefore(rail, $("subTabs"));
+  } else if (rail.parentElement !== $("app")) {
+    $("app").insertBefore(rail, $("panel"));
+  }
+}
+
+function setSheetUp(up) {
+  $("app").classList.toggle("sheetup", up);
+  setTimeout(fitCanvas, 200);
+}
+
+{
+  const grip = $("sheetGrip");
+  let startY = 0, moved = false;
+  grip.addEventListener("pointerdown", (e) => {
+    startY = e.clientY;
+    moved = false;
+    grip.setPointerCapture(e.pointerId);
+  });
+  grip.addEventListener("pointermove", (e) => {
+    if (!grip.hasPointerCapture(e.pointerId)) return;
+    const dy = e.clientY - startY;
+    if (Math.abs(dy) > 24) {
+      moved = true;
+      setSheetUp(dy < 0);
+      startY = e.clientY;
+    }
+  });
+  grip.addEventListener("pointerup", (e) => {
+    if (grip.hasPointerCapture(e.pointerId)) grip.releasePointerCapture(e.pointerId);
+    if (!moved) setSheetUp(!$("app").classList.contains("sheetup"));
+  });
+}
+window.addEventListener("resize", placeRail);
+placeRail();
+
+// ---------------------------------------------------------------- UI-Verdrahtung
+
+// Doppelklick auf einen Regler setzt ihn auf seinen Standardwert zurück
+// (wie in Lightroom); das input-Event zieht State und Anzeige nach
+document.addEventListener("dblclick", (e) => {
+  const el = e.target;
+  if (el && el.tagName === "INPUT" && el.type === "range") {
+    el.value = el.defaultValue;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+});
+
+function bindSlider(id, outId, key, fmt) {
+  const el = $(id), out = $(outId);
+  el.addEventListener("input", () => {
+    const v = parseFloat(el.value);
+    state[key] = v;
+    out.textContent = fmt(v);
+  });
+  out.textContent = fmt(parseFloat(el.value));
+}
+
+/**
+ * Anzeigeformat der Regler: normalerweise ganze Zahlen, im Feinmodus (Shift)
+ * kommen Nachkommastellen dazu - die zeigt die Ausgabe dann auch.
+ */
+function ctlNum(v, min) {
+  const dec = ((+v.toFixed(3)).toString().split(".")[1] || "").length;
+  return v.toFixed(Math.max(min || 0, Math.min(3, dec)));
+}
+const asInt = (v) => ctlNum(v, 0);
+const asPct = (v) => ctlNum(v, 0) + " %";
+bindSlider("ctlZoom", "outZoom", "zoomBase", (v) => ctlNum(v, 2) + "×");
+bindSlider("ctlSpeed", "outSpeed", "speed", asInt);
+bindSlider("ctlEase", "outEase", "ease", asInt);
+bindSlider("ctlParallax", "outParallax", "parallax", asInt);
+bindSlider("ctlDepthBoost", "outDepthBoost", "depthBoost", asInt);
+bindSlider("ctlRotation", "outRotation", "rotationSpeed", (v) => ctlNum(v, 1) + " °/s");
+bindSlider("ctlOrient", "outOrient", "orientation", (v) => v + "°");
+bindSlider("ctlFrameX", "outFrameX", "frameX", asInt);
+bindSlider("ctlFrameY", "outFrameY", "frameY", asInt);
+bindSlider("ctlSpinSpeed", "outSpinSpeed", "spinSpeed", (v) => ctlNum(v, 1) + " °/s");
+bindSlider("ctlGal3dAmt", "outGal3dAmt", "gal3dAmt", asInt);
+bindSlider("ctlGalStars", "outGalStars", "galStars", asInt);
+bindSlider("ctlGalGlow", "outGalGlow", "galGlow", asInt);
+bindSlider("ctlDolly", "outDolly", "dolly", asInt);
+bindSlider("ctlZoomDrift", "outZoomDrift", "zoomDrift", asInt);
+$("ctlReverse").addEventListener("change", () => { state.reverse = $("ctlReverse").checked; });
+$("ctlGal3d").addEventListener("change", () => { state.gal3d = $("ctlGal3d").checked; });
+$("ctlGalSat").addEventListener("change", () => { state.galSatOn = $("ctlGalSat").checked; requestRender(); });
+bindSlider("ctlSpinRadius", "outSpinRadius", "spinRadius", (v) => ctlNum(v, 1));
+bindSlider("ctlSpinDiff", "outSpinDiff", "spinDiff", asInt);
+bindSlider("ctlSpinFlat", "outSpinFlat", "spinFlat", asInt);
+bindSlider("ctlSpinTilt", "outSpinTilt", "spinTilt", (v) => v + "°");
+bindSlider("ctlTiltX", "outTiltX", "tiltX", asInt);
+bindSlider("ctlTiltY", "outTiltY", "tiltY", asInt);
+bindSlider("ctlSwayAmp", "outSwayAmp", "swayAmp", asInt);
+bindSlider("ctlSwayTempo", "outSwayTempo", "swayTempo", asInt);
+bindSlider("ctlDuration", "outDuration", "duration", (v) => ctlNum(v, 0) + " s");
+bindSlider("ctlSpread", "outSpread", "spread", asInt);
+bindSlider("ctlStarDist", "outStarDist", "starDist", asInt);
+bindSlider("ctlTwinkle", "outTwinkle", "twinkle", asInt);
+bindSlider("ctlTwinkleSpeed", "outTwinkleSpeed", "twinkleSpeed", asPct);
+bindSlider("ctlStarSize", "outStarSize", "starSize", asPct);
+bindSlider("ctlSpikes", "outSpikes", "spikes", asInt);
+bindSlider("ctlOrganic", "outOrganic", "organic", asInt);
+bindSlider("ctlSpikeRot", "outSpikeRot", "spikeRot", (v) => v + "\u00b0");
+$("ctlAiry").addEventListener("change", () => {
+  state.airy = $("ctlAiry").checked;
+});
+$("ctlSpikeArms").addEventListener("change", () => {
+  state.spikeArms = parseInt($("ctlSpikeArms").value, 10) || 4;
+});
+$("ctlStarCull").addEventListener("input", () => {
+  state.starCull = parseFloat($("ctlStarCull").value);
+  refreshStarCullOut();
+});
+refreshStarCullOut();
+bindSlider("ctlStarBright", "outStarBright", "starBright", asPct);
+bindSlider("ctlStarSat", "outStarSat", "starSat", asPct);
+bindSlider("ctlAnchor", "outAnchor", "anchorStars", asPct);
+bindSlider("ctlLayers", "outLayers", "starLayers", (v) => v === 0 ? "∞" : String(v));
+bindSlider("ctlStarPar", "outStarPar", "starPar", asPct);
+bindSlider("ctlSwayDir", "outSwayDir", "swayDir", (v) => v + "°");
+bindSlider("ctlSwayRandom", "outSwayRandom", "swayRandom", asInt);
+bindSlider("ctlTiltRamp", "outTiltRamp", "tiltRampAmp", asInt);
+bindSlider("ctlTiltRampDir", "outTiltRampDir", "tiltRampDir", (v) => v + "°");
+bindSlider("ctlFade", "outFade", "fade", (v) => (v / 10).toFixed(1) + " s");
+bindSlider("ctlDriftDir", "outDriftDir", "driftDir", (v) => v + "°");
+
+$("ctlEaseMode").addEventListener("change", () => {
+  state.easeMode = $("ctlEaseMode").value;
+});
+
+$("ctlFlightMode").addEventListener("change", () => {
+  state.flightMode = $("ctlFlightMode").value;
+  $("driftRow").hidden = state.flightMode === "zoom";
+  $("lateralHintP").hidden = state.flightMode !== "lateral";
+  $("diagonalHintP").hidden = state.flightMode !== "diagonal";
+  $("zoomDriftRow").hidden = state.flightMode !== "lateral" && state.flightMode !== "diagonal";
+  $("orbitHintP").hidden = state.flightMode !== "orbit";
+  state.t0 = performance.now();
+  state.pausedAt = 0;
+});
+
+let genTimer = null;
+$("ctlGenStars").addEventListener("input", () => {
+  state.genStars = parseInt($("ctlGenStars").value, 10);
+  $("outGenStars").textContent = String(state.genStars);
+  clearTimeout(genTimer);
+  genTimer = setTimeout(uploadStars, 120);
+});
+
+let stretchTimer = null;
+$("ctlStretch").addEventListener("input", () => {
+  state.stretchAmount = parseInt($("ctlStretch").value, 10);
+  $("outStretch").textContent = state.stretchAmount;
+  clearTimeout(stretchTimer);
+  stretchTimer = setTimeout(() => {
+    if (state.starsOriginal && !state.maskStretched) processStarMask();
+  }, 400);
+});
+bindSlider("ctlBloom", "outBloom", "bloom", asInt);
+bindSlider("ctlMblur", "outMblur", "mblur", asInt);
+bindSlider("ctlWarp", "outWarp", "warp", asInt);
+bindSlider("ctlVignette", "outVignette", "vignette", asInt);
+bindSlider("ctlGrain", "outGrain", "grain", asInt);
+bindSlider("ctlFilmic", "outFilmic", "filmic", asInt);
+bindSlider("ctlExposure", "outExposure", "exposure", asInt);
+bindSlider("ctlContrast", "outContrast", "contrast", asInt);
+bindSlider("ctlSaturation", "outSaturation", "saturation", asInt);
+bindSlider("ctlClarity", "outClarity", "clarity", asInt);
+bindSlider("ctlStructure", "outStructure", "structure", asInt);
+const asDeg = (v) => v + "°";
+bindSlider("ctlH2Sat", "outH2Sat", "h2Sat", asPct);
+bindSlider("ctlH2Hue", "outH2Hue", "h2Hue", asDeg);
+bindSlider("ctlO3Sat", "outO3Sat", "o3Sat", asPct);
+bindSlider("ctlO3Hue", "outO3Hue", "o3Hue", asDeg);
+bindSlider("ctlS2Sat", "outS2Sat", "s2Sat", asPct);
+bindSlider("ctlS2Hue", "outS2Hue", "s2Hue", asDeg);
+bindSlider("ctlH2Det", "outH2Det", "h2Det", asDeg);
+bindSlider("ctlO3Det", "outO3Det", "o3Det", asDeg);
+bindSlider("ctlS2Det", "outS2Det", "s2Det", asDeg);
+const asDegPM = (v) => "\u00b1" + v + "\u00b0";
+bindSlider("ctlH2Width", "outH2Width", "h2Width", asDegPM);
+bindSlider("ctlO3Width", "outO3Width", "o3Width", asDegPM);
+bindSlider("ctlS2Width", "outS2Width", "s2Width", asDegPM);
+bindSlider("ctlBandFeather", "outBandFeather", "bandFeather", asPct);
+$("ctlBandShow").addEventListener("change", () => {
+  state.bandShow = $("ctlBandShow").value;
+});
+bindSlider("ctlSharpen", "outSharpen", "sharpen", asInt);
+
+$("ctlMblurStars").addEventListener("change", () => {
+  state.mblurStars = $("ctlMblurStars").checked;
+});
+
+// Rotationszentrum der Galaxie: nächster Klick in die Vorschau setzt es
+$("ctlSpinShow").addEventListener("change", () => {
+  state.spinShow = $("ctlSpinShow").checked;
+});
+
+$("btnSpinCenter").addEventListener("click", () => {
+  state.spinPick = state.spinPick === "add" ? false : "add";
+  $("btnSpinCenter").classList.toggle("active", state.spinPick === "add");
+  $("btnGalMove").classList.remove("active");
+});
+$("btnGalMove").addEventListener("click", () => {
+  state.spinPick = state.spinPick === "move" ? false : "move";
+  $("btnGalMove").classList.toggle("active", state.spinPick === "move");
+  $("btnSpinCenter").classList.remove("active");
+});
+$("btnGalDetect").addEventListener("click", () => {
+  const st = $("galStatus");
+  if (!state.starless) { st.hidden = false; st.textContent = t("galNeedImg"); return; }
+  const found = detectGalaxies();
+  st.hidden = false;
+  if (!found.length) { st.textContent = t("galNone"); return; }
+  state.galaxies = found;
+  galSelect(0);
+  const spirals = found.filter((g) => g.chir).length;
+  st.textContent = t("galFound", found.length, spirals);
+  if (!state.spinSpeed) setCtl("ctlSpinSpeed", 1);
+  galBkTex = null;
+});
+
+// Liste der Galaxien: Auswahl (Regler bearbeiten sie), Richtung, Entfernen
+const GAL_TYPES = /^(G|GiG|GiC|GiP|BiC|SBG|SyG|Sy1|Sy2|Sy|LIN|AGN|EmG|IG|PaG|LSB|H2G|bCG|rG|SBc|Sc|Sb|E)$/;
+function galDisplayName(g, i) {
+  if (g.name) return g.name;
+  // SIMBAD-Beschriftung innerhalb der Ellipse, falls vorhanden
+  for (const L of state.labels || []) {
+    if (!GAL_TYPES.test(L.otype || "")) continue;
+    const t2 = g.tilt * Math.PI / 180, c = Math.cos(t2), s2 = Math.sin(t2);
+    const dx = L.x - g.x, dy = L.y - g.y;
+    const r = Math.hypot(c * dx + s2 * dy, (-s2 * dx + c * dy) / Math.max(0.05, g.flat)) / g.rad;
+    if (r < 0.6) return L.id;
+  }
+  return t("galName", i + 1);
+}
+function rebuildGalList() {
+  const box = $("galList");
+  if (!box) return;
+  galEnsure();
+  box.innerHTML = "";
+  state.galaxies.forEach((g, i) => {
+    const row = document.createElement("div");
+    row.className = "galrow" + (i === state.galSel ? " sel" : "");
+    const nm = document.createElement("span");
+    nm.className = "galname";
+    nm.textContent = galDisplayName(g, i);
+    const meta = document.createElement("span");
+    meta.className = "galmeta";
+    meta.textContent = `R ${Math.round(g.rad / 0.75 * 100)} %` + (g.edge ? ` · ${t("galEdge")}` : (g.flat < 0.95 ? ` · ${Math.round(g.flat * 100)} %` : ""));
+    const dir = document.createElement("button");
+    dir.type = "button";
+    dir.className = "galdir";
+    const dv = g.dir === undefined ? 1 : g.dir;
+    dir.textContent = dv > 0 ? "↺" : (dv < 0 ? "↻" : "⏸");
+    dir.title = t(dv === 0 ? "galDirStop" : (g.chir ? "galDirAuto" : "galDirTip"));
+    // Reihum: gegen den Uhrzeigersinn -> im Uhrzeigersinn -> steht still
+    dir.addEventListener("click", (e) => { e.stopPropagation(); g.dir = dv > 0 ? -1 : (dv < 0 ? 0 : 1); g.chir = false; rebuildGalList(); });
+    row.append(nm, meta, dir);
+    if (g.flat < 0.95) {
+      const nb = document.createElement("button");
+      nb.type = "button";
+      nb.className = "galnear";
+      nb.textContent = "⇅";
+      nb.title = t("galNearFlip");
+      nb.addEventListener("click", (e) => { e.stopPropagation(); g.near = g.near === -1 ? 1 : -1; });
+      row.append(nb);
+    }
+    if (state.galaxies.length > 1) {
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "galdel";
+      del.textContent = "✕";
+      del.title = t("galDel");
+      del.addEventListener("click", (e) => {
+        e.stopPropagation();
+        galSyncFromState();
+        const cur = state.galSel;
+        state.galaxies.splice(i, 1);
+        galSelect(cur > i ? cur - 1 : (cur === i ? Math.max(0, i - 1) : cur));
+        galBkTex = null;
+      });
+      row.append(del);
+    }
+    row.addEventListener("click", () => { galSyncFromState(); galSelect(i); });
+    box.append(row);
+  });
+}
+
+// Regler der ausgewaehlten Galaxie -> Liste sofort aktualisieren
+for (const id of ["ctlSpinRadius", "ctlSpinFlat", "ctlSpinTilt", "ctlSpinDiff"]) {
+  $(id).addEventListener("input", () => { galSyncFromState(); rebuildGalList(); });
+}
+rebuildGalList();
+
+/**
+ * Galaxien automatisch finden: ausgedehnte, helle Objekte ueber dem Himmel.
+ * Sterne und Sternreste werden per morphologischer Oeffnung entfernt, der
+ * Himmel per grosser Oeffnung geschaetzt; Komponenten ueber der Schwelle
+ * ergeben je eine Ellipse (Momente der Flaeche: a = 2 sigma), mit Rand fuer
+ * den schwachen Halo. Die Drehrichtung kommt aus den Spiralarmen: Arme
+ * schleppen der Drehung nach - winden sie sich nach aussen gegen den
+ * Uhrzeigersinn, dreht die Galaxie im Uhrzeigersinn (und umgekehrt)
+ */
+function detectGalaxies() {
+  const src = downscale(state.starless, 640);
+  const w = src.width, h = src.height, n = w * h;
+  const px = canvasPixels(src);
+  const imgAspect = state.starless.width / state.starless.height;
+  const L = new Float32Array(n);
+  for (let i = 0, j = 0; i < n; i++, j += 4) L[i] = (0.299 * px[j] + 0.587 * px[j + 1] + 0.114 * px[j + 2]) / 255;
+  const Lo = openChannel(L, w, h, Math.max(2, Math.round(w * 0.006)));
+  const sky = openChannel(Lo, w, h, Math.max(6, Math.round(w * 0.06)));
+  const tmp = new Float32Array(n);
+  { const r = Math.max(4, Math.round(w * 0.05)); for (let k = 0; k < 2; k++) { boxBlurH(sky, tmp, w, h, r); boxBlurV(tmp, sky, w, h, r); } }
+  const X = new Float32Array(n);
+  let xmax = 0;
+  for (let i = 0; i < n; i++) { X[i] = Lo[i] - sky[i]; if (X[i] > xmax) xmax = X[i]; }
+  const absd = Float32Array.from(X, (v) => Math.abs(v)).sort();
+  const sigma = 1.4826 * absd[Math.floor(n * 0.5)];
+  // Staerker glaetten, bevor geschwellt wird: Spiralarme haengen dann ueber
+  // die schwache Scheibe mit dem Kern zusammen (sonst zerfaellt eine grosse
+  // Spirale in einzelne "Galaxien")
+  const Xs = Float32Array.from(X);
+  { const r = Math.max(2, Math.round(w * 0.01)); for (let k = 0; k < 2; k++) { boxBlurH(Xs, tmp, w, h, r); boxBlurV(tmp, Xs, w, h, r); } }
+  let xsmax = 0;
+  for (let i = 0; i < n; i++) if (Xs[i] > xsmax) xsmax = Xs[i];
+  const th = Math.max(3 * sigma, 0.05 * xsmax, 0.01);
+  const lab = new Int32Array(n).fill(-1);
+  const comps = [];
+  const stack = new Int32Array(n);
+  for (let i0 = 0; i0 < n; i0++) {
+    if (lab[i0] >= 0 || Xs[i0] <= th) continue;
+    const id = comps.length;
+    // Helligkeitsgewichtete Momente (Galaxienlicht dominiert, schwache
+    // Sternhoefe und Rauschen am Rand ziehen die Form kaum)
+    let sp = 0, cnt = 0, f = 0, fx = 0, fy = 0, fxx = 0, fyy = 0, fxy = 0;
+    stack[sp++] = i0; lab[i0] = id;
+    while (sp) {
+      const i = stack[--sp], x = i % w, y = (i / w) | 0;
+      const v = Math.max(0, X[i]);
+      cnt++; f += v; fx += v * x; fy += v * y; fxx += v * x * x; fyy += v * y * y; fxy += v * x * y;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const xx = x + dx, yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+        const k = yy * w + xx;
+        if (lab[k] < 0 && Xs[k] > th) { lab[k] = id; stack[sp++] = k; }
+      }
+    }
+    if (f > 0) comps.push({ cnt, f, fx, fy, fxx, fyy, fxy });
+  }
+  // Ellipse aus den Momenten: fuer eine exponentielle Scheibe liegt der
+  // sichtbare Rand bei ~2,6 sigma (+10 % Rand fuer den Halo)
+  const ell = (c) => {
+    const mx = c.fx / c.f, my = c.fy / c.f;
+    const vxx = c.fxx / c.f - mx * mx, vyy = c.fyy / c.f - my * my, vxy = c.fxy / c.f - mx * my;
+    const tr = (vxx + vyy) / 2, dd = Math.sqrt(Math.max(0, ((vxx - vyy) / 2) ** 2 + vxy * vxy));
+    const l1 = Math.max(1e-6, tr + dd), l2 = Math.max(1e-6, tr - dd);
+    const phi = 0.5 * Math.atan2(2 * vxy, vxx - vyy);
+    return { mx, my, a: 2.9 * Math.sqrt(l1), flat: Math.max(0.3, Math.min(1, Math.sqrt(l2 / l1))), phi };
+  };
+  const inside = (E, x, y, k) => {
+    const dx = x - E.mx, dy = y - E.my, c = Math.cos(E.phi), s = Math.sin(E.phi);
+    return Math.hypot(c * dx + s * dy, (-s * dx + c * dy) / E.flat) / E.a < k;
+  };
+  const minA = Math.max(12, n * 0.00012);
+  let cand = comps.filter((c) => c.cnt >= minA).sort((p, q) => q.f - p.f);
+  // Bruchstuecke (Arme, Knoten), deren Zentrum in einer helleren Galaxie
+  // liegt, gehoeren zu ihr: Momente zusammenfuehren, bis nichts mehr wandert
+  for (let pass = 0; pass < 6; pass++) {
+    let merged = false;
+    const acc = [];
+    for (const c of cand) {
+      const E = ell(c);
+      // schwache Stuecke (unter 30 % des Lichts) auch weiter draussen: aeussere
+      // Armboegen einer grossen Spirale; helle Nachbarn bleiben eigenstaendig
+      const host = acc.find((A) => inside(ell(A), E.mx, E.my, c.f < 0.3 * A.f ? 1.7 : 1.1));
+      if (host) { for (const k of ["cnt", "f", "fx", "fy", "fxx", "fyy", "fxy"]) host[k] += c[k]; merged = true; }
+      else acc.push({ ...c });
+    }
+    cand = acc.sort((p, q) => q.f - p.f);
+    if (!merged) break;
+  }
+  // Form verfeinern: Die Momente des Lichts werden vom Armmuster verzerrt
+  // (ein frontales Zweiarm-Muster wirkt "geneigt"). Stark geglaettet sind
+  // die Arme ausgemittelt; die aeusseren Isophoten (8-30 % des geglaetteten
+  // Maximums) liefern dann Neigung, Lage und Rand der Scheibe
+  const refine = (E) => {
+    const R = E.a * 1.3, rs = Math.max(2, Math.round(E.a * 0.15));
+    const x0 = Math.max(0, Math.floor(E.mx - R)), x1 = Math.min(w - 1, Math.ceil(E.mx + R));
+    const y0 = Math.max(0, Math.floor(E.my - R)), y1 = Math.min(h - 1, Math.ceil(E.my + R));
+    const ww = x1 - x0 + 1, hh = y1 - y0 + 1;
+    if (ww < 8 || hh < 8) return E;
+    const win = new Float32Array(ww * hh), tw = new Float32Array(ww * hh);
+    for (let y = 0; y < hh; y++) for (let x = 0; x < ww; x++) win[y * ww + x] = Math.max(0, X[(y + y0) * w + x + x0]);
+    for (let k = 0; k < 3; k++) { boxBlurH(win, tw, ww, hh, rs); boxBlurV(tw, win, ww, hh, rs); }
+    let peak = 0;
+    for (let y = 0; y < hh; y++) for (let x = 0; x < ww; x++) {
+      if (inside({ ...E, a: E.a * 1.3 }, x + x0, y + y0, 1) && win[y * ww + x] > peak) peak = win[y * ww + x];
+    }
+    if (peak <= 0) return E;
+    // Isophoten-Ringe von innen nach aussen: Momente um das Zentrum je Ring.
+    // Eine geneigte Scheibe ist in ALLEN Ringen gleich gerichtet gestreckt;
+    // Spiralarme strecken je Ring in eine andere Richtung (die Richtung
+    // dreht mit dem Radius). Nur der gleichgerichtete Anteil zaehlt als
+    // Neigung - frontale Spiralen bleiben rund
+    const bands = [[0.6, 0.9], [0.45, 0.6], [0.33, 0.45], [0.24, 0.33], [0.17, 0.24], [0.11, 0.17], [0.06, 0.11]];
+    const res = [];
+    const pts = [];
+    for (const [lo, hi] of bands) {
+      let c = 0, sxx = 0, syy = 0, sxy = 0;
+      for (let y = 0; y < hh; y++) for (let x = 0; x < ww; x++) {
+        const v = win[y * ww + x] / peak, X0 = x + x0, Y0 = y + y0;
+        if (v < lo || v >= hi || !inside({ ...E, a: E.a * 1.3 }, X0, Y0, 1)) continue;
+        const dx = X0 - E.mx, dy = Y0 - E.my;
+        c++; sxx += dx * dx; syy += dy * dy; sxy += dx * dy;
+        if (lo < 0.3) pts.push(X0, Y0);
+      }
+      if (c < 20) continue;
+      const vxx = sxx / c, vyy = syy / c, vxy = sxy / c;
+      const tr = (vxx + vyy) / 2, dd = Math.sqrt(Math.max(0, ((vxx - vyy) / 2) ** 2 + vxy * vxy));
+      const f = Math.sqrt(Math.max(1e-6, tr - dd) / Math.max(1e-6, tr + dd));
+      res.push({ f, phi: 0.5 * Math.atan2(2 * vxy, vxx - vyy), c, outer: lo < 0.3 });
+    }
+    if (!res.length || pts.length < 40) return E;
+    let vx = 0, vy = 0, se = 0, fo = 0, co = 0;
+    for (const r of res) {
+      const e = 1 - r.f, wgt = r.c * e;
+      vx += wgt * Math.cos(2 * r.phi); vy += wgt * Math.sin(2 * r.phi); se += wgt;
+      if (r.outer) { fo += r.f * r.c; co += r.c; }
+    }
+    const coh = se > 0 ? Math.hypot(vx, vy) / se : 1;
+    const fOuter = co ? fo / co : res[res.length - 1].f;
+    const phi = 0.5 * Math.atan2(vy, vx);
+    let flat = Math.max(0.3, Math.min(1, 1 - (1 - fOuter) * coh * coh));
+    // fast rund = frontal: eine kleine Rest-Streckung aus dem Armmuster wuerde
+    // das Muster beim Drehen sonst "atmen" lassen
+    if (flat >= 0.85) flat = 1;
+    // Rand: 97 % der aeusseren Isophoten-Punkte liegen innerhalb, +15 % Halo
+    const cs = Math.cos(phi), sn = Math.sin(phi), rr = [];
+    for (let k = 0; k < pts.length; k += 2) {
+      const dx = pts[k] - E.mx, dy = pts[k + 1] - E.my;
+      rr.push(Math.hypot(cs * dx + sn * dy, (-sn * dx + cs * dy) / flat));
+    }
+    rr.sort((p, q) => p - q);
+    const a = Math.max(E.a * 0.6, rr[Math.floor(rr.length * 0.97)] * 1.15);
+    return { mx: E.mx, my: E.my, a, flat, phi };
+  };
+  const out = [];
+  for (const c of cand) {
+    const E = refine(ell(c));
+    let tilt = -E.phi * 180 / Math.PI;
+    tilt = ((tilt % 180) + 180) % 180;
+    out.push({
+      x: (E.mx / w - 0.5) * imgAspect, y: 0.5 - E.my / h,
+      rad: Math.max(0.0075, Math.min(0.75, E.a / h)),
+      flat: E.flat, tilt, twist: 40, dir: 1, name: "", auto: true, flux: c.f,
+    });
+  }
+  out.sort((p, q) => q.flux - p.flux);
+  const sel = out.slice(0, 8);
+  for (const g of sel) {
+    const ch = galChirality(g, Lo, w, h, imgAspect);
+    g.dir = ch.dir; g.chir = ch.sure;
+    // Nahezu Kantenlage: die Rotation laeuft entlang der Sichtlinie und ist
+    // in Wahrheit unsichtbar - als flache Scheibe gedreht wuerde die
+    // "Zigarre" zum Klumpen. Solche Galaxien stehen standardmaessig still
+    if (g.flat < 0.5) { g.dir = 0; g.edge = true; }
+    g.near = galNearSide(g, Lo, w, h, imgAspect);
+    delete g.flux;
+  }
+  return sel;
+}
+
+// Nahe Seite einer geneigten Scheibe: Staubbahnen liegen VOR dem Kern und
+// verdunkeln ihn auf der nahen Seite. Vergleich der Helligkeit beidseits der
+// grossen Achse im Kernbereich - die dunklere Seite ist vorn
+function galNearSide(g, Lo, w, h, imgAspect) {
+  if (g.flat > 0.9) return 1;
+  const t = g.tilt * Math.PI / 180, c = Math.cos(t), s = Math.sin(t);
+  let sp = 0, np = 0, sm = 0, nm = 0;
+  for (let j = 0; j < 48; j++) for (let i = 0; i < 48; i++) {
+    const u = (i + 0.5) / 48 * 2 - 1, v = (j + 0.5) / 48 * 2 - 1, r = Math.hypot(u, v);
+    if (r < 0.08 || r > 0.45 || Math.abs(v) < 0.05) continue;
+    const ex = u * g.rad, ey = v * g.rad * g.flat;
+    const qx = g.x + c * ex - s * ey, qy = g.y + s * ex + c * ey;
+    const px = Math.round((qx / imgAspect + 0.5) * w - 0.5), py = Math.round((0.5 - qy) * h - 0.5);
+    if (px < 0 || py < 0 || px >= w || py >= h) continue;
+    const val = Lo[py * w + px];
+    if (v > 0) { sp += val; np++; } else { sm += val; nm++; }
+  }
+  if (!np || !nm) return 1;
+  return sp / np < sm / nm ? 1 : -1;
+}
+
+// Windungssinn der Spiralarme in der entzerrten Scheibe: Strukturtensor des
+// Hochpasses; (t . r)(t . phi) > 0 heisst "nach aussen gegen den
+// Uhrzeigersinn". Die Galaxie dreht entgegen (Arme schleppen nach)
+function galChirality(g, Lo, w, h, imgAspect) {
+  const G = 128;
+  const t2 = g.tilt * Math.PI / 180, c = Math.cos(t2), s2 = Math.sin(t2);
+  const grid = new Float32Array(G * G);
+  for (let j = 0; j < G; j++) for (let i = 0; i < G; i++) {
+    const u = (i + 0.5) / G * 2 - 1, v = 1 - (j + 0.5) / G * 2;   // Kreisraum, y nach oben
+    const ex = u * g.rad, ey = v * g.rad * g.flat;
+    const qx = g.x + c * ex - s2 * ey, qy = g.y + s2 * ex + c * ey;
+    const fx = (qx / imgAspect + 0.5) * w - 0.5, fy = (0.5 - qy) * h - 0.5;
+    const x0 = Math.max(0, Math.min(w - 2, Math.floor(fx))), y0 = Math.max(0, Math.min(h - 2, Math.floor(fy)));
+    const ax = Math.min(1, Math.max(0, fx - x0)), ay = Math.min(1, Math.max(0, fy - y0));
+    const at = (x, y) => Lo[y * w + x];
+    grid[j * G + i] = (at(x0, y0) * (1 - ax) + at(x0 + 1, y0) * ax) * (1 - ay) + (at(x0, y0 + 1) * (1 - ax) + at(x0 + 1, y0 + 1) * ax) * ay;
+  }
+  const bl = Float32Array.from(grid), tmp = new Float32Array(G * G);
+  for (let k = 0; k < 2; k++) { boxBlurH(bl, tmp, G, G, 5); boxBlurV(tmp, bl, G, G, 5); }
+  let S = 0, W = 0;
+  for (let j = 1; j < G - 1; j++) for (let i = 1; i < G - 1; i++) {
+    const u = (i + 0.5) / G * 2 - 1, v = 1 - (j + 0.5) / G * 2, r = Math.hypot(u, v);
+    if (r < 0.15 || r > 0.9) continue;
+    const hp = (a, b) => grid[b * G + a] - bl[b * G + a];
+    const gx = (hp(i + 1, j) - hp(i - 1, j)) / 2, gy = -(hp(i, j + 1) - hp(i, j - 1)) / 2; // y nach oben
+    const ru = u / r, rv = v / r, pu = -rv, pv = ru;
+    const gr = gx * ru + gy * rv, gp = gx * pu + gy * pv;
+    S += -gp * gr;
+    W += gx * gx + gy * gy;
+  }
+  const q = W > 0 ? S / W : 0;
+  // q > 0: Arme winden sich nach aussen gegen den Uhrzeigersinn -> Drehung im
+  // Uhrzeigersinn (Inhalt dreht um -Winkel -> dir = -1)
+  return { dir: q > 0 ? -1 : 1, sure: Math.abs(q) > 0.04 };
+}
+
+
+$("ctlLoop").addEventListener("change", () => {
+  state.loopMode = $("ctlLoop").checked;
+  updateScenarioUi();
+  state.t0 = performance.now();
+  state.pausedAt = 0;
+});
+
+// ---- Cineastische Presets (Effekte + Look) ----
+
+const PRESET_SLIDERS = {
+  bloom: "ctlBloom", mblur: "ctlMblur", warp: "ctlWarp", vignette: "ctlVignette",
+  exposure: "ctlExposure", contrast: "ctlContrast", saturation: "ctlSaturation",
+  clarity: "ctlClarity", structure: "ctlStructure", sharpen: "ctlSharpen",
+  grain: "ctlGrain", filmic: "ctlFilmic",
+};
+
+const PRESETS = {
+  // alles neutral / aus
+  neutral:   { bloom: 0,  mblur: 0, warp: 0,  vignette: 0,  exposure: 0,   contrast: 0,  saturation: 0,    clarity: 0,   structure: 0,  sharpen: 0, grain: 0, filmic: 0 },
+  // klassischer Kino-Look: sanfter Glow, Filmkorn-freier Kontrast, Vignette
+  kino:      { bloom: 35, mblur: 0, warp: 0,  vignette: 35, exposure: 5,   contrast: 18, saturation: 8,    clarity: 15,  structure: 10, sharpen: 10, grain: 12, filmic: 35 },
+  // dunkel, entsättigt, hoher Kontrast – bedrohlich-episch
+  deepspace: { bloom: 25, mblur: 0, warp: 0,  vignette: 50, exposure: -12, contrast: 28, saturation: -18,  clarity: 25,  structure: 20, sharpen: 10, grain: 18, filmic: 30 },
+  // träumerischer Orton-Glow, weiche Nebel, kräftige Farben
+  glow:      { bloom: 75, mblur: 0, warp: 0,  vignette: 25, exposure: 8,   contrast: -8, saturation: 15,   clarity: -35, structure: -10, sharpen: 0, grain: 0, filmic: 20 },
+  // dramatisches Schwarzweiß
+  mono:      { bloom: 30, mblur: 0, warp: 0,  vignette: 45, exposure: 0,   contrast: 30, saturation: -100, clarity: 35,  structure: 25, sharpen: 15, grain: 22, filmic: 30 },
+  // Hyperraum: Warp + Streifen nur auf den Sternen (mblurStars) - der Nebel
+  // bleibt scharf, sonst brennt das Bild bei hellen Kernen komplett aus
+  hyper:     { bloom: 28, mblur: 0, warp: 45, vignette: 30, exposure: 5,   contrast: 12, saturation: 10,   clarity: 10,  structure: 5,  sharpen: 0, grain: 0, filmic: 20 },
+};
+
+$("ctlPreset").addEventListener("change", () => {
+  const preset = PRESETS[$("ctlPreset").value];
+  if (!preset) return;
+  for (const [key, id] of Object.entries(PRESET_SLIDERS)) {
+    const el = $(id);
+    el.value = preset[key];
+    el.dispatchEvent(new Event("input"));
+  }
+  $("ctlMblurStars").checked = !!preset.mblurStars;
+  $("ctlMblurStars").dispatchEvent(new Event("change"));
+});
+
+// ------------------------------------------------ Einfach-Modus & Flug-Presets
+
+// Neutralwerte, auf die jedes Flug-Preset zuerst zurücksetzt
+const SIMPLE_DEFAULTS = {
+  ctlZoom: 1, ctlSpeed: 40, ctlEase: 60, ctlParallax: 60, ctlDepthBoost: 33,
+  ctlRotation: 0, ctlOrient: 0, ctlFrameX: 0, ctlFrameY: 0, ctlTiltX: 0,
+  ctlTiltY: 0, ctlSwayAmp: 0, ctlSwayTempo: 40, ctlSwayDir: 0, ctlSwayRandom: 0,
+  ctlTiltRamp: 0, ctlTiltRampDir: 0, ctlFade: 0, ctlDriftDir: 90,
+  ctlSpinSpeed: 0, ctlSpinDiff: 40,
+  ctlSpread: 70, ctlStarDist: 55, ctlLayers: 0, ctlStarPar: 100,
+  ctlTwinkle: 25, ctlTwinkleSpeed: 100, ctlStarSize: 100, ctlStarBright: 100,
+  ctlStarSat: 100, ctlGenStars: 0, ctlStarCull: 0, ctlDolly: 0, ctlZoomDrift: 30,
+};
+
+// 8 Objekt-Presets: 3 Nebel, 3 Galaxien, 2 Sternhaufen. "look" wählt den
+// Look-Preset aus Sektion 5 mit; "set"/"checks" überschreiben danach gezielt.
+// Nach Michaels Beta-Test deutlich gezähmt - die Effektstärke skaliert
+// die Bewegungs-Parameter zusätzlich (50 = wie hier definiert)
+const FLIGHT_PRESETS = {
+  nebGentle:      { look: "neutral", set: { ctlSpeed: 30, ctlParallax: 60, ctlDepthBoost: 40, ctlStarPar: 250, ctlBloom: 15 } },
+  nebDrift:       { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.35, ctlSpeed: 55, ctlStarPar: 260, ctlGenStars: 1000, ctlBloom: 15 } },
+  nebHyper:       { look: "hyper", set: { ctlSpeed: 65, ctlStarPar: 300, ctlTwinkleSpeed: 150 } },
+  galMajestic:    { look: "neutral", set: { ctlSpeed: 25, ctlParallax: 40, ctlDepthBoost: 30, ctlStarPar: 300, ctlTiltRamp: 12, ctlBloom: 15 } },
+  galSpin:        { look: "neutral", set: { ctlSpeed: 15, ctlSpinSpeed: 0.8, ctlSpinDiff: 40, ctlBloom: 12 } },
+  galFlyby:       { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.35, ctlSpeed: 55, ctlTiltRamp: 15, ctlTiltRampDir: 90, ctlStarPar: 280, ctlBloom: 15 } },
+  clusterDive:    { look: "neutral", set: { ctlSpeed: 50, ctlSpread: 90, ctlStarPar: 380, ctlTwinkle: 35, ctlBloom: 25 } },
+  clusterSparkle: { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.3, ctlSpeed: 30, ctlTwinkle: 45, ctlTwinkleSpeed: 160, ctlSwayAmp: 20, ctlSwayRandom: 40, ctlBloom: 20 } },
+  // Kino-Kamerafahrten nach Film-Vorbildern (Recherche: StudioBinder-
+  // Bewegungsarten, NASA/STScI-Flythroughs, 2001/Interstellar). Motiv-
+  // unabhaengig; "ease" waehlt die Beschleunigungskurve
+  // 2001: extrem ruhiger, symmetrischer Push-in ohne Wackeln
+  cineKubrick:     { look: "kino", ease: "inout", set: { ctlSpeed: 22, ctlEase: 85, ctlParallax: 55, ctlDepthBoost: 40, ctlStarPar: 170, ctlBloom: 22, ctlFade: 12 } },
+  // Pull-out: vom Detail zurueck ins Gesamtbild, kommt sanft zur Ruhe
+  cineReveal:      { look: "kino", ease: "inout", set: { ctlSpeed: 60, ctlEase: 75, ctlParallax: 70, ctlDepthBoost: 45, ctlStarPar: 220, ctlBloom: 20, ctlFade: 15 }, checks: { ctlReverse: true } },
+  // Vertigo: Fahrt hinein, Objektiv heraus - das Ziel bleibt gleich gross
+  cineVertigo:     { look: "kino", ease: "inout", set: { ctlSpeed: 35, ctlEase: 70, ctlDolly: 100, ctlParallax: 80, ctlDepthBoost: 50, ctlStarPar: 200, ctlBloom: 18 } },
+  // STScI-Flythrough: tiefer Anflug mit leichtem Absinken und ruhigem Schweben
+  cineHubble:      { look: "neutral", ease: "inout", set: { ctlSpeed: 45, ctlEase: 60, ctlParallax: 80, ctlDepthBoost: 55, ctlStarPar: 260, ctlTiltRamp: 18, ctlTiltRampDir: 270, ctlSwayAmp: 10, ctlSwayTempo: 20, ctlBloom: 25 } },
+  // Interstellar: langsame Seitfahrt, dunkel und kontrastreich, Filmkorn
+  cineInterstellar:{ look: "deepspace", flightMode: "lateral", ease: "inout", set: { ctlZoom: 1.4, ctlSpeed: 45, ctlEase: 70, ctlParallax: 75, ctlStarPar: 280, ctlSwayAmp: 6, ctlSwayTempo: 15 } },
+  // Doku-Handkamera: leichter Push-in mit organischem Wackeln
+  cineHandheld:    { look: "kino", set: { ctlSpeed: 30, ctlParallax: 65, ctlSwayAmp: 35, ctlSwayTempo: 70, ctlSwayRandom: 85, ctlStarPar: 180, ctlBloom: 15 } },
+  // Kranfahrt: die Kamera hebt sich ueber das Motiv, dabei langsamer Anflug
+  cineCrane:       { look: "kino", ease: "inout", set: { ctlSpeed: 25, ctlEase: 70, ctlParallax: 80, ctlDepthBoost: 50, ctlStarPar: 240, ctlTiltRamp: 40, ctlTiltRampDir: 90, ctlBloom: 18 } },
+  // Spiral-Dive: beschleunigter Sturzflug mit Rolle (Contact/Interstellar)
+  cineSpiral:      { look: "kino", ease: "in", set: { ctlSpeed: 55, ctlEase: 80, ctlRotation: 2.5, ctlParallax: 70, ctlStarPar: 300, ctlBloom: 15, ctlExposure: -5 } },
+  // Arc-Shot: die Kamera kreist um die Galaxie (3D-Scheibe)
+  // Schraegflug vom linken/rechten Bildrand: leichter Zoom + Seitfahrt,
+  // gleichmaessig ab dem ersten Bild
+  // Stil von Michael (Stil-Code): Seitflug mit Zoom-Fahrt nach links, dazu
+  // gespiegelt nach rechts. fixedDir: die Richtung gehoert zum Stil (der
+  // Richtungsregler des Einfach-Modus ueberschreibt sie nicht)
+  cineDiagLeft:    { look: "neutral", flightMode: "lateral", fixedDir: true, set: { ctlDriftDir: 180, ctlSpread: 50, ctlStarDist: 57, ctlStarPar: 530, ctlStarBright: 140, ctlZoomDrift: 49, ctlBloom: 41, ctlSaturation: 8, ctlClarity: 14, ctlStructure: 10, ctlSharpen: 25, ctlFilmic: 70 }, checks: { ctlRealStars: false } },
+  cineDiagRight:   { look: "neutral", flightMode: "lateral", fixedDir: true, set: { ctlDriftDir: 0, ctlSpread: 50, ctlStarDist: 57, ctlStarPar: 530, ctlStarBright: 140, ctlZoomDrift: 49, ctlBloom: 41, ctlSaturation: 8, ctlClarity: 14, ctlStructure: 10, ctlSharpen: 25, ctlFilmic: 70 }, checks: { ctlRealStars: false } },
+  cineArc:         { look: "kino", flightMode: "orbit", ease: "inout", set: { ctlSpeed: 45, ctlEase: 65, ctlParallax: 80, ctlDepthBoost: 50, ctlStarPar: 220, ctlBloom: 18 } },
+};
+
+// Effektstärke im Einfach-Modus: skaliert die Bewegungs-Parameter eines
+// Presets um ihre Neutralwerte herum (50 = Preset wie definiert)
+const FX_SCALED = { ctlSpeed: 40, ctlTiltRamp: 0, ctlSwayAmp: 0, ctlWarp: 0, ctlSpinSpeed: 0, ctlStarPar: 100, ctlDolly: 0, ctlRotation: 0 };
+state.simpleFx = (() => {
+  const v = parseInt(localStorage.getItem("astrofly-simplefx"), 10);
+  return v >= 10 && v <= 100 ? v : 50;
+})();
+state.activePreset = null;
+
+function setCtl(id, value) {
+  const el = $(id);
+  if (!el) return;
+  el.value = value;
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function applyFlightPreset(name) {
+  const p = FLIGHT_PRESETS[name];
+  if (!p) return;
+  // Erst alles auf neutral, dann das Preset darüber
+  $("ctlFlightMode").value = p.flightMode || "zoom";
+  $("ctlFlightMode").dispatchEvent(new Event("change"));
+  $("ctlEaseMode").value = p.ease || "linear";
+  $("ctlEaseMode").dispatchEvent(new Event("change"));
+  $("ctlLoop").checked = false;
+  $("ctlLoop").dispatchEvent(new Event("change"));
+  $("ctlReverse").checked = false;
+  $("ctlReverse").dispatchEvent(new Event("change"));
+  for (const [id, v] of Object.entries(SIMPLE_DEFAULTS)) setCtl(id, v);
+  $("ctlPreset").value = p.look;
+  $("ctlPreset").dispatchEvent(new Event("change")); // setzt Look + mblurStars
+  const k = state.simpleFx / 50;
+  for (const [id, v] of Object.entries(p.set || {})) {
+    const base = FX_SCALED[id];
+    setCtl(id, base === undefined ? v : base + (v - base) * k);
+  }
+  for (const [id, v] of Object.entries(p.checks || {})) {
+    $(id).checked = v;
+    $(id).dispatchEvent(new Event("change"));
+  }
+  // Richtungswahl nur bei seitlichen Flügen anbieten und anwenden
+  const lateral = p.flightMode === "lateral" && !p.fixedDir;
+  $("simpleDirRow").hidden = !lateral;
+  if (lateral) setCtl("ctlDriftDir", $("ctlSimpleDir").value);
+  state.activePreset = name;
+  for (const card of document.querySelectorAll(".pcard")) {
+    card.classList.toggle("active", card.dataset.preset === name);
+  }
+}
+
+// Effektstärke + Richtung wirken sofort auf das aktive Preset
+$("ctlSimpleFx").value = state.simpleFx;
+$("outSimpleFx").textContent = state.simpleFx + " %";
+$("ctlSimpleFx").addEventListener("input", () => {
+  state.simpleFx = parseInt($("ctlSimpleFx").value, 10);
+  $("outSimpleFx").textContent = state.simpleFx + " %";
+  localStorage.setItem("astrofly-simplefx", state.simpleFx);
+  if (state.activePreset) applyFlightPreset(state.activePreset);
+});
+$("ctlSimpleDir").addEventListener("input", () => {
+  $("outSimpleDir").textContent = $("ctlSimpleDir").value + "°";
+  setCtl("ctlDriftDir", $("ctlSimpleDir").value);
+});
+
+for (const card of document.querySelectorAll(".pcard")) {
+  card.addEventListener("click", () => applyFlightPreset(card.dataset.preset));
+}
+
+// ---------------------------------------------------------------------------
+// Stil-Code: die eingebauten Stile stehen im Quelltext als kompakte Zeile.
+// Der Knopf erzeugt genau diese Zeile aus den aktuellen Reglern - und zwar nur
+// aus denen, die vom Stil-Standard abweichen. So laesst sich ein neu
+// eingestellter Stil weitergeben und wieder einspielen, ohne jeden Wert
+// einzeln abzutippen.
+// ---------------------------------------------------------------------------
+const STYLE_CHECKS = ["ctlMblurStars", "ctlLoop", "ctlReverse", "ctlRealStars", "ctlSpinStars", "ctlStarImg"];
+
+/**
+ * Bezugswert eines Reglers fuer den Stil-Code: Kamera- und Sternregler messen
+ * gegen die Neutralwerte, die Look-Regler gegen den gewaehlten Look - genau
+ * so, wie ein Stil beim Anwenden aufgebaut wird.
+ */
+function styleBase(id, look) {
+  if (SIMPLE_DEFAULTS[id] !== undefined) return SIMPLE_DEFAULTS[id];
+  for (const [key, sid] of Object.entries(PRESET_SLIDERS)) {
+    if (sid === id) {
+      const p = PRESETS[look] || PRESETS.neutral;
+      return p[key];
+    }
+  }
+  return undefined;
+}
+
+function styleIds() {
+  return [...Object.keys(SIMPLE_DEFAULTS), ...Object.values(PRESET_SLIDERS)];
+}
+
+function styleCodeStatus(msg, bad) {
+  const el = $("styleCodeStatus");
+  el.textContent = msg || "";
+  el.style.color = bad ? "#ff8080" : "";
+}
+
+function buildStyleCode() {
+  const look = $("ctlPreset").value;
+  const set = {};
+  for (const id of styleIds()) {
+    const el = $(id);
+    const def = styleBase(id, look);
+    if (!el || def === undefined) continue;
+    const v = parseFloat(el.value);
+    if (!isNaN(v) && Math.abs(v - def) > 1e-9) set[id] = Math.round(v * 1000) / 1000;
+  }
+  const checks = {};
+  const lookChk = !!(PRESETS[look] || {}).mblurStars;
+  for (const id of STYLE_CHECKS) {
+    const el = $(id);
+    if (!el) continue;
+    const base = id === "ctlMblurStars" ? lookChk : el.defaultChecked;
+    if (el.checked !== base) checks[id] = el.checked;
+  }
+  const name = state.activePreset || "meinStil";
+  const parts = [`look: "${look}"`];
+  if ($("ctlFlightMode").value !== "zoom") parts.push(`flightMode: "${$("ctlFlightMode").value}"`);
+  if ($("ctlEaseMode").value !== "linear") parts.push(`ease: "${$("ctlEaseMode").value}"`);
+  parts.push("set: { " + Object.entries(set).map(([k, v]) => `${k}: ${v}`).join(", ") + " }");
+  if (Object.keys(checks).length) {
+    parts.push("checks: { " + Object.entries(checks).map(([k, v]) => `${k}: ${v}`).join(", ") + " }");
+  }
+  return `${name}: { ${parts.join(", ")} },`;
+}
+
+/** Stil-Code lesen: bewusst per Muster statt eval - der Text kommt von aussen. */
+function parseStyleCode(txt) {
+  const out = { name: null, look: "neutral", flightMode: "zoom", set: {}, checks: {} };
+  const nm = txt.match(/([A-Za-z][A-Za-z0-9_]*)\s*:\s*\{/);
+  if (nm && !/^(set|checks|look|flightMode|ease)$/.test(nm[1])) out.name = nm[1];
+  const lk = txt.match(/look\s*:\s*"([a-z0-9_]+)"/i);
+  if (lk) out.look = lk[1];
+  const fm = txt.match(/flightMode\s*:\s*"([a-z]+)"/i);
+  if (fm) out.flightMode = fm[1];
+  const em = txt.match(/ease\s*:\s*"(inout|in|out|linear)"/i);
+  if (em) out.ease = em[1].toLowerCase();
+  const chk = txt.match(/checks\s*:\s*\{([^}]*)\}/i);
+  if (chk) {
+    for (const m of chk[1].matchAll(/(ctl[A-Za-z0-9]+)\s*:\s*(true|false)/g)) {
+      out.checks[m[1]] = m[2] === "true";
+    }
+  }
+  const setB = txt.match(/set\s*:\s*\{([^}]*)\}/i);
+  const src = setB ? setB[1] : txt.replace(/checks\s*:\s*\{[^}]*\}/i, "");
+  const known = new Set(styleIds());
+  for (const m of src.matchAll(/(ctl[A-Za-z0-9]+)\s*:\s*(-?[0-9]+(?:\.[0-9]+)?)/g)) {
+    if (known.has(m[1])) out.set[m[1]] = parseFloat(m[2]);
+  }
+  return out;
+}
+
+/** Wie applyFlightPreset, aber 1:1 ohne die Effektstaerke des Einfach-Modus. */
+function applyStyleCode(p) {
+  $("ctlFlightMode").value = p.flightMode || "zoom";
+  $("ctlFlightMode").dispatchEvent(new Event("change", { bubbles: true }));
+  $("ctlEaseMode").value = p.ease || "linear";
+  $("ctlEaseMode").dispatchEvent(new Event("change", { bubbles: true }));
+  $("ctlLoop").checked = false;
+  $("ctlLoop").dispatchEvent(new Event("change", { bubbles: true }));
+  $("ctlReverse").checked = false;
+  $("ctlReverse").dispatchEvent(new Event("change", { bubbles: true }));
+  for (const [id, v] of Object.entries(SIMPLE_DEFAULTS)) setCtl(id, v);
+  if ($("ctlPreset").querySelector(`option[value="${p.look}"]`)) {
+    $("ctlPreset").value = p.look;
+    $("ctlPreset").dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  for (const [id, v] of Object.entries(p.set)) setCtl(id, v);
+  for (const [id, v] of Object.entries(p.checks)) {
+    const el = $(id);
+    if (!el) continue;
+    el.checked = v;
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  state.activePreset = p.name && FLIGHT_PRESETS[p.name] ? p.name : null;
+  for (const card of document.querySelectorAll(".pcard")) {
+    card.classList.toggle("active", card.dataset.preset === state.activePreset);
+  }
+}
+
+$("btnStyleCopy").addEventListener("click", async () => {
+  const code = buildStyleCode();
+  $("styleCode").value = code;
+  $("styleCode").select();
+  try {
+    await navigator.clipboard.writeText(code);
+    styleCodeStatus(t("styleCodeCopied"));
+  } catch {
+    // ohne Zwischenablage-Recht bleibt der markierte Text im Feld
+    styleCodeStatus(t("styleCodeCopyManual"));
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Gefuehrter Einstieg: vier Schritte, die einmal zeigen, wo Bild laden, Ziel
+// setzen, Flug einstellen und Rendern sitzen. Laeuft beim ersten Start und
+// laesst sich im Export-Bereich erneut aufrufen.
+// ---------------------------------------------------------------------------
+const TOUR_KEY = "astrofly-tour-seen";
+// Die Nummern sind nur die Textbausteine, die Reihenfolge steht hier:
+// Bilder, Ziel, Flug, Feineinstellung (5), Rendern (4)
+const TOUR_STEPS = [
+  { key: "1", target: () => $("proRail").querySelector('[data-group="bild"]') || $("panelbody"), tab: "bilder" },
+  { key: "2", target: () => $("glcanvas") },
+  { key: "3", target: () => $("proRail").querySelector('[data-group="kamera"]') || $("panelbody"), tab: "kamera" },
+  { key: "5", target: () => $("ctlZoom").closest("label") || $("panelbody"), tab: "kamera" },
+  { key: "4", target: () => $("panelFoot") },
+];
+let tourIdx = -1;
+
+function placeTour(el) {
+  const ring = $("tourRing");
+  const card = $("tourCard");
+  const r = el.getBoundingClientRect();
+  const pad = 6;
+  ring.style.left = (r.left - pad) + "px";
+  ring.style.top = (r.top - pad) + "px";
+  ring.style.width = (r.width + pad * 2) + "px";
+  ring.style.height = (r.height + pad * 2) + "px";
+  // Karte bevorzugt rechts neben das Ziel, sonst darunter, immer im Fenster
+  const cw = card.offsetWidth || 310, ch = card.offsetHeight || 190;
+  let x = r.right + 16, y = r.top;
+  if (x + cw > window.innerWidth - 12) {
+    x = Math.min(r.left, window.innerWidth - cw - 12);
+    y = r.bottom + 14;
+  }
+  if (y + ch > window.innerHeight - 12) y = Math.max(12, window.innerHeight - ch - 12);
+  card.style.left = Math.max(12, x) + "px";
+  card.style.top = Math.max(12, y) + "px";
+}
+
+function showTourStep(i) {
+  const step = TOUR_STEPS[i];
+  if (!step) { endTour(); return; }
+  tourIdx = i;
+  if (step.tab && state.uiMode === "pro") gotoTab(step.tab);
+  $("tour").hidden = false;
+  $("tourStep").textContent = t("tourStepOf", i + 1, TOUR_STEPS.length);
+  $("tourTitle").textContent = t("tourTitle" + step.key);
+  $("tourText").textContent = t("tourText" + step.key);
+  $("btnTourBack").hidden = i === 0;
+  $("btnTourNext").textContent = i === TOUR_STEPS.length - 1 ? t("tourDone") : t("tourNext");
+  // erst nach dem Layout messen, sonst steht die Karte am alten Platz
+  requestAnimationFrame(() => placeTour(step.target()));
+}
+
+function endTour() {
+  tourIdx = -1;
+  $("tour").hidden = true;
+  localStorage.setItem(TOUR_KEY, "1");
+}
+
+function startTour() { showTourStep(0); }
+
+$("btnTourNext").addEventListener("click", () => showTourStep(tourIdx + 1));
+$("btnTourBack").addEventListener("click", () => showTourStep(Math.max(0, tourIdx - 1)));
+$("btnTourSkip").addEventListener("click", endTour);
+$("btnTourReplay").addEventListener("click", startTour);
+document.addEventListener("keydown", (e) => {
+  if ($("tour").hidden) return;
+  if (e.key === "Escape") endTour();
+  else if (e.key === "ArrowRight" || e.key === "Enter") showTourStep(tourIdx + 1);
+  else if (e.key === "ArrowLeft") showTourStep(Math.max(0, tourIdx - 1));
+});
+window.addEventListener("resize", () => {
+  if (!$("tour").hidden && TOUR_STEPS[tourIdx]) placeTour(TOUR_STEPS[tourIdx].target());
+});
+I18N.onChange.push(() => { if (!$("tour").hidden) showTourStep(tourIdx); });
+
+if (!localStorage.getItem(TOUR_KEY)) setTimeout(startTour, 700);
+
+$("btnStyleApply").addEventListener("click", () => {
+  const txt = $("styleCode").value.trim();
+  if (!txt) { $("styleCode").focus(); return; }
+  const p = parseStyleCode(txt);
+  if (!Object.keys(p.set).length && !Object.keys(p.checks).length) {
+    styleCodeStatus(t("styleCodeBad"), true);
+    return;
+  }
+  applyStyleCode(p);
+  styleCodeStatus(t("styleCodeApplied", Object.keys(p.set).length));
+});
+
+// Dauer-Regler im Einfach-Modus spiegelt den echten Dauer-Regler
+$("ctlSimpleDuration").addEventListener("input", () => {
+  const v = $("ctlSimpleDuration").value;
+  $("outSimpleDuration").textContent = v + " s";
+  setCtl("ctlDuration", v);
+});
+
+// Einfach/Profi-Umschaltung + Tab-Navigation: Jede Sektion trägt data-tab
+// (ihren Profi-Tab) und optional data-easy (im Einfach-Modus sichtbar).
+// Im Einfach-Modus werden die data-easy-Sektionen gestapelt angezeigt,
+// im Profi-Modus nur die Sektionen des aktiven Tabs.
+// Gruppen der Profi-Bedienung: sechs Gruppen in der linken Leiste, darin
+// benannte Untergruppen. Jede Sektion traegt data-tab (= Untergruppe) und
+// optional data-easy (im Einfach-Modus sichtbar).
+const TAB_GROUPS = [
+  { id: "projekte", subs: [["projekte", "subProjekte"]] },
+  { id: "bild", subs: [["bilder", "subLaden"], ["tiefe", "subTiefe"], ["spiegel", "subSpiegel"]] },
+  { id: "kamera", subs: [["kamera", "subFlug"], ["szenario", "subFlugplan"], ["galaxie", "subGalaxie"]] },
+  { id: "look", subs: [["sterne", "subSterne"], ["look", "subEffekte"], ["nebel", "subNebel"], ["presets", "subStile"]] },
+  { id: "daten", subs: [["gaia", "subGaia"], ["objekte", "subObjekte"]] },
+  { id: "export", subs: [["export", "subExport"]] },
+];
+// Alte gespeicherte Tab-Namen (vor dem Gruppen-Umbau) auf die neuen abbilden
+const TAB_ALIAS = { sci: "gaia" };
+
+function groupOfTab(tab) {
+  for (const g of TAB_GROUPS) {
+    if (g.subs.some((s) => s[0] === tab)) return g;
+  }
+  return TAB_GROUPS[1];
+}
+
+state.uiMode = localStorage.getItem("astrofly-mode") || "simple";
+{
+  const saved = localStorage.getItem("astrofly-tab") || "bilder";
+  state.activeTab = TAB_ALIAS[saved] || saved;
+  if (!groupOfTab(state.activeTab).subs.some((s) => s[0] === state.activeTab)) state.activeTab = "bilder";
+  state.activeGroup = groupOfTab(state.activeTab).id;
+}
+
+// Untergruppen-Leiste unter dem Panelkopf; entfaellt bei Gruppen mit nur einer
+function buildSubTabs() {
+  const box = $("subTabs");
+  const grp = TAB_GROUPS.find((g) => g.id === state.activeGroup) || TAB_GROUPS[1];
+  box.innerHTML = "";
+  box.hidden = state.uiMode !== "pro" || grp.subs.length < 2;
+  if (box.hidden) return;
+  for (const [tab, key] of grp.subs) {
+    const b = document.createElement("button");
+    b.textContent = t(key);
+    b.className = tab === state.activeTab ? "active" : "";
+    b.addEventListener("click", () => {
+      state.activeTab = tab;
+      $("panelbody").scrollTop = 0;
+      applyUiMode();
+    });
+    if (tab === "szenario") {
+      const n = document.createElement("span");
+      n.className = "subcount";
+      n.textContent = String(state.waypoints ? state.waypoints.length : 0);
+      n.hidden = !state.waypoints || !state.waypoints.length;
+      b.appendChild(n);
+    }
+    box.appendChild(b);
+  }
+}
+
+function applyUiMode() {
+  const simple = state.uiMode === "simple";
+  $("modeSimple").classList.toggle("active", simple);
+  $("modePro").classList.toggle("active", !simple);
+  $("modeSimple").setAttribute("aria-pressed", simple);
+  $("modePro").setAttribute("aria-pressed", !simple);
+  $("proRail").hidden = simple;
+  const grp = TAB_GROUPS.find((g) => g.id === state.activeGroup) || TAB_GROUPS[1];
+  if (!grp.subs.some((s) => s[0] === state.activeTab)) state.activeTab = grp.subs[0][0];
+  for (const b of document.querySelectorAll("#proRail button")) {
+    b.classList.toggle("active", b.dataset.group === state.activeGroup);
+  }
+  buildSubTabs();
+  for (const sec of document.querySelectorAll("#panel section")) {
+    if (sec.id === "simpleSection") { sec.hidden = !simple; continue; }
+    sec.hidden = simple ? !sec.hasAttribute("data-easy")
+                        : sec.dataset.tab !== state.activeTab;
+  }
+  localStorage.setItem("astrofly-mode", state.uiMode);
+  localStorage.setItem("astrofly-tab", state.activeTab);
+  // Flugplan-Einrichtung (inkl. Steuerkreuz) haengt an Pro-Modus + Tab -
+  // der Easy/Pro-Umschalter liess das Steuerkreuz sonst stehen
+  setScenEdit(state.uiMode === "pro" && state.activeTab === "szenario");
+}
+// Panel-Breite per Anfasser verstellbar (wird gespeichert)
+{
+  const savedW = parseInt(localStorage.getItem("astrofly-panelw") || "0", 10);
+  if (savedW >= 300 && savedW <= 640) {
+    $("panel").style.width = savedW + "px";
+    $("panel").style.minWidth = savedW + "px";
+  }
+  let panelDrag = false;
+  $("panelResize").addEventListener("pointerdown", (e) => {
+    panelDrag = true;
+    e.preventDefault();
+    $("panelResize").setPointerCapture(e.pointerId);
+  });
+  $("panelResize").addEventListener("pointermove", (e) => {
+    if (!panelDrag) return;
+    const left = $("panel").getBoundingClientRect().left;
+    const w = Math.min(640, Math.max(300, Math.round(e.clientX - left)));
+    $("panel").style.width = w + "px";
+    $("panel").style.minWidth = w + "px";
+    localStorage.setItem("astrofly-panelw", String(w));
+  });
+  for (const evName of ["pointerup", "pointercancel"]) {
+    $("panelResize").addEventListener(evName, () => { panelDrag = false; });
+  }
+}
+
+$("modeSimple").addEventListener("click", () => { state.uiMode = "simple"; applyUiMode(); });
+$("modePro").addEventListener("click", () => { state.uiMode = "pro"; applyUiMode(); });
+for (const b of document.querySelectorAll("#proRail button")) {
+  b.addEventListener("click", () => {
+    const grp = TAB_GROUPS.find((g) => g.id === b.dataset.group);
+    if (!grp) return;
+    state.activeGroup = grp.id;
+    // beim Gruppenwechsel immer die erste Untergruppe zeigen
+    if (!grp.subs.some((s) => s[0] === state.activeTab)) state.activeTab = grp.subs[0][0];
+    $("panelbody").scrollTop = 0;
+    applyUiMode();
+  });
+}
+applyUiMode();
+
+// ---------------------------------------------------------------------------
+// Reglerhierarchie: Abweichung vom Standard anzeigen, gruppenweise
+// zuruecksetzen, Zahlenwerte direkt eintippen.
+// Der Standard ist der im HTML notierte Ausgangswert (value-Attribut bzw.
+// selected-Option) - damit bleibt alles automatisch in Sicht, ohne dass
+// irgendwo eine zweite Liste gepflegt werden muss.
+// ---------------------------------------------------------------------------
+const CTL_DEFAULTS = new Map();
+// Regler, die nichts ueber das Bild aussagen (Ansicht, Namen, Auswahllisten)
+const CHANGE_IGNORE = new Set([
+  "ctlViewSize", "ctlSimpleFx", "ctlSimpleDir", "ctlSimpleDuration",
+  "ctlBandShow", "ctlSpinShow", "selMoonObj", "ctlDepthRes",
+]);
+
+function changeScope(el) {
+  // nur echte Bild-/Flugregler in Sektionen mit data-tab
+  const sec = el.closest("section[data-tab]");
+  if (!sec || sec.id === "simpleSection") return null;
+  if (!el.id || CHANGE_IGNORE.has(el.id)) return null;
+  if (el.type === "range" || el.type === "checkbox" || el.tagName === "SELECT") return sec;
+  return null;
+}
+
+function captureCtlDefaults() {
+  for (const el of document.querySelectorAll("#panelbody input, #panelbody select")) {
+    if (!changeScope(el)) continue;
+    if (el.type === "checkbox") CTL_DEFAULTS.set(el.id, el.defaultChecked ? "1" : "");
+    else if (el.tagName === "SELECT") {
+      const sel = el.querySelector("option[selected]");
+      CTL_DEFAULTS.set(el.id, sel ? sel.value : (el.options[0] ? el.options[0].value : ""));
+    } else CTL_DEFAULTS.set(el.id, el.defaultValue);
+  }
+}
+
+function ctlValue(el) {
+  return el.type === "checkbox" ? (el.checked ? "1" : "") : el.value;
+}
+
+function ctlIsChanged(el) {
+  if (!CTL_DEFAULTS.has(el.id)) return false;
+  const def = CTL_DEFAULTS.get(el.id);
+  const cur = ctlValue(el);
+  if (el.type === "range") return Math.abs(parseFloat(cur) - parseFloat(def)) > 1e-9;
+  return cur !== def;
+}
+
+function changedIn(root) {
+  const out = [];
+  for (const el of root.querySelectorAll("input, select")) {
+    if (changeScope(el) && ctlIsChanged(el)) out.push(el);
+  }
+  return out;
+}
+
+function resetCtls(list) {
+  for (const el of list) {
+    const def = CTL_DEFAULTS.get(el.id);
+    if (el.type === "checkbox") el.checked = def === "1";
+    else el.value = def;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  refreshChangeMarks();
+}
+
+// Marke (Punkt + Zuruecksetzen) an eine Ueberschrift oder ein Summary haengen
+function changeMark(host, list, withCount) {
+  let mark = host.querySelector(":scope > .chgmark");
+  if (!list.length) { if (mark) mark.remove(); return; }
+  if (!mark) {
+    mark = document.createElement("span");
+    mark.className = "chgmark";
+    mark.innerHTML = '<span class="chgdot"></span><button type="button" class="chgreset"></button>';
+    mark.querySelector(".chgreset").addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      resetCtls(changedIn(host.parentElement));
+    });
+    host.appendChild(mark);
+  }
+  const dot = mark.querySelector(".chgdot");
+  dot.textContent = withCount ? t("grpChanged", list.length) : "";
+  dot.classList.toggle("countonly", !!withCount);
+  mark.querySelector(".chgreset").textContent = t("grpReset");
+}
+
+function refreshChangeMarks() {
+  for (const det of document.querySelectorAll("#panelbody details.adv")) {
+    const sum = det.querySelector(":scope > summary");
+    if (sum) changeMark(sum, changedIn(det), false);
+  }
+  for (const sec of document.querySelectorAll("#panelbody section[data-tab]")) {
+    const h2 = sec.querySelector(":scope > h2");
+    if (!h2) continue;
+    // im Sektionskopf zaehlt alles der Sektion, auch die Klappgruppen
+    changeMark(h2, changedIn(sec), true);
+  }
+}
+
+// Zahlenwert direkt eintippen: Klick auf die Ausgabe macht daraus ein Feld
+function makeOutputEditable(out, range) {
+  out.classList.add("editable");
+  out.title = t("ctlValueEdit");
+  out.addEventListener("click", () => {
+    if (out.dataset.editing) return;
+    out.dataset.editing = "1";
+    const inp = document.createElement("input");
+    inp.type = "number";
+    inp.className = "outedit";
+    inp.value = range.value;
+    inp.min = range.min; inp.max = range.max; inp.step = range.step || "any";
+    const finish = (apply) => {
+      if (!out.dataset.editing) return;
+      delete out.dataset.editing;
+      if (apply) {
+        const v = parseFloat(inp.value);
+        if (!isNaN(v)) {
+          range.value = String(Math.min(parseFloat(range.max), Math.max(parseFloat(range.min), v)));
+          range.dispatchEvent(new Event("input", { bubbles: true }));
+          range.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      }
+      inp.remove();
+      out.hidden = false;
+    };
+    inp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") finish(true);
+      else if (e.key === "Escape") finish(false);
+    });
+    inp.addEventListener("blur", () => finish(true));
+    out.hidden = true;
+    out.parentElement.appendChild(inp);
+    inp.focus();
+    inp.select();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Shift = Feineinstellung: solange die Taste liegt, bekommt jeder Regler den
+// zehnten Schritt. Das gilt fuer Ziehen und Pfeiltasten gleichermassen, weil
+// der Browser sich am step-Attribut orientiert.
+// ---------------------------------------------------------------------------
+const FINE_DIV = 10;
+let fineOn = false;
+
+function setFineStep(on) {
+  if (on === fineOn) return;
+  fineOn = on;
+  for (const el of document.querySelectorAll('#panelbody input[type="range"]')) {
+    if (on) {
+      if (!el.dataset.step0) el.dataset.step0 = el.getAttribute("step") || "1";
+      el.step = String(+(parseFloat(el.dataset.step0) / FINE_DIV).toFixed(6));
+    } else if (el.dataset.step0) {
+      el.step = el.dataset.step0;
+    }
+  }
+  document.body.classList.toggle("finestep", on);
+}
+
+window.addEventListener("keydown", (e) => { if (e.key === "Shift") setFineStep(true); });
+window.addEventListener("keyup", (e) => { if (e.key === "Shift") setFineStep(false); });
+window.addEventListener("blur", () => setFineStep(false));
+
+function setupCtlHierarchy() {
+  captureCtlDefaults();
+  for (const lab of document.querySelectorAll("#panelbody label.slider")) {
+    const out = lab.querySelector("output");
+    const range = lab.querySelector('input[type="range"]');
+    if (!range) continue;
+    range.title = t("fineHint");
+    if (out && changeScope(range)) makeOutputEditable(out, range);
+  }
+  I18N.onChange.push(() => {
+    for (const r of document.querySelectorAll('#panelbody label.slider input[type="range"]')) {
+      r.title = t("fineHint");
+    }
+  });
+  $("panelbody").addEventListener("input", () => { refreshChangeMarks(); refreshStatusChips(); refreshRenderFoot(); });
+  $("panelbody").addEventListener("change", () => { refreshChangeMarks(); refreshStatusChips(); refreshRenderFoot(); });
+  I18N.onChange.push(refreshChangeMarks);
+  I18N.onChange.push(refreshStatusChips);
+  I18N.onChange.push(refreshRenderFoot);
+  refreshChangeMarks();
+}
+setupCtlHierarchy();
+
+// ---------------------------------------------------------------------------
+// Statusband ueber der Vorschau: zeigt, welche Zustaende gerade auf das Bild
+// wirken. Ein Klick springt zu der Einstellung, das x schaltet sie ab.
+// ---------------------------------------------------------------------------
+function setCheck(id, on) {
+  const el = $(id);
+  if (!el || el.checked === on) return;
+  el.checked = on;
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+const STATUS_CHIPS = [
+  {
+    tab: "szenario", main: true,
+    on: () => state.scenarioOn && state.waypoints.length > 0,
+    label: () => t("chipScen", state.waypoints.length),
+    off: () => setCheck("ctlScenOn", false),
+  },
+  {
+    tab: "bilder",
+    on: () => state.moonMode,
+    label: () => t("chipMoon"),
+    off: () => setCheck("ctlMoonMode", false),
+  },
+  {
+    tab: "tiefe",
+    on: () => state.vol,
+    label: () => t("chipVol"),
+    off: () => setCheck("ctlVol", false),
+  },
+  {
+    tab: "tiefe",
+    on: () => !!state.customDepth,
+    label: () => t(state.aiDepth ? "chipDepthAi" : "chipDepth"),
+    off: () => $("btnDepthClear").click(),
+  },
+  {
+    tab: "spiegel",
+    on: () => state.flipH || state.flipV,
+    label: () => t("chipFlip", (state.flipH ? "H" : "") + (state.flipV ? "V" : "")),
+    off: () => { setCheck("ctlFlipH", false); setCheck("ctlFlipV", false); },
+  },
+  {
+    tab: "gaia",
+    on: () => !!(state.gaiaDepth && state.gaiaInfo),
+    label: () => t("chipGaia", state.gaiaInfo ? state.gaiaInfo.matched : 0),
+  },
+  {
+    // Standard ist an - gemeldet wird deshalb nur der Ausnahmefall
+    tab: "bilder",
+    on: () => !state.realStars && state.maskStarCount > 0,
+    label: () => t("chipRealStarsOff"),
+  },
+  {
+    tab: "bilder",
+    on: () => state.starImage && !!state.stars,
+    label: () => t("chipStarImg"),
+    off: () => setCheck("ctlStarImg", false),
+  },
+  {
+    tab: "bilder",
+    on: () => state.starCull > 0 && state.maskStarCount > 0 && !state.starImage,
+    label: () => t("chipStarCull", state.starCull),
+    off: () => setCtl("ctlStarCull", 0),
+  },
+  {
+    tab: "objekte",
+    on: () => overlayActive(),
+    label: () => t("chipLabels"),
+    off: () => { setCheck("ctlShowLabels", false); setCheck("ctlShowInfo", false); },
+  },
+];
+
+function gotoTab(tab) {
+  const grp = groupOfTab(tab);
+  state.uiMode = "pro";
+  state.activeGroup = grp.id;
+  state.activeTab = tab;
+  $("panelbody").scrollTop = 0;
+  applyUiMode();
+}
+
+function refreshStatusChips() {
+  const box = $("stageChips");
+  if (!box) return;
+  const active = !state.starless ? [] : STATUS_CHIPS.filter((c) => {
+    try { return c.on(); } catch (e) { return false; }
+  });
+  box.hidden = active.length === 0;
+  box.innerHTML = "";
+  for (const c of active) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "schip" + (c.main ? " main" : "");
+    chip.textContent = c.label();
+    chip.title = t("chipGoto");
+    if (!c.off) chip.style.paddingRight = "12px";
+    chip.addEventListener("click", () => gotoTab(c.tab));
+    if (!c.off) { box.appendChild(chip); continue; }
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "schipoff";
+    x.textContent = "\u00d7";
+    x.title = t("chipOff");
+    x.addEventListener("click", (e) => {
+      e.stopPropagation();
+      c.off();
+      refreshStatusChips();
+    });
+    chip.appendChild(x);
+    box.appendChild(chip);
+  }
+}
+refreshStatusChips();
+
+// ---------------------------------------------------------------------------
+// Feste Fussleiste: zeigt, was beim Rendern herauskommt, und startet es.
+// Der eigentliche Export bleibt in der Export-Sektion, hier liegt nur der
+// Weg dorthin.
+// ---------------------------------------------------------------------------
+function refreshRenderFoot() {
+  const meta = $("footMeta");
+  const btn = $("btnRenderFoot");
+  if (!meta || !btn) return;
+  const aspBtn = document.querySelector("#aspectBtns button.active");
+  const [w, h] = exportDims();
+  const dur = state.duration || 0;
+  const mime = pickMime();
+  const fmt = mime.startsWith("video/mp4") ? "MP4" : (mime ? "WebM" : "-");
+  meta.textContent = (aspBtn ? aspBtn.dataset.aspect : "16:9") + " \u00b7 " +
+    w + "\u00d7" + h + " \u00b7 " + dur.toFixed(0) + " s \u00b7 " + fmt;
+  btn.disabled = $("btnExport").disabled;
+}
+
+refreshRenderFoot();
+
+// ---------------------------------------------------------------------------
+// Rueckgaengig / Wiederholen fuer alle Einstellungen: Regler, Haken, Format,
+// Zoomziel, Rotationszentrum und den kompletten Flugplan. Aufgezeichnet wird
+// gebuendelt (kurze Pause nach der letzten Aenderung), damit ein Reglerzug
+// ein Schritt bleibt und nicht hundert.
+// ---------------------------------------------------------------------------
+const UNDO_MAX = 60;
+const undoStack = [];   // letzter Eintrag ist immer der aktuelle Zustand
+const redoStack = [];
+let undoBusy = false;
+let undoTimer = null;
+
+function histSnapshot() {
+  const aspBtn = document.querySelector("#aspectBtns button.active");
+  return JSON.stringify({
+    c: captureControls(),
+    w: state.waypoints,
+    asp: aspBtn ? aspBtn.dataset.aspect : "16:9",
+    tgt: state.target,
+    spin: state.spinCenter,
+    gal: state.galaxies, galSel: state.galSel,
+    scen: state.scenarioOn,
+  });
+}
+
+function histApply(str) {
+  const snap = JSON.parse(str);
+  undoBusy = true;
+  try {
+    const aspBtn = document.querySelector(`#aspectBtns button[data-aspect="${snap.asp}"]`);
+    if (aspBtn && !aspBtn.classList.contains("active")) aspBtn.click();
+    state.target = snap.tgt || { x: 0, y: 0 };
+    state.spinCenter = snap.spin || { x: 0, y: 0 };
+    state.galaxies = (snap.gal || []).map((g) => ({ ...g }));
+    state.galSel = snap.galSel || 0;
+    state.waypoints = (snap.w || []).map((w) => ({ ...w }));
+    applyControls(snap.c || {});
+    state.scenarioOn = !!snap.scen;
+    $("ctlScenOn").checked = state.scenarioOn;
+    wpSel = -1;
+    stopWpEdit();
+    rebuildWaypointList();
+    updateScenarioUi();
+    updateTargetInfo();
+    refreshChangeMarks();
+    refreshStatusChips();
+    refreshRenderFoot();
+  } finally {
+    undoBusy = false;
+  }
+}
+
+function updateHistUi() {
+  $("btnUndo").disabled = undoStack.length < 2;
+  $("btnRedo").disabled = redoStack.length === 0;
+}
+
+function histPush() {
+  if (undoBusy) return;
+  const snap = histSnapshot();
+  if (undoStack.length && undoStack[undoStack.length - 1] === snap) return;
+  undoStack.push(snap);
+  if (undoStack.length > UNDO_MAX) undoStack.shift();
+  redoStack.length = 0;
+  updateHistUi();
+}
+
+function histSchedule() {
+  if (undoBusy) return;
+  clearTimeout(undoTimer);
+  undoTimer = setTimeout(histPush, 350);
+}
+
+/**
+ * Offene Aenderungen sofort festhalten. Laeuft vor jedem Klick, damit eine
+ * Aktion (Wegpunkt anlegen, loeschen, uebernehmen) ein eigener Schritt wird
+ * und nicht mit der Reglerbewegung davor verschmilzt.
+ */
+function histFlush() {
+  if (!undoTimer || undoBusy) return;
+  clearTimeout(undoTimer);
+  undoTimer = null;
+  histPush();
+}
+document.addEventListener("pointerdown", histFlush, true);
+
+/** Verlauf neu beginnen (neues Bild, geladenes Projekt). */
+function histReset() {
+  clearTimeout(undoTimer);
+  undoStack.length = 0;
+  redoStack.length = 0;
+  undoStack.push(histSnapshot());
+  updateHistUi();
+}
+
+function histUndo() {
+  clearTimeout(undoTimer);
+  if (undoStack.length < 2) return;
+  redoStack.push(undoStack.pop());
+  histApply(undoStack[undoStack.length - 1]);
+  updateHistUi();
+}
+
+function histRedo() {
+  clearTimeout(undoTimer);
+  if (!redoStack.length) return;
+  const snap = redoStack.pop();
+  undoStack.push(snap);
+  histApply(snap);
+  updateHistUi();
+}
+
+$("btnUndo").addEventListener("click", histUndo);
+$("btnRedo").addEventListener("click", histRedo);
+
+// Tastenkuerzel - in Textfeldern bleibt das Rueckgaengig des Browsers aktiv
+document.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  const el = e.target;
+  if (el && (el.tagName === "TEXTAREA" ||
+    (el.tagName === "INPUT" && ["text", "number", "search"].includes(el.type)))) return;
+  const k = e.key.toLowerCase();
+  if (k === "z" && !e.shiftKey) { e.preventDefault(); histUndo(); }
+  else if ((k === "z" && e.shiftKey) || k === "y") { e.preventDefault(); histRedo(); }
+});
+
+$("panelbody").addEventListener("input", histSchedule);
+$("panelbody").addEventListener("change", histSchedule);
+$("aspectBtns").addEventListener("click", histSchedule);
+histReset();
+
+$("btnRenderFoot").addEventListener("click", () => {
+  if ($("btnExport").disabled) return;
+  // in die Export-Sektion springen, damit Fortschritt und Meldungen sichtbar
+  // sind, und dort den echten Export ausloesen
+  gotoTab("export");
+  $("btnExport").click();
+});
+
+let smoothTimer = null;
+$("ctlSmooth").addEventListener("input", () => {
+  state.smooth = parseInt($("ctlSmooth").value, 10);
+  $("outSmooth").textContent = state.smooth;
+  clearTimeout(smoothTimer);
+  smoothTimer = setTimeout(buildDepthMap, 200);
+});
+$("ctlInvert").addEventListener("change", () => {
+  state.invertDepth = $("ctlInvert").checked;
+  buildDepthMap();
+});
+// Tiefenkarte exportieren / eigene Tiefenkarte importieren
+function updateDepthCustomUi(msg) {
+  refreshStatusChips();
+  const status = $("depthCustomStatus");
+  const active = !!state.customDepth;
+  status.hidden = !msg && !active;
+  status.textContent = msg || (active
+    ? t("depthCustomActive", state.customDepth.width + "\u00d7" + state.customDepth.height) : "");
+  $("btnDepthClear").hidden = !active;
+}
+
+$("btnDepthExport").addEventListener("click", () => {
+  if (!state.starless) return;
+  // In nativer Bildaufloesung rechnen, damit in Photoshop & Co.
+  // pixelgenau auf dem Original gearbeitet werden kann
+  const native = Math.max(state.starless.width, state.starless.height);
+  const m = state.customDepth
+    ? computeCustomDepthMap(state.smooth, state.invertDepth, native)
+    : computeLuminanceMap(state.smooth, state.invertDepth, native);
+  m.canvas.toBlob((blob) => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    const base = (state.starless.name || "astrofly").replace(/\.[^.]+$/, "");
+    a.download = base + "-depthmap.png";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }, "image/png");
+});
+
+$("btnDepthImport").addEventListener("click", () => {
+  if (!state.starless) {
+    updateDepthCustomUi(t("depthNoStarless"));
+    return;
+  }
+  $("fileDepth").click();
+});
+
+$("fileDepth").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file || !state.starless) return;
+  try {
+    const img = await decodeFile(file);
+    const aImg = img.width / img.height;
+    const aStar = state.starless.width / state.starless.height;
+    if (Math.abs(aImg - aStar) / aStar > 0.01) {
+      updateDepthCustomUi(t("depthAspectErr"));
+      return;
+    }
+    state.customDepth = img;
+    state.srcFiles.depth = file;
+    updateDepthCustomUi();
+    buildDepthMap();
+  } catch (err) {
+    console.error(err);
+    updateDepthCustomUi(t("loadFailed", file.name, err.message));
+  }
+});
+
+$("btnDepthClear").addEventListener("click", () => {
+  state.customDepth = null;
+  state.srcFiles.depth = null;
+  state.aiDepth = null;
+  $("ctlDepthAiMix").disabled = true;
+  aiDepthStatus("");
+  updateDepthCustomUi();
+  buildDepthMap();
+});
+
+// ------------------------------------------- KI-Tiefenkarte (Depth Anything v2)
+// Laeuft komplett im Browser (Transformers.js; WebGPU, sonst WASM). Das
+// Modell wird erst beim ersten Klick geladen (~25-50 MB, der Browser cacht
+// es). Das Ergebnis geht den Weg der importierten Tiefenkarte: Glaettung
+// und Invertieren wirken weiterhin, Spiegeln zieht mit, Projekte speichern
+// die Karte als PNG. Der Mischregler blendet gegen die automatische Karte
+const AI_DEPTH_MODEL = "onnx-community/depth-anything-v2-small";
+// Debug/Selbst-Hosting: localStorage "astrofly-ai-mirror" = Basis-URL mit
+// transformers.min.js, ort/ (ONNX-Runtime-WASM) und models/<modell>/
+const AI_DEPTH_MIRROR = (() => { try { return localStorage.getItem("astrofly-ai-mirror") || ""; } catch { return ""; } })();
+const AI_DEPTH_LIB = AI_DEPTH_MIRROR ? AI_DEPTH_MIRROR + "transformers.min.js"
+  : "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.1";
+let aiDepthPipe = null, aiDepthRawImage = null, aiDepthDevice = "", aiDepthGen = 0;
+let aiDepthForceWasm = false; // nach einem WebGPU-Fehlschlag dauerhaft WASM
+
+function aiDepthStatus(msg, busy) {
+  const el = $("depthAiStatus");
+  el.hidden = !msg;
+  el.textContent = msg || "";
+  $("btnDepthAi").disabled = !!busy;
+}
+
+async function loadAiDepthPipeline(onProgress) {
+  if (aiDepthPipe) return aiDepthPipe;
+  const tf = await import(AI_DEPTH_LIB);
+  aiDepthRawImage = tf.RawImage;
+  if (AI_DEPTH_MIRROR) {
+    tf.env.remoteHost = AI_DEPTH_MIRROR + "models/";
+    tf.env.remotePathTemplate = "{model}/";
+    tf.env.backends.onnx.wasm.wasmPaths = AI_DEPTH_MIRROR + "ort/";
+  }
+  const webgpu = !!navigator.gpu && !aiDepthForceWasm;
+  aiDepthDevice = webgpu ? "WebGPU" : "WASM";
+  try {
+    aiDepthPipe = await tf.pipeline("depth-estimation", AI_DEPTH_MODEL,
+      { device: webgpu ? "webgpu" : "wasm", dtype: webgpu ? "fp16" : "q8", progress_callback: onProgress });
+  } catch (err) {
+    if (!webgpu) throw err;
+    console.warn("WebGPU-Pipeline fehlgeschlagen, Rueckfall auf WASM", err);
+    aiDepthDevice = "WASM";
+    aiDepthPipe = await tf.pipeline("depth-estimation", AI_DEPTH_MODEL,
+      { device: "wasm", dtype: "q8", progress_callback: onProgress });
+  }
+  return aiDepthPipe;
+}
+
+async function runAiDepth() {
+  if (!state.starless) { updateDepthCustomUi(t("depthNoStarless")); return; }
+  const gen = ++aiDepthGen;
+  try {
+    let lastPc = -1;
+    aiDepthStatus(t("depthAiLoading", 0), true);
+    const pipe = await loadAiDepthPipeline((p) => {
+      if (p.status !== "progress" || !/\.onnx/.test(p.file || "")) return;
+      const pc = Math.round(p.progress || 0);
+      if (pc !== lastPc) { lastPc = pc; aiDepthStatus(t("depthAiLoading", pc), true); }
+    });
+    if (gen !== aiDepthGen) return;
+    aiDepthStatus(t("depthAiRunning", aiDepthDevice), true);
+    // Das Modell rechnet intern mit 518 px; mehr als ~1000 px Eingabe bringt
+    // nichts und kostet nur Speicher
+    const src = downscale(state.starless, 1036);
+    const blob = await new Promise((res) => src.toBlob(res, "image/png"));
+    const img = await aiDepthRawImage.fromBlob(blob);
+    const t0 = performance.now();
+    let d;
+    try {
+      const out = await pipe(img);
+      d = out.depth; // RawImage, Grauwerte: 255 = nah (wie AstroFly)
+      if (!d || !d.data.length || isNaN(d.data[0])) throw new Error("NaN");
+    } catch (err) {
+      // fp16 auf WebGPU kann je nach Treiber scheitern (Fehler oder NaN):
+      // einmal mit WASM (q8) wiederholen
+      if (aiDepthDevice !== "WebGPU") throw err;
+      console.warn("WebGPU-Inferenz fehlgeschlagen, Rueckfall auf WASM", err);
+      aiDepthForceWasm = true;
+      aiDepthPipe = null;
+      const pipe2 = await loadAiDepthPipeline(() => {});
+      if (gen !== aiDepthGen) return;
+      aiDepthStatus(t("depthAiRunning", aiDepthDevice), true);
+      d = (await pipe2(img)).depth;
+    }
+    if (gen !== aiDepthGen) return;
+    const w = d.width, h = d.height, ch = d.channels || 1;
+    const raw = new Float32Array(w * h);
+    for (let i = 0; i < raw.length; i++) raw[i] = d.data[i * ch] / 255;
+    // Robuste Streckung auf 0..1 (1./99. Perzentil), damit ein einzelner
+    // Ausreisser nicht die ganze Karte flach macht
+    const hist = new Uint32Array(256);
+    for (let i = 0; i < raw.length; i++) hist[Math.round(raw[i] * 255)]++;
+    let lo = 0, hi = 255, acc = 0;
+    for (let k = 0; k < 256; k++) { acc += hist[k]; if (acc >= raw.length * 0.01) { lo = k; break; } }
+    acc = 0;
+    for (let k = 255; k >= 0; k--) { acc += hist[k]; if (acc >= raw.length * 0.01) { hi = k; break; } }
+    const span = Math.max(1, hi - lo) / 255;
+    for (let i = 0; i < raw.length; i++) raw[i] = Math.min(1, Math.max(0, (raw[i] - lo / 255) / span));
+    if (isNaN(raw[0])) throw new Error("NaN");
+    state.aiDepth = { data: raw, w, h };
+    $("ctlDepthAiMix").disabled = false;
+    applyAiDepth();
+    aiDepthStatus(t("depthAiDone", ((performance.now() - t0) / 1000).toFixed(1), aiDepthDevice) +
+      (state.aiDepthFlipped ? " " + t("depthAiFlipped") : ""));
+  } catch (err) {
+    console.error(err);
+    if (gen === aiDepthGen) aiDepthStatus(t("depthAiFailed", err.message || String(err)));
+  }
+}
+
+// KI-Karte (gemischt mit der automatischen Helligkeitskarte) als eigene
+// Tiefenkarte setzen; Projekte bekommen sie als PNG-Datei
+function applyAiDepth() {
+  const ai = state.aiDepth;
+  if (!ai || !state.starless) return;
+  const mixAmt = state.depthAiMix / 100;
+  const w = ai.w, h = ai.h, n = w * h;
+  // Tunnel-Trend entfernen: Modelle fuer Alltagsszenen legen in jedes Bild
+  // einen grossraeumigen Verlauf (Boden vorn, Bildmitte weit weg). Bei
+  // Nebeln ist der falsch und erzeugt den "Tunnel" - wir ziehen den
+  // grossraeumigen Anteil (Glaettung ~12 % der Kante) zu 75 % ab und
+  // behalten die mittleren Strukturen des Modells; danach auf 1..99 %
+  // Perzentil normiert
+  const aiD = new Float32Array(n);
+  {
+    const trend = Float32Array.from(ai.data), tmp = new Float32Array(n);
+    const r = Math.max(2, Math.round(Math.max(w, h) * 0.12));
+    for (let pass = 0; pass < 3; pass++) { boxBlurH(trend, tmp, w, h, r); boxBlurV(tmp, trend, w, h, r); }
+    let mean = 0;
+    for (let i = 0; i < n; i++) mean += trend[i];
+    mean /= n;
+    for (let i = 0; i < n; i++) aiD[i] = ai.data[i] - 0.75 * (trend[i] - mean);
+    const srt = Float32Array.from(aiD).sort();
+    const lo = srt[Math.floor(n * 0.01)], hi = srt[Math.floor(n * 0.99)], span = Math.max(1e-4, hi - lo);
+    for (let i = 0; i < n; i++) aiD[i] = Math.min(1, Math.max(0, (aiD[i] - lo) / span));
+  }
+  const lum = computeLuminanceMap(2, false, Math.max(w, h));
+  const same = lum.w === w && lum.h === h;
+  const lumAt = (i) => {
+    if (same) return lum.f[i];
+    const x = Math.min(lum.w - 1, Math.round((i % w) * lum.w / w));
+    const y = Math.min(lum.h - 1, Math.round(Math.floor(i / w) * lum.h / h));
+    return lum.f[y * lum.w + x];
+  };
+  // Richtung pruefen: Fuer Nebel haelt das Modell den hellen Kern meist fuer
+  // ein fernes Licht am Ende eines Tunnels (Karte gegenlaeufig zur
+  // Helligkeit). Ist die Korrelation negativ, drehen wir die KI-Karte um -
+  // AstroFly-Konvention bleibt: hell = nah
+  {
+    let sa = 0, sl = 0, saa = 0, sll = 0, sal = 0;
+    for (let i = 0; i < n; i++) { const a = aiD[i], l = lumAt(i); sa += a; sl += l; saa += a * a; sll += l * l; sal += a * l; }
+    const cov = sal / n - (sa / n) * (sl / n);
+    const va = saa / n - (sa / n) ** 2, vl = sll / n - (sl / n) ** 2;
+    const corr = cov / Math.sqrt(Math.max(1e-9, va * vl));
+    state.aiDepthFlipped = corr < 0;
+    if (state.aiDepthFlipped) for (let i = 0; i < n; i++) aiD[i] = 1 - aiD[i];
+  }
+  const dst = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0, j = 0; i < w * h; i++, j += 4) {
+    let v = aiD[i];
+    if (mixAmt < 1) {
+      const l = lumAt(i);
+      v = l + (v - l) * mixAmt;
+    }
+    const g = Math.round(v * 255);
+    dst[j] = dst[j + 1] = dst[j + 2] = g;
+    dst[j + 3] = 255;
+  }
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  c.getContext("2d").putImageData(new ImageData(dst, w, h), 0, 0);
+  state.customDepth = { canvas: c, width: w, height: h, name: "ai-depth.png" };
+  const myGen = aiDepthGen;
+  c.toBlob((blob) => {
+    if (blob && myGen === aiDepthGen && state.aiDepth === ai) {
+      state.srcFiles.depth = new File([blob], "ai-depth.png", { type: "image/png" });
+    }
+  }, "image/png");
+  updateDepthCustomUi();
+  buildDepthMap();
+}
+
+$("btnDepthAi").addEventListener("click", runAiDepth);
+
+// Volumetrischer Nebel
+bindSlider("ctlVolSpread", "outVolSpread", "volSpread", asInt);
+bindSlider("ctlVolDust", "outVolDust", "volDust", asInt);
+$("ctlVol").addEventListener("change", () => {
+  state.vol = $("ctlVol").checked;
+  if (state.vol) buildVolLayers();
+  refreshStatusChips();
+});
+{
+  let timer = 0;
+  $("ctlDepthAiMix").addEventListener("input", () => {
+    state.depthAiMix = parseInt($("ctlDepthAiMix").value, 10);
+    $("outDepthAiMix").textContent = state.depthAiMix + " %";
+    clearTimeout(timer);
+    timer = setTimeout(applyAiDepth, 120);
+  });
+}
+
+$("ctlDepthRes").addEventListener("change", () => {
+  state.depthRes = parseInt($("ctlDepthRes").value, 10);
+  buildDepthMap();
+  buildSpinMask();
+});
+
+$("btnShuffle").addEventListener("click", () => {
+  state.seed = Math.random() * 1000;
+  if (state.genStars > 0) uploadStars(); // generierte Sterne neu würfeln
+});
+
+// Format
+$("aspectBtns").addEventListener("click", (e) => {
+  const btn = e.target.closest("button");
+  if (!btn) return;
+  for (const b of $("aspectBtns").children) b.classList.remove("active");
+  btn.classList.add("active");
+  const [aw, ah] = btn.dataset.aspect.split(":").map(Number);
+  state.aspect = aw / ah;
+  if (typeof refreshRenderFoot === "function") refreshRenderFoot();
+  if (typeof rebuildWaypointList === "function" && state.waypoints.length) rebuildWaypointList();
+  state.aspectName = btn.dataset.aspect;
+  fitCanvas();
+});
+
+// Zoomziel-Anzeige (sprachabhängig, wird bei Sprachwechsel aktualisiert)
+function updateTargetInfo() {
+  if (typeof histSchedule === "function") histSchedule();
+  const el = $("targetInfo");
+  if (!state.starless || (state.target.x === 0 && state.target.y === 0)) {
+    el.setAttribute("data-i18n", "targetCenter");
+    el.textContent = t("targetCenter");
+  } else {
+    el.removeAttribute("data-i18n");
+    const imgAspect = state.starless.width / state.starless.height;
+    el.textContent = t("targetAt",
+      (state.target.x / imgAspect * 100 + 50).toFixed(0),
+      (50 - state.target.y * 100).toFixed(0));
+  }
+}
+I18N.onChange.push(updateTargetInfo);
+
+// ------------------------------------------ Echte Tiefen (Gaia): Bedienung
+
+bindSlider("ctlGaiaPm", "outGaiaPm", "gaiaPmYears", (v) => v.toLocaleString());
+bindSlider("ctlOcclude", "outOcclude", "occlude", (v) => v + " %");
+
+// Laufende Katalog-Abfragen prominent über der Vorschau anzeigen -
+// die kleine Statuszeile im Panel übersieht man leicht
+function stageToast(text) {
+  const el = $("stageToast");
+  if (!el) return;
+  if (!text) { el.hidden = true; return; }
+  $("stageToastText").textContent = text;
+  el.hidden = false;
+}
+
+// Statuszeile: transienter Text (Laden/Fehler) oder Zustand aus state
+let gaiaTransient = null; // { key, args } | null
+function updateGaiaStatus() {
+  refreshStatusChips();
+  const el = $("gaiaStatus");
+  if (!el) return;
+  $("btnGaia").disabled = !(state.wcs && state.maskStarCount > 0);
+
+  // Wissenschafts-Modus erst ab 75 % Erkennungsrate freischalten
+  const g = state.gaiaDepth && state.gaiaInfo ? state.gaiaInfo : null;
+  const pct = g ? Math.round((g.matched / Math.max(1, g.total)) * 100) : 0;
+  const sciAllowed = pct >= 75;
+  $("ctlGaiaOnly").disabled = !sciAllowed;
+  // Solange NUR echte Gaia-Tiefen zählen, sind die Zufalls-Tiefen-Regler
+  // ohne Funktion - sichtbar ausgrauen
+  const gaiaLock = state.gaiaOnly && sciAllowed;
+  for (const id of ["ctlStarDist", "ctlSpread", "ctlLayers"]) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = gaiaLock;
+  }
+  $("ctlGaiaColors").disabled = !state.gaiaDepth;
+  $("btnObjects").disabled = !(state.wcs && state.starless);
+  if (!sciAllowed && state.gaiaOnly) {
+    state.gaiaOnly = false;
+    $("ctlGaiaOnly").checked = false;
+  }
+
+  stageToast(gaiaTransient && gaiaTransient.key === "gaiaQuerying" ? t("gaiaQuerying", ...gaiaTransient.args) : null);
+  if (gaiaTransient) { el.textContent = t(gaiaTransient.key, ...gaiaTransient.args); return; }
+  if (g) {
+    el.textContent = t("gaiaResult", g.matched, g.total, pct, g.dMin, g.dMax) +
+      (sciAllowed ? "" : " " + t("gaiaSciLocked"));
+  } else if (state.wcs) {
+    el.textContent = t("gaiaWcsOk", state.wcs._name || "WCS");
+  } else {
+    el.textContent = t("gaiaIdle");
+  }
+}
+I18N.onChange.push(updateGaiaStatus);
+
+$("btnGaiaHelp").addEventListener("click", () => {
+  $("gaiaHelp").hidden = !$("gaiaHelp").hidden;
+});
+
+$("ctlGaiaOnly").addEventListener("change", () => {
+  state.gaiaOnly = $("ctlGaiaOnly").checked;
+  updateGaiaStatus();
+});
+
+$("ctlSpinStars").addEventListener("change", () => {
+  state.spinStars = $("ctlSpinStars").checked;
+});
+
+$("ctlGaiaColors").addEventListener("change", () => {
+  state.gaiaColors = $("ctlGaiaColors").checked;
+  uploadStars(); // Farben stecken im Vertex-Puffer
+});
+
+$("ctlObjFar").addEventListener("change", () => {
+  state.objFar = $("ctlObjFar").checked;
+});
+
+$("ctlStrictEdges").addEventListener("change", () => {
+  state.strictEdges = $("ctlStrictEdges").checked;
+});
+
+// --------------------------- Objekt-Erkennung (SIMBAD) & Overlay-Bedienung
+
+/**
+ * Infokarte nach der aktuellen Auswahl setzen. "auto" bevorzugt die erkannte
+ * Region (Gesamtkomplex), sonst das größte Objekt; ansonsten gilt die vom
+ * Nutzer getroffene Wahl (Region oder ein bestimmtes Objekt).
+ */
+function applyCardChoice() {
+  const items = state.objChoices || [];
+  const c = state.cardChoice || "auto";
+  // Eigenes Objekt als Kartenobjekt: die Karte zeigt seine Freitext-Felder
+  if (c.startsWith("user:")) {
+    const L = (state.labels || []).filter((l) => l.user)[parseInt(c.slice(5), 10)];
+    if (L) { state.objInfo = { id: L.id, user: true, facts: null, otype: "" }; return; }
+    state.cardChoice = "auto";
+  }
+  if (!items.length) { state.objInfo = null; return; }
+  const reg = state.objRegion;
+  if (reg && (c === "auto" || c === "region")) {
+    state.objInfo = { id: reg.id, facts: { de: reg.de, en: reg.en }, otype: reg.otype };
+    return;
+  }
+  const pick = items.find((it) => it.id === c) || items[0];
+  state.objInfo = { id: pick.id,
+    facts: OBJECT_FACTS[normObjId(pick.id)] || starFacts(pick) || null, otype: pick.otype };
+}
+
+// Freitext-Felder eines Labels (vom Nutzer bearbeitet): leere Felder
+// erscheinen nicht, ausgefuellte gehen in Beschriftung und Infokarte
+const LABEL_FIELDS = ["name", "type", "size", "dist", "age", "note"];
+function labelCustom(L) {
+  const c = L && L.custom ? L.custom : {};
+  const out = {};
+  for (const k of LABEL_FIELDS) if (typeof c[k] === "string" && c[k].trim()) out[k] = c[k].trim();
+  return out;
+}
+function cardHasCustom() {
+  return Object.keys(labelCustom({ custom: state.cardCustom })).length > 0;
+}
+function syncCardInputs() {
+  for (const k of LABEL_FIELDS) {
+    const el = $("ctlCard_" + k);
+    if (el) el.value = (state.cardCustom && state.cardCustom[k]) || "";
+  }
+}
+for (const k of LABEL_FIELDS) {
+  $("ctlCard_" + k).addEventListener("input", () => {
+    if (!state.cardCustom) state.cardCustom = {};
+    state.cardCustom[k] = $("ctlCard_" + k).value;
+  });
+}
+function customFieldLabels(lang) {
+  return lang === "de"
+    ? { size: "Größe", dist: "Entfernung", age: "Alter", note: "Hinweis" }
+    : { size: "Size", dist: "Distance", age: "Age", note: "Note" };
+}
+
+/** Eigenes Objekt-Label an einem Bildebenen-Punkt anlegen und Editor oeffnen */
+function addUserLabel(x, y) {
+  if (!state.labels) state.labels = [];
+  let n = state.labels.filter((l) => l.user).length + 1;
+  while (state.labels.some((l) => l.id === `${t("objOwnDefault")} ${n}`)) n++;
+  const L = { id: `${t("objOwnDefault")} ${n}`, user: true, otype: "", x, y,
+    sizePlane: 0.05, on: true, custom: { name: "" } };
+  state.labels.push(L);
+  state.showLabels = true;
+  $("ctlShowLabels").checked = true;
+  state._objEditOpen = L;
+  rebuildObjList();
+  const first = $("objList").querySelector(".objedit input");
+  if (first) first.focus();
+}
+
+function rebuildObjList() {
+  const box = $("objList");
+  box.innerHTML = "";
+  const lang = I18N.lang === "de" ? "de" : "en";
+  // Auswahl, welches Objekt die Infokarte beschreibt (Auto/Region/Einzelobjekt)
+  const row = $("cardObjRow");
+  const sel = $("ctlCardObj");
+  const items = state.objChoices || [];
+  const userLabels = (state.labels || []).filter((l) => l.user);
+  row.hidden = !items.length && !userLabels.length;
+  sel.innerHTML = "";
+  if (items.length || userLabels.length) {
+    const add = (value, text) => {
+      const o = document.createElement("option");
+      o.value = value; o.textContent = text;
+      sel.appendChild(o);
+    };
+    add("auto", items.length ? t("cardAuto") : t("cardNone"));
+    if (state.objRegion) add("region", `${t("cardRegion")}: ${state.objRegion[lang].name}`);
+    for (const it of items) {
+      const facts = OBJECT_FACTS[normObjId(it.id)];
+      add(it.id, facts ? `${it.id} – ${facts[lang].name}` : it.id);
+    }
+    // Eigene Objekte: die Karte zeigt dann deren Freitext-Felder
+    userLabels.forEach((L, i) => { const c = labelCustom(L); add("user:" + i, `${t("cardOwn")}: ${c.name || L.id}`); });
+    sel.value = state.cardChoice || "auto";
+    if (sel.selectedIndex < 0) { sel.value = "auto"; state.cardChoice = "auto"; }
+    applyCardChoice();
+  }
+  if (!state.labels) return;
+  for (const L of state.labels) {
+    const lab = document.createElement("label");
+    lab.className = "check";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = L.on;
+    cb.addEventListener("change", () => { L.on = cb.checked; });
+    const span = document.createElement("span");
+    const facts = OBJECT_FACTS[normObjId(L.id)];
+    const cf = labelCustom(L);
+    const setTitle = () => {
+      const c = labelCustom(L);
+      span.textContent = c.name ? (L.user ? c.name : `${c.name} (${L.id})`)
+        : (facts ? `${L.id} – ${facts[lang].name}` : L.id);
+      if (Object.keys(c).length) span.classList.add("edited"); else span.classList.remove("edited");
+    };
+    setTitle();
+    // Ringgröße pro Label anpassbar (SIMBAD-Größen fehlen oft oder passen
+    // nicht zum Ausschnitt)
+    const rg = document.createElement("input");
+    rg.type = "range";
+    rg.min = 30; rg.max = 300; rg.value = Math.round((L.sizeMul || 1) * 100);
+    rg.className = "objsize";
+    rg.title = t("objRingSize");
+    rg.addEventListener("input", () => { L.sizeMul = rg.value / 100; });
+    // Bearbeiten: Freitext-Felder (Name, Typ, Groesse, Entfernung, Alter,
+    // Hinweis) - fuer falsch oder nicht erkannte Objekte
+    const ed = document.createElement("button");
+    ed.type = "button";
+    ed.className = "objeditbtn";
+    ed.title = t("objEdit");
+    ed.textContent = "✎";
+    lab.appendChild(cb);
+    lab.appendChild(span);
+    lab.appendChild(rg);
+    lab.appendChild(ed);
+    box.appendChild(lab);
+    const editor = document.createElement("div");
+    editor.className = "objedit";
+    editor.hidden = state._objEditOpen !== L;
+    for (const k of LABEL_FIELDS) {
+      const inp = document.createElement("input");
+      inp.type = "text";
+      inp.placeholder = t("objF_" + k);
+      inp.value = cf[k] || "";
+      inp.addEventListener("input", () => {
+        if (!L.custom) L.custom = {};
+        L.custom[k] = inp.value;
+        setTitle();
+        if (k === "name" && L.user) {
+          const idx = state.labels.filter((l) => l.user).indexOf(L);
+          const opt = [...sel.options].find((o) => o.value === "user:" + idx);
+          if (opt) opt.textContent = `${t("cardOwn")}: ${labelCustom(L).name || L.id}`;
+        }
+      });
+      editor.appendChild(inp);
+    }
+    const hint = document.createElement("p");
+    hint.className = "tip";
+    hint.textContent = t("objFHint");
+    editor.appendChild(hint);
+    if (L.user) {
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "secondary";
+      del.textContent = t("objDelete");
+      del.addEventListener("click", () => {
+        state.labels = state.labels.filter((x) => x !== L);
+        state._objEditOpen = null;
+        if ((state.cardChoice || "").startsWith("user:")) state.cardChoice = "auto";
+        rebuildObjList();
+        applyCardChoice();
+      });
+      editor.appendChild(del);
+    }
+    box.appendChild(editor);
+    ed.addEventListener("click", (e) => {
+      e.preventDefault();
+      editor.hidden = !editor.hidden;
+      state._objEditOpen = editor.hidden ? null : L;
+    });
+  }
+}
+
+$("btnObjAdd").addEventListener("click", () => {
+  if (!state.starless) return;
+  state.labelPick = !state.labelPick;
+  $("btnObjAdd").classList.toggle("active", state.labelPick);
+  $("objStatus").textContent = state.labelPick ? t("objAddHint") : "";
+});
+I18N.onChange.push(rebuildObjList);
+
+$("ctlShowInfo").addEventListener("change", () => { state.showInfo = $("ctlShowInfo").checked; });
+$("ctlShowLabels").addEventListener("change", () => { state.showLabels = $("ctlShowLabels").checked; });
+$("ctlStarDetails").addEventListener("change", () => { state.starDetails = $("ctlStarDetails").checked; });
+$("ctlCardObj").addEventListener("change", () => {
+  state.cardChoice = $("ctlCardObj").value;
+  applyCardChoice();
+});
+
+// Beschriftungs-Stil (wird gespeichert)
+{
+  const saved = localStorage.getItem("astrofly-labelstyle");
+  if (["editorial", "glass", "hud", "micro", "focus", "classic"].includes(saved)) {
+    state.labelStyle = saved;
+  }
+  $("ctlLabelStyle").value = state.labelStyle;
+  $("ctlLabelStyle").addEventListener("change", () => {
+    state.labelStyle = $("ctlLabelStyle").value;
+    localStorage.setItem("astrofly-labelstyle", state.labelStyle);
+  });
+}
+
+$("btnObjects").addEventListener("click", async () => {
+  if (!state.wcs || !state.starless) return;
+  const wcs = state.wcs;
+  const img = state.starless;
+  const nax1 = wcs.naxis1 || img.width, nax2 = wcs.naxis2 || img.height;
+  const c = wcsPix2Sky(wcs, nax1 / 2, nax2 / 2);
+  const corner = wcsPix2Sky(wcs, 1, 1);
+  const radius = Math.min(6, angSep(c.ra, c.dec, corner.ra, corner.dec) * 1.05 + 0.02);
+  $("objStatus").textContent = t("objDetecting");
+  stageToast(t("objDetecting"));
+  $("btnObjects").disabled = true;
+  try {
+    const objs = await querySimbad(c.ra, c.dec, radius);
+    // Markante Sterne (Wolf-Rayet, helle Sterne mit Eigennamen) sind ein
+    // Bonus - scheitert nur diese Abfrage, fehlt lediglich die Stern-Ebene
+    let starObjs = [];
+    try { starObjs = await querySimbadStars(c.ra, c.dec, radius); } catch { /* optional */ }
+    // Objekte, die SIMBAD als Stern fuehrt, aber unter einem Nebelnamen
+    // bekannt sind (NGC 6888 = WR 136), bekommen den Nebelnamen - der
+    // Stern-Eintrag desselben Objekts entfaellt, sonst stehen beide Namen
+    // uebereinander an derselben Stelle
+    const nebMains = new Set(objs.map((o) => o.main).filter(Boolean));
+    if (nebMains.size) starObjs = starObjs.filter((o) => !nebMains.has(o.main));
+    const imgAspect = img.width / img.height;
+    const degPerPx = Math.sqrt(Math.abs(wcs.cd[0] * wcs.cd[3] - wcs.cd[1] * wcs.cd[2]));
+    const items = [];
+    for (const o of objs.concat(starObjs)) {
+      if (o.star) {
+        // Markante Sterne: kein Katalogfilter, feste kleine Ringgröße (~3');
+        // durch die Größensortierung nie das Hauptobjekt der Infokarte
+        const ps = planeOfSky(o.ra, o.dec);
+        if (!ps) continue;
+        if (Math.abs(ps.x) > imgAspect / 2 || Math.abs(ps.y) > 0.5) continue;
+        items.push({ id: o.id, otype: o.otype, x: ps.x, y: ps.y,
+          ra: o.ra, dec: o.dec,
+          sizePlane: (3 / 60) / degPerPx / nax2, star: true });
+        continue;
+      }
+      // Kuratierte Klassiker immer durchlassen: SIMBAD führt manche Teile
+      // bekannter Objekte ohne oder mit kryptischem Typ (z. B. Cirrusnebel:
+      // NGC 6992 = "sh", NGC 6995 ganz ohne Typ)
+      const curated = OBJECT_FACTS[normObjId(o.id)] || OBJ_ARCMIN[normObjId(o.id)];
+      if (!INTERESTING_OTYPES.has(o.otype) && !curated) continue;
+      // Nur die bekannten Kataloge beschriften (keine kryptischen Survey-Ids)
+      if (!/^(M|NGC|IC|SH2-)\d/.test(normObjId(o.id))) continue;
+      const p = planeOfSky(o.ra, o.dec);
+      if (!p) continue;
+      if (Math.abs(p.x) > imgAspect / 2 || Math.abs(p.y) > 0.5) continue;
+      const sizePlane = (o.sizeArcmin / 60) / degPerPx / nax2;
+      items.push({ id: prettyObjId(o.id), otype: o.otype, x: p.x, y: p.y,
+        ra: o.ra, dec: o.dec, sizePlane });
+    }
+    // Gaia-Astrophysik für die markanten Sterne (Radius/Masse/Alter) -
+    // optionaler Bonus, Fehler hier kosten nur die Zusatzinfos
+    try { await queryStarParams(items.filter((it) => it.star)); } catch { /* optional */ }
+    if (!items.length) {
+      state.objInfo = null; state.labels = null;
+      state.objChoices = null; state.objRegion = null;
+      rebuildObjList();
+      $("objStatus").textContent = t("objNone");
+    } else {
+      items.sort((a, b) => b.sizePlane - a.sizePlane);
+      state.objChoices = items;
+      state.objRegion = findObjectRegion(items);
+      state.cardChoice = "auto";
+      applyCardChoice();
+      // Hauptobjekt nur beschriften, wenn es nicht das halbe Bild füllt
+      const labels = items.filter((it, idx) => idx > 0 || it.sizePlane < 0.35).slice(0, 6);
+      // Eigene Objekte und Bearbeitungen ueberleben eine neue Erkennung
+      const old = state.labels || [];
+      state.labels = labels.map((it) => {
+        const prev = old.find((l) => !l.user && l.id === it.id);
+        return { ...it, on: prev ? prev.on : true, sizeMul: prev ? prev.sizeMul : undefined,
+          custom: prev && prev.custom ? prev.custom : undefined };
+      }).concat(old.filter((l) => l.user));
+      rebuildObjList();
+      $("objStatus").textContent = t("objFound", items.length, state.objInfo.id);
+    }
+  } catch (e) {
+    $("objStatus").textContent = e.server ? t("objSrvErr", e.status) : t("objNetErr");
+  }
+  stageToast(null);
+  $("btnObjects").disabled = !state.wcs;
+});
+
+$("btnWcs").addEventListener("click", () => $("fileWcs").click());
+$("fileWcs").addEventListener("change", async () => {
+  const file = $("fileWcs").files[0];
+  if (!file) return;
+  gaiaTransient = null;
+  try {
+    // Nur die ersten Header-Blöcke lesen (reicht für die WCS-Keywords)
+    const head = new Uint8Array(await file.slice(0, 57600).arrayBuffer());
+    const wcs = parseWcsHeader(head);
+    wcs._name = file.name;
+    state.wcs = wcs;
+    state.wcsFlip = undefined; state.wcsFit = null;
+    state.gaiaCatalog = null;
+    state.gaiaDepth = null; state.gaiaInfo = null; state.gaiaColorRGB = null; state.gaiaPM = null;
+    reprojectLabels();
+    uploadStars();
+  } catch (e) {
+    state.wcs = null;
+    gaiaTransient = { key: "gaiaWcsErr", args: [] };
+  }
+  updateGaiaStatus();
+  $("fileWcs").value = "";
+});
+
+$("btnGaia").addEventListener("click", async () => {
+  if (!state.wcs || !state.maskStarCount) return;
+  const wcs = state.wcs;
+  const nax1 = wcs.naxis1 || state.stars.width, nax2 = wcs.naxis2 || state.stars.height;
+  gaiaTransient = { key: "gaiaQuerying", args: [] };
+  updateGaiaStatus();
+  $("btnGaia").disabled = true;
+  try {
+    // Gut dreimal so viele Katalogsterne wie Masken-Sterne: genug, damit
+    // jeder erkannte Stern sein Gegenstück findet, ohne Megabytes zu laden
+    const maxStars = Math.min(50000, Math.max(10000, 3 * state.maskStarCount));
+    const stars = await queryGaia(wcs, nax1, nax2, maxStars, (done, total) => {
+      if (total < 2 || !gaiaTransient || gaiaTransient.key !== "gaiaQuerying") return;
+      gaiaTransient.args = [done, total];
+      updateGaiaStatus();
+    });
+    gaiaTransient = null;
+    // Katalog behalten: Damit übersteht der Abgleich einen Masken-Neuaufbau
+    // (Stretch, Spiegeln, neue Maske) ohne neue Netzabfrage
+    state.gaiaCatalog = stars;
+    const info = matchGaia(stars);
+    if (!info) gaiaTransient = { key: "gaiaNoMatch", args: [] };
+    // Der Abgleich ist der Punkt, an dem echte Daten vorliegen - ab hier
+    // zaehlen echte Tiefen ohnehin voll, also auch gleich die echten Farben
+    if (info && state.gaiaColorRGB && !state.gaiaColors) {
+      state.gaiaColors = true;
+      $("ctlGaiaColors").checked = true;
+      uploadStars();
+    }
+  } catch (e) {
+    gaiaTransient = e.timeout
+      ? { key: "gaiaTimeout", args: [] }
+      : e.server
+        ? { key: "gaiaSrvErr", args: [e.status] }
+        : { key: "gaiaNetErr", args: [] };
+  }
+  updateGaiaStatus();
+});
+
+// Zoomziel per Klick in die Vorschau
+canvas.addEventListener("click", (e) => {
+  if (!state.starless || state.exporting) return;
+  if (state.scenEdit) {
+    if (scenDragDist > 6) return; // Zieh-Ende ist kein Auswahl-Klick
+    const rect = canvas.getBoundingClientRect();
+    const cam = camAt(0);
+    let best = -1; // oberster Marker im Trefferradius gewinnt
+    state.waypoints.forEach((wp, i) => {
+      const S = wpToScreen(wp.x, wp.y, cam, canvas.width, canvas.height);
+      const sx = (S.x / canvas.width) * rect.width;
+      const sy = (S.y / canvas.height) * rect.height;
+      const d = Math.hypot(e.clientX - rect.left - sx, e.clientY - rect.top - sy);
+      if (d < 20) best = i;
+    });
+    if (best >= 0) selectWaypoint(best);
+    return;
+  }
+  const rect = canvas.getBoundingClientRect();
+  const fx = (e.clientX - rect.left) / rect.width;
+  const fy = (e.clientY - rect.top) / rect.height;
+  // Canvas-Punkt -> Bildebene mit der aktuellen Kamera (neutrale Tiefe)
+  const { cam } = animParams(currentTime());
+  const px = (fx - 0.5) * state.aspect;
+  const py = (0.5 - fy);
+  const c = Math.cos(cam.angle), s = Math.sin(cam.angle);
+  const rx = c * px + s * py;   // R(a) wie im Shader (mat2 ist spaltenweise)
+  const ry = -s * px + c * py;
+  const imgAspect = state.starless.width / state.starless.height;
+  const cover = coverBase(state.aspect, imgAspect);
+  // Fixpunkt-Iteration wie im Shader: die Tiefe des angeklickten Objekts
+  // bestimmt seine effektive Zoomrate, sonst trifft der Klick daneben
+  const parallax = state.parallax / 100;
+  const depthRange = 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
+  let qx = cam.cx + rx / (cover * cam.zoom * (cam.lens || 1));
+  let qy = cam.cy + ry / (cover * cam.zoom * (cam.lens || 1));
+  for (let i = 0; i < 3; i++) {
+    const d = depthAtPlane(qx, qy, imgAspect);
+    const exD = 1 + parallax * (d - 0.45) * depthRange;
+    const sc = cover * Math.pow(cam.zoom, exD);
+    qx = cam.cx + rx / sc;
+    qy = cam.cy + ry / sc;
+  }
+  const clampedX = Math.min(imgAspect * 0.475, Math.max(-imgAspect * 0.475, qx));
+  const clampedY = Math.min(0.475, Math.max(-0.475, qy));
+  const wasSpinPick = state.spinPick;
+  if (state.labelPick) {
+    state.labelPick = false;
+    $("btnObjAdd").classList.remove("active");
+    $("objStatus").textContent = "";
+    addUserLabel(clampedX, clampedY);
+  } else if (state.spinPick) {
+    galEnsure();
+    if (state.spinPick === "add" && state.galaxies.length < 8) {
+      // neue Galaxie mit Standard-Ellipse; Zentrum = Klick
+      galSyncFromState();
+      state.galaxies.push({ x: clampedX, y: clampedY, rad: 0.12, flat: 1, tilt: 0, twist: 40, dir: 1, name: "", auto: false });
+      galSelect(state.galaxies.length - 1);
+    } else {
+      state.spinCenter = { x: clampedX, y: clampedY };
+    }
+    state.spinPick = false;
+    $("btnSpinCenter").classList.remove("active");
+    $("btnGalMove").classList.remove("active");
+    rebuildGalList();
+  } else {
+    state.target.x = clampedX;
+    state.target.y = clampedY;
+    updateTargetInfo();
+  }
+
+  // Marker kurz einblenden - genau unter dem Mauszeiger. Die Position wird
+  // gegen den Bezugsrahmen des Markers gerechnet (offsetParent), sonst
+  // verschiebt ihn jede Polsterung der Buehne.
+  const marker = $("targetMarker");
+  marker.className = wasSpinPick ? "spin" : "target";
+  marker.innerHTML = '<svg><use href="#' + (wasSpinPick ? "i-mspin" : "i-mtarget") + '"/></svg>';
+  marker.hidden = false;
+  const host = marker.offsetParent || canvas.parentElement;
+  const hr = host.getBoundingClientRect();
+  marker.style.left = (e.clientX - hr.left) + "px";
+  marker.style.top = (e.clientY - hr.top) + "px";
+  marker.style.animation = "none";
+  void marker.offsetWidth; // Animation neu starten
+  marker.style.animation = "";
+});
+canvas.addEventListener("dblclick", () => {
+  if (state.scenEdit) return;
+  state.target.x = 0;
+  state.target.y = 0;
+  updateTargetInfo();
+});
+
+// Transport
+$("btnPlay").addEventListener("click", () => {
+  if (state.scenEdit) setScenEdit(false);
+  if (state.playing) {
+    state.pausedAt = currentTime();
+    state.playing = false;
+    $("btnPlay").textContent = "▶";
+  } else {
+    state.t0 = performance.now() - state.pausedAt * 1000;
+    state.playing = true;
+    $("btnPlay").textContent = "⏸";
+  }
+});
+$("btnRestart").addEventListener("click", () => {
+  state.t0 = performance.now();
+  state.pausedAt = 0;
+});
+// Leertaste = Play/Pause - außer wenn gerade ein Bedienelement den Fokus hat
+// (Slider/Buttons reagieren selbst auf die Leertaste, Textfelder tippen)
+document.addEventListener("keydown", (e) => {
+  if (e.code !== "Space" || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+  const el = document.activeElement;
+  if (el && /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(el.tagName)) return;
+  e.preventDefault();
+  $("btnPlay").click();
+});
+/**
+ * Wegpunkte und Pausen auf der Abspiel-Zeitachse.
+ * Die Rauten sind die Ankunftszeiten, die helleren Balken die Pausen -
+ * eine Raute laesst sich ziehen, das aendert die Fahrtzeit dorthin.
+ */
+let tlDragging = false;
+
+function markTimelineSel() {
+  document.querySelectorAll("#timelineWps .tlwp").forEach((d, idx) => {
+    d.classList.toggle("sel", idx === wpSel);
+  });
+}
+
+function rebuildTimelineWps() {
+  const box = $("timelineWps");
+  if (!box) return;
+  const on = typeof scenarioActive === "function" && scenarioActive();
+  box.hidden = !on;
+  box.innerHTML = "";
+  if (!on) return;
+  const total = scenarioTotal();
+  state.waypoints.forEach((wp, i) => {
+    const tA = scenarioArrival(i);
+    const hold = Math.max(0, wp.hold || 0);
+    if (hold > 0) {
+      const bar = document.createElement("div");
+      bar.className = "tlhold";
+      bar.style.left = (tA / total) * 100 + "%";
+      bar.style.width = (hold / total) * 100 + "%";
+      box.appendChild(bar);
+    }
+    const d = document.createElement("div");
+    d.className = "tlwp" + (i === wpSel ? " sel" : "") + (i === 0 ? " fixed" : "");
+    d.style.left = (tA / total) * 100 + "%";
+    d.title = t("tlWpTitle", i + 1, tA.toFixed(1));
+    d.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      selectWaypoint(i);
+      if (i === 0) return;              // der Start liegt immer bei 0 s
+      // Das Ziehen haengt an der Zeitachse selbst: die Rauten werden beim
+      // Nachziehen neu gebaut, ein Pointer-Capture auf der Raute ginge dabei
+      // verloren
+      const tl = $("timeline");
+      tl.setPointerCapture(e.pointerId);
+      const rect = tl.getBoundingClientRect();
+      const prev = scenarioArrival(i - 1) + Math.max(0, state.waypoints[i - 1].hold || 0);
+      const move = (ev) => {
+        const f = Math.min(1, Math.max(0, (ev.clientX - rect.left) / rect.width));
+        const want = f * scenarioTotal();
+        const dur = Math.min(20, Math.max(0.2, Math.round((want - prev) * 10) / 10));
+        if (dur === state.waypoints[i].dur) return;
+        state.waypoints[i].dur = dur;
+        rebuildWaypointList();
+        updateScenarioUi();
+      };
+      const up = (ev) => {
+        tl.removeEventListener("pointermove", move);
+        tl.removeEventListener("pointerup", up);
+        tl.removeEventListener("pointercancel", up);
+        if (tl.hasPointerCapture(ev.pointerId)) tl.releasePointerCapture(ev.pointerId);
+        tlDragging = false;
+      };
+      tlDragging = true;
+      tl.addEventListener("pointermove", move);
+      tl.addEventListener("pointerup", up);
+      tl.addEventListener("pointercancel", up);
+    });
+    box.appendChild(d);
+  });
+}
+
+$("timeline").addEventListener("click", (e) => {
+  if (tlDragging || e.target.classList.contains("tlwp")) return;
+  const rect = $("timeline").getBoundingClientRect();
+  const f = (e.clientX - rect.left) / rect.width;
+  const t = f * state.duration;
+  state.t0 = performance.now() - t * 1000;
+  state.pausedAt = t;
+});
+
+// ---------------------------------------------------------------- Dateien laden
+
+async function loadFile(which, file) {
+  const status = $("loadStatus");
+  status.classList.remove("error");
+  status.textContent = t("loading", file.name);
+  try {
+    const img = await decodeFile(file);
+    if (which === "starless") {
+      state.starless = img;
+      state.galaxies = []; state.galSel = 0;
+      if (typeof rebuildGalList === "function") setTimeout(rebuildGalList, 0);
+      clearWpThumbCache();
+      state.srcFiles.starless = file;
+      if (state.flipH || state.flipV) flipImage(state.starless, state.flipH, state.flipV);
+      $("nameStarless").removeAttribute("data-i18n");
+      $("nameStarless").textContent = `${file.name} (${img.width}×${img.height})`;
+      $("dropStarless").classList.add("loaded");
+      if (texColor) gl.deleteTexture(texColor);
+      const colSrc = downscale(img, 4096);
+      texColor = makeTexture(colSrc);
+      state.texColorW = colSrc.width;
+      state.texColorH = colSrc.height;
+      if (state.customDepth) {
+        state.customDepth = null;
+        state.aiDepth = null;
+        $("ctlDepthAiMix").disabled = true;
+        aiDepthStatus("");
+        updateDepthCustomUi(t("depthCustomCleared"));
+      }
+      if (state.moonMode) {
+        state.moonDisk = detectMoonDisk();
+        if (!state.moonDisk) {
+          state.moonMode = false;
+          $("ctlMoonMode").checked = false;
+          $("moonStatus").textContent = t("moonNotFound");
+        } else {
+          $("moonStatus").textContent = t("moonFound", Math.round(state.moonDisk.r * 200));
+        }
+      }
+      buildDepthMap();
+      buildSpinMask();
+      setScenEdit(state.scenEdit);
+      // generierte Sterne nutzen das Seitenverhältnis des Starless-Bildes
+      if (state.genStars > 0) uploadStars();
+      // Export-Dateiname vom Bildnamen ableiten (bleibt überschreibbar)
+      $("ctlFilename").placeholder = deriveExportName();
+    } else {
+      state.starsOriginal = img;
+      state.srcFiles.stars = file;
+      // Aktive Spiegelung sofort auf die NEUE Maske anwenden - sonst passte
+      // eine nach dem Spiegeln getauschte Maske nicht mehr zum Starless-Bild
+      if ((state.flipH || state.flipV) && !state.flipOnlyStarless) {
+        flipImage(state.starsOriginal, state.flipH, state.flipV);
+      }
+      $("nameStars").removeAttribute("data-i18n");
+      $("nameStars").textContent = `${file.name} (${img.width}×${img.height})`;
+      $("dropStars").classList.add("loaded");
+      processStarMask();
+    }
+    // Plate-Solve-Lösung aus dem FITS-Header direkt übernehmen - der
+    // separate WCS-Upload im Wissenschafts-Tab entfällt dann
+    if (img.wcs) {
+      img.wcs._name = file.name;
+      state.wcs = img.wcs;
+      state.wcsFlip = undefined; state.wcsFit = null;
+      state.gaiaCatalog = null;
+      state.gaiaDepth = null; state.gaiaInfo = null; state.gaiaColorRGB = null; state.gaiaPM = null;
+      gaiaTransient = { key: "gaiaWcsAuto", args: [file.name] };
+      reprojectLabels();
+      uploadStars();
+      updateGaiaStatus();
+    }
+    if (state.starless) {
+      $("placeholder").style.display = "none";
+      $("btnExport").disabled = false;
+      refreshRenderFoot();
+      if (which === "starless" && typeof histReset === "function") histReset();
+      state.t0 = performance.now();
+      if (which === "starless") status.textContent = t("starlessLoaded");
+    }
+    // JPEG-Kompression erzeugt in dunklen Bereichen Chroma-Artefakte, die
+    // Tiefenkarte und Nebelfarben-Masken stoeren - freundlich drauf hinweisen
+    if (/\.jpe?g$/i.test(file.name)) {
+      status.textContent = (status.textContent + " " + t("jpegWarn")).trim();
+    }
+  } catch (err) {
+    console.error(err);
+    status.classList.add("error");
+    status.textContent = t("loadFailed", file.name, err.message);
+  }
+}
+
+// ------------------------------------------------- Eigene Presets (localStorage)
+
+// Welche Regler in welche Preset-Gruppe gehoeren. Bewusst NUR Regler-Werte:
+// Bilddaten, Gaia-Abgleich und Plate-Solve werden nie mitgespeichert.
+const USER_PRESET_GROUPS = {
+  camera: ["ctlFlightMode", "ctlDriftDir", "ctlZoom", "ctlSpeed", "ctlEase",
+    "ctlEaseMode", "ctlParallax", "ctlDepthBoost", "ctlVol", "ctlVolSpread",
+    "ctlVolDust", "ctlRotation", "ctlOrient",
+    "ctlFrameX", "ctlFrameY", "ctlTiltX", "ctlTiltY", "ctlSwayAmp",
+    "ctlSwayTempo", "ctlSwayDir", "ctlSwayRandom", "ctlTiltRamp",
+    "ctlTiltRampDir", "ctlFade", "ctlDuration", "ctlLoop", "ctlReverse", "ctlDolly", "ctlZoomDrift", "ctlSpinSpeed",
+    "ctlSpinDiff", "ctlSpinStars", "ctlGal3d", "ctlGalSat", "ctlGal3dAmt", "ctlGalStars", "ctlGalGlow"],
+  stars: ["ctlSpread", "ctlStarDist", "ctlLayers", "ctlStarPar", "ctlTwinkle",
+    "ctlTwinkleSpeed", "ctlStarSize", "ctlStarBright", "ctlStarSat",
+    "ctlGenStars", "ctlOcclude", "ctlStarCull", "ctlAnchor", "ctlAiry",
+    "ctlSpikes", "ctlSpikeArms", "ctlSpikeRot", "ctlOrganic"],
+  look: ["ctlBloom", "ctlMblur", "ctlMblurStars", "ctlWarp", "ctlVignette", "ctlGrain", "ctlFilmic",
+    "ctlExposure", "ctlContrast", "ctlSaturation", "ctlClarity",
+    "ctlStructure", "ctlSharpen", "ctlH2Det", "ctlH2Width", "ctlH2Sat",
+    "ctlH2Hue", "ctlO3Det", "ctlO3Width", "ctlO3Sat", "ctlO3Hue", "ctlS2Det",
+    "ctlS2Width", "ctlS2Sat", "ctlS2Hue", "ctlBandFeather", "ctlLabelStyle"],
+  format: ["ctlRes"],
+};
+const UP_KEY = "astrofly-user-presets";
+const UP_GROUP_CHECKS = { camera: "upIncCamera", stars: "upIncStars",
+  look: "upIncLook", format: "upIncFormat" };
+
+function userPresets() {
+  try { return JSON.parse(localStorage.getItem(UP_KEY)) || {}; } catch { return {}; }
+}
+function applyUserPreset(name) {
+  const p = userPresets()[name];
+  if (!p) return false;
+  for (const [id, v] of Object.entries(p.values)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (el.type === "checkbox") {
+      el.checked = !!v;
+      el.dispatchEvent(new Event("change"));
+    } else {
+      el.value = v;
+      el.dispatchEvent(new Event("input"));
+      el.dispatchEvent(new Event("change"));
+    }
+  }
+  if (p.aspect) {
+    const btn = document.querySelector(`#aspectBtns button[data-aspect="${p.aspect}"]`);
+    if (btn) btn.click();
+  }
+  return true;
+}
+
+function rebuildUserPresetList() {
+  const sel = $("userPresetSel");
+  const cur = sel.value;
+  sel.innerHTML = "";
+  const names = Object.keys(userPresets()).sort();
+  for (const name of names) {
+    const o = document.createElement("option");
+    o.value = o.textContent = name;
+    sel.appendChild(o);
+  }
+  if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
+  const none = names.length === 0;
+  $("btnPresetApply").disabled = none;
+  $("btnPresetDelete").disabled = none;
+  // Eigene Presets als Ein-Klick-Karten - auf der Easy-Seite UND im
+  // Presets-Tab: ein Klick, und die gespeicherte Animation liegt zu 90 %
+  // fertig auf dem eigenen Bild
+  for (const [gridId, headId] of [["userPresetGrid", "userPresetGroupHead"],
+                                  ["userPresetGrid2", "userPresetGroupHead2"]]) {
+    const grid = document.getElementById(gridId);
+    const head = document.getElementById(headId);
+    if (!grid || !head) continue;
+    grid.innerHTML = "";
+    for (const name of names) {
+      const b = document.createElement("button");
+      b.className = "pcard";
+      const bold = document.createElement("b");
+      bold.textContent = name;
+      b.appendChild(bold);
+      b.addEventListener("click", () => applyUserPreset(name));
+      grid.appendChild(b);
+    }
+    grid.hidden = none;
+    head.hidden = none;
+  }
+}
+$("btnPresetSave").addEventListener("click", () => {
+  const name = $("userPresetName").value.trim();
+  if (!name) { $("userPresetName").focus(); return; }
+  const groups = Object.keys(UP_GROUP_CHECKS).filter((g) => $(UP_GROUP_CHECKS[g]).checked);
+  const values = {};
+  for (const g of groups) {
+    for (const id of USER_PRESET_GROUPS[g]) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      values[id] = el.type === "checkbox" ? el.checked : el.value;
+    }
+  }
+  const all = userPresets();
+  all[name] = { groups, values,
+    aspect: groups.includes("format") ? (state.aspectName || "16:9") : null };
+  localStorage.setItem(UP_KEY, JSON.stringify(all));
+  rebuildUserPresetList();
+  $("userPresetSel").value = name;
+  $("userPresetStatus").textContent = t("upSaved", name);
+});
+$("btnPresetApply").addEventListener("click", () => {
+  const name = $("userPresetSel").value;
+  if (applyUserPreset(name)) $("userPresetStatus").textContent = t("upApplied", name);
+});
+$("btnPresetDelete").addEventListener("click", () => {
+  const all = userPresets();
+  delete all[$("userPresetSel").value];
+  localStorage.setItem(UP_KEY, JSON.stringify(all));
+  rebuildUserPresetList();
+  $("userPresetStatus").textContent = "";
+});
+rebuildUserPresetList();
+
+/** Spiegelt ein Bildobjekt ({width, height, canvas, ...}) in place -
+ *  weitere Eigenschaften (z. B. eingebettetes WCS) bleiben erhalten. */
+function flipImage(img, fh, fv) {
+  const c = document.createElement("canvas");
+  c.width = img.width; c.height = img.height;
+  const x = c.getContext("2d");
+  x.translate(fh ? img.width : 0, fv ? img.height : 0);
+  x.scale(fh ? -1 : 1, fv ? -1 : 1);
+  x.drawImage(img.canvas, 0, 0);
+  img.canvas = c;
+}
+
+/**
+ * Bild spiegeln (Starless + Sternmaske gemeinsam, sonst passt die Maske
+ * nicht mehr aufs Bild): komplette Pipeline neu aufbauen. Ein bestehender
+ * Gaia-Abgleich wird ungültig (Maskensterne neu extrahiert) - die
+ * Beschriftungen werden über die Spiegel-Flags sofort mitgespiegelt.
+ */
+function flipMask(fh, fv) {
+  if (state.starsOriginal) {
+    flipImage(state.starsOriginal, fh, fv);
+    processStarMask();
+  } else if (state.stars) {
+    flipImage(state.stars, fh, fv);
+    buildStarBuffer();
+  }
+}
+
+/**
+ * Alles, was in Koordinaten des Starless-Bildes liegt, mit dem Bild spiegeln:
+ * Galaxien (Mittelpunkt, Lage der Ellipse, Drehsinn, nahe Seite), Zoomziel
+ * und Wegpunkte des Flugplans. Die Bildebene ist um die Bildmitte
+ * symmetrisch (x nach rechts, y nach oben).
+ */
+function mirrorPlaneState(fh, fv) {
+  if (!fh && !fv) return;
+  const one = fh !== fv; // genau eine Achse: Drehsinn und Winkel kehren sich um
+  if (Array.isArray(state.galaxies) && state.galaxies.length) {
+    if (typeof galSyncFromState === "function") galSyncFromState();
+    for (const g of state.galaxies) {
+      if (fh) g.x = -g.x;
+      if (fv) g.y = -g.y;
+      // Lage der grossen Achse: Spiegelung an einer Achse -> 180 - Winkel
+      if (one) g.tilt = (180 - g.tilt + 180) % 180;
+      if (one && g.dir) g.dir = -g.dir;
+      // nahe Seite: liegt bei der Darstellung 180 - Winkel bei H auf der
+      // anderen Seite der grossen Achse, bei V auf derselben
+      if (fh) g.near = g.near === -1 ? 1 : -1;
+    }
+    galSelect(state.galSel || 0);
+    galBkTex = null;
+  }
+  if (state.target) state.target = { x: fh ? -state.target.x : state.target.x, y: fv ? -state.target.y : state.target.y };
+  if (Array.isArray(state.waypoints)) {
+    for (const wp of state.waypoints) {
+      if (fh) wp.x = -wp.x;
+      if (fv) wp.y = -wp.y;
+      if (one && wp.angle) wp.angle = -wp.angle;
+    }
+  }
+}
+
+function applyImageFlip(fh, fv) {
+  clearWpThumbCache();
+  if (state.starless) {
+    flipImage(state.starless, fh, fv);
+    if (state.customDepth) flipImage(state.customDepth, fh, fv);
+    if (texColor) gl.deleteTexture(texColor);
+    const colSrc = downscale(state.starless, 4096);
+    texColor = makeTexture(colSrc);
+    state.texColorW = colSrc.width;
+    state.texColorH = colSrc.height;
+    buildDepthMap();
+    mirrorPlaneState(fh, fv);
+    buildSpinMask();
+  }
+  // "Nur Starless": Maske und damit das Koordinatensystem bleiben stehen -
+  // für den Fall, dass Starless und Maske gegeneinander gespiegelt sind
+  if (!state.flipOnlyStarless) flipMask(fh, fv);
+  // Die Feinkorrektur aus dem Gaia-Abgleich gilt nur fuer die Orientierung,
+  // in der sie geschaetzt wurde. Nach einer Spiegelung wuerde sie die
+  // Objekt-Marker verschieben: also aus dem gecachten Katalog neu abgleichen,
+  // und ohne Katalog lieber fallen lassen als falsch anwenden.
+  if (!state.flipOnlyStarless && state.wcs) {
+    if (state.gaiaCatalog) {
+      try { matchGaia(state.gaiaCatalog); } catch { state.wcsFit = null; }
+    } else if (state.wcsFit) {
+      state.wcsFit = null;
+    }
+  }
+  reprojectLabels();
+  uploadStars();
+  updateGaiaStatus();
+}
+// ------------------------------------------------- Projekte (IndexedDB)
+// Anders als Presets speichern Projekte ALLES lokal im Browser: die
+// Original-Bilddateien, Plate-Solve, Gaia-Abgleich, SIMBAD-Labels, alle
+// Regler und den Flugplan. Zwei Stores: "meta" (Liste ohne Blob-Last)
+// und "data" (kompletter Payload je Projekt-Id). Nichts verlaesst den PC.
+
+function projectDb() {
+  return new Promise((resolve, reject) => {
+    const rq = indexedDB.open("astrofly-projects", 1);
+    rq.onupgradeneeded = () => {
+      rq.result.createObjectStore("meta", { keyPath: "id", autoIncrement: true });
+      rq.result.createObjectStore("data");
+    };
+    rq.onsuccess = () => resolve(rq.result);
+    rq.onerror = () => reject(rq.error);
+  });
+}
+
+function idbReq(rq) {
+  return new Promise((resolve, reject) => {
+    rq.onsuccess = () => resolve(rq.result);
+    rq.onerror = () => reject(rq.error);
+  });
+}
+
+function projStatus(msg, isErr) {
+  const el = $("projStatus");
+  el.textContent = msg || "";
+  el.classList.toggle("error", !!isErr);
+}
+
+function captureProjectThumb() {
+  render(currentTime());
+  const w = 240, h = Math.max(1, Math.round(canvas.height / canvas.width * 240));
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  c.getContext("2d").drawImage(canvas, 0, 0, w, h);
+  return c.toDataURL("image/jpeg", 0.7);
+}
+
+function captureControls() {
+  const out = {};
+  for (const el of document.querySelectorAll("#panel input[id], #panel select[id]")) {
+    if (el.type === "file") continue;
+    if (el.id === "projName" || el.id === "userPresetName") continue;
+    if (el.closest("#wpList") || el.closest("#easeEditor")) continue;
+    out[el.id] = el.type === "checkbox" ? el.checked : el.value;
+  }
+  return out;
+}
+
+function applyControls(controls) {
+  for (const [id, val] of Object.entries(controls)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (el.type === "checkbox") {
+      if (el.checked !== !!val) {
+        el.checked = !!val;
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    } else if (String(el.value) !== String(val)) {
+      el.value = val;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  }
+}
+
+async function saveProject() {
+  if (!state.starless || !state.srcFiles.starless) {
+    projStatus(t("projNeedImg"), true);
+    return;
+  }
+  const name = $("projName").value.trim() ||
+    (state.srcFiles.starless.name || "AstroFly").replace(/\.[^.]+$/, "");
+  const S = state;
+  const cleanLabels = S.labels
+    ? S.labels.map((l) => Object.fromEntries(Object.entries(l).filter(([k]) => !k.startsWith("_"))))
+    : null;
+  const activeAspect = document.querySelector("#aspectBtns button.active");
+  const meta = {
+    name,
+    date: Date.now(),
+    thumb: captureProjectThumb(),
+    starlessName: S.srcFiles.starless.name,
+    starsName: S.srcFiles.stars ? S.srcFiles.stars.name : null,
+  };
+  const data = {
+    controls: captureControls(),
+    aspect: activeAspect ? activeAspect.dataset.aspect : null,
+    files: { starless: S.srcFiles.starless, stars: S.srcFiles.stars, depth: S.srcFiles.depth },
+    extra: {
+      waypoints: S.waypoints.map((w) => ({ ...w, via: w.via ? { ...w.via } : null, curve: w.curve ? [...w.curve] : null })),
+      scenarioOn: S.scenarioOn,
+      target: { ...S.target },
+      seed: S.seed,
+      spinCenter: S.spinCenter ? { ...S.spinCenter } : null,
+      galaxies: (S.galaxies || []).map((g) => ({ ...g })), galSel: S.galSel || 0,
+      wcs: S.wcs, wcsFit: S.wcsFit, wcsFlip: S.wcsFlip,
+      gaiaCatalog: S.gaiaCatalog, gaiaDepth: S.gaiaDepth, gaiaColorRGB: S.gaiaColorRGB,
+      gaiaPM: S.gaiaPM, gaiaInfo: S.gaiaInfo,
+      labels: cleanLabels, objInfo: S.objInfo, objChoices: S.objChoices, objRegion: S.objRegion,
+      cardCustom: S.cardCustom || {},
+      moonObj: S.moonObj,
+    },
+  };
+  try {
+    const db = await projectDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(["meta", "data"], "readwrite");
+      const rq = tx.objectStore("meta").add(meta);
+      rq.onsuccess = () => tx.objectStore("data").put(data, rq.result);
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+    projStatus(t("projSaved", name));
+    $("projName").value = "";
+    rebuildProjectList();
+  } catch (err) {
+    console.error(err);
+    projStatus(t("projSaveErr", err && err.name === "QuotaExceededError" ? t("projQuota") : (err.message || "")), true);
+  }
+}
+
+async function loadProject(id) {
+  projStatus(t("projLoading"));
+  try {
+    const db = await projectDb();
+    const tx = db.transaction(["meta", "data"]);
+    const meta = await idbReq(tx.objectStore("meta").get(id));
+    const data = await idbReq(tx.objectStore("data").get(id));
+    if (!meta || !data) throw new Error("not found");
+
+    // Sauberer Ausgangszustand: Spiegelungen aus, BEVOR die Bilder aus den
+    // Original-Blobs laufen - die Regler-Wiederherstellung spiegelt danach
+    // exakt einmal (gleicher Weg wie ein manueller Neuaufbau)
+    state.flipH = false; state.flipV = false; state.flipOnlyStarless = false;
+    $("ctlFlipH").checked = false; $("ctlFlipV").checked = false; $("ctlFlipOnly").checked = false;
+    state.customDepth = null; state.srcFiles.depth = null;
+    updateDepthCustomUi();
+    state.moonMode = false; state.moonDisk = null; $("ctlMoonMode").checked = false;
+    $("moonObjRow").hidden = true;
+
+    // 1) Bilder durch den normalen Lade-Pfad (inkl. FITS-Header/WCS)
+    await loadFile("starless", data.files.starless);
+    if (data.files.stars) await loadFile("stars", data.files.stars);
+
+    // 2) Eigene Tiefenkarte
+    if (data.files.depth) {
+      state.customDepth = await decodeFile(data.files.depth);
+      state.srcFiles.depth = data.files.depth;
+      updateDepthCustomUi();
+    }
+
+    // 3) Wegpunkte vor den Reglern (der Plan-Haken braucht sie)
+    const X = data.extra;
+    state.waypoints = (X.waypoints || []).map((w) => ({ ...w }));
+
+    // 4) Alle Regler anwenden (loest Spiegeln, Mond-Modus, Laengen usw. aus)
+    applyControls(data.controls);
+    if (data.aspect) {
+      const btn = document.querySelector(`#aspectBtns button[data-aspect="${data.aspect}"]`);
+      if (btn && !btn.classList.contains("active")) btn.click();
+    }
+
+    // 5) Zustands-Extras - Gaia zuletzt (Reihenfolge: erst Flips, dann
+    //    Zuordnung, sonst passen die Stern-Indizes nicht)
+    state.scenarioOn = !!X.scenarioOn;
+    $("ctlScenOn").checked = state.scenarioOn;
+    state.target = X.target || { x: 0, y: 0 };
+    state.seed = X.seed || state.seed;
+    if (X.spinCenter) state.spinCenter = X.spinCenter;
+    state.galaxies = Array.isArray(X.galaxies) ? X.galaxies.map((g) => ({ ...g })) : [];
+    state.galSel = X.galSel || 0;
+    if (state.galaxies.length) galSelect(state.galSel); else rebuildGalList();
+    galBkTex = null;
+    state.wcs = X.wcs || null;
+    state.wcsFit = X.wcsFit || null;
+    state.wcsFlip = X.wcsFlip;
+    state.gaiaCatalog = X.gaiaCatalog || null;
+    state.gaiaDepth = X.gaiaDepth || null;
+    state.gaiaColorRGB = X.gaiaColorRGB || null;
+    state.gaiaPM = X.gaiaPM || null;
+    state.gaiaInfo = X.gaiaInfo || null;
+    state.labels = X.labels || null;
+    state.objInfo = X.objInfo || null;
+    state.cardCustom = X.cardCustom || {};
+    syncCardInputs();
+    state.objChoices = X.objChoices || null;
+    state.objRegion = X.objRegion || null;
+    state.moonObj = X.moonObj || "moon";
+    $("selMoonObj").value = state.moonObj;
+
+    uploadStars();
+    updateGaiaStatus();
+    updateTargetInfo();
+    rebuildObjList();
+    rebuildWaypointList();
+    updateScenarioUi();
+    buildDepthMap();
+    state.pausedAt = 0;
+    state.t0 = performance.now();
+    histReset();   // ein geladenes Projekt ist der neue Ausgangspunkt
+    projStatus(t("projLoaded", meta.name));
+  } catch (err) {
+    console.error(err);
+    projStatus(t("projLoadErr", err.message || ""), true);
+  }
+}
+
+async function deleteProject(id) {
+  const db = await projectDb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(["meta", "data"], "readwrite");
+    tx.objectStore("meta").delete(id);
+    tx.objectStore("data").delete(id);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+  rebuildProjectList();
+}
+
+async function rebuildProjectList() {
+  const grid = $("projGrid");
+  if (!grid) return;
+  let metas = [];
+  try {
+    const db = await projectDb();
+    metas = await idbReq(db.transaction("meta").objectStore("meta").getAll());
+  } catch { /* IndexedDB nicht verfuegbar (z. B. Privatmodus) */ }
+  grid.innerHTML = "";
+  metas.sort((a, b) => b.date - a.date);
+  const lang = I18N.lang === "de" ? "de-DE" : "en-US";
+  for (const m of metas) {
+    const card = document.createElement("div");
+    card.className = "projcard";
+    const img = document.createElement("img");
+    img.src = m.thumb;
+    img.alt = "";
+    const info = document.createElement("div");
+    info.className = "projinfo";
+    const nm = document.createElement("b");
+    nm.textContent = m.name;
+    const dt = document.createElement("small");
+    dt.textContent = new Date(m.date).toLocaleString(lang, { dateStyle: "medium", timeStyle: "short" });
+    const row = document.createElement("div");
+    row.className = "projbtns";
+    const bLoad = document.createElement("button");
+    bLoad.className = "secondary";
+    bLoad.textContent = t("projLoadBtn");
+    bLoad.addEventListener("click", () => loadProject(m.id));
+    const bDel = document.createElement("button");
+    bDel.className = "wpbtn";
+    bDel.textContent = "\u2715";
+    bDel.title = t("projDeleteBtn");
+    bDel.addEventListener("click", () => {
+      if (bDel.dataset.arm) { deleteProject(m.id); return; }
+      bDel.dataset.arm = "1";
+      bDel.textContent = t("projDeleteSure");
+      setTimeout(() => { bDel.dataset.arm = ""; bDel.textContent = "\u2715"; }, 3000);
+    });
+    row.appendChild(bLoad);
+    row.appendChild(bDel);
+    info.appendChild(nm);
+    info.appendChild(dt);
+    info.appendChild(row);
+    card.appendChild(img);
+    card.appendChild(info);
+    grid.appendChild(card);
+  }
+  $("projEmpty").hidden = metas.length > 0;
+}
+
+$("btnProjSave").addEventListener("click", saveProject);
+rebuildProjectList();
+I18N.onChange.push(rebuildProjectList);
+
+// ------------------------------------------------- Szenario-Tab (Wegpunkte)
+
+// Flugplan-Overlay: nummerierte Wegpunkte, Pfad und Bogen-Punkte in der
+// Vorschau (nur waehrend der Einrichtung, nie im Export)
+let wpSel = -1;
+
+function wpToScreen(qx, qy, cam, W, H) {
+  const viewAspect = state.aspect;
+  const imgAspect = state.starless.width / state.starless.height;
+  const cover = coverBase(viewAspect, imgAspect);
+  const parallax = state.parallax / 100;
+  const depthRange = 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
+  const d = depthAtPlane(qx, qy, imgAspect);
+  const ex = 1 + parallax * (d - 0.45) * depthRange;
+  const scaleD = cover * Math.pow(cam.zoom, ex);
+  const prx = (qx - cam.cx) * scaleD;
+  const pry = (qy - cam.cy) * scaleD;
+  const rc = Math.cos(cam.angle), rs = Math.sin(cam.angle);
+  const px = rc * prx - rs * pry, py = rs * prx + rc * pry;
+  return { x: (px / viewAspect + 0.5) * W, y: (1 - (py + 0.5)) * H };
+}
+
+function drawWaypointOverlay(ctx, W, H, cam) {
+  updateWpApply();
+  ctx.save(); // eigener Zustand: nichts darf in die Infokarten-Zeichnung lecken
+  const wps = state.waypoints;
+  const px = W / 1000; // grob aufloesungsunabhaengige Strichstaerken
+  // Pfad (mit Boegen) als Linie
+  ctx.lineWidth = 2 * px;
+  ctx.strokeStyle = "rgba(143, 176, 255, 0.55)";
+  ctx.setLineDash([6 * px, 5 * px]);
+  for (let i = 1; i < wps.length; i++) {
+    ctx.beginPath();
+    for (let k = 0; k <= 16; k++) {
+      const P = scenLegPos(wps[i - 1], wps[i], k / 16);
+      const S = wpToScreen(P.x, P.y, cam, W, H);
+      if (k === 0) ctx.moveTo(S.x, S.y); else ctx.lineTo(S.x, S.y);
+    }
+    ctx.stroke();
+    // Bogen-Punkt als Raute
+    if (wps[i].via) {
+      const V = wpToScreen(wps[i].via.x, wps[i].via.y, cam, W, H);
+      ctx.save();
+      ctx.translate(V.x, V.y);
+      ctx.rotate(Math.PI / 4);
+      ctx.setLineDash([]);
+      ctx.fillStyle = "rgba(143, 176, 255, 0.9)";
+      ctx.fillRect(-5 * px, -5 * px, 10 * px, 10 * px);
+      ctx.restore();
+      ctx.setLineDash([6 * px, 5 * px]);
+    }
+  }
+  ctx.setLineDash([]);
+  // Nummerierte Marker
+  for (let i = 0; i < wps.length; i++) {
+    const S = wpToScreen(wps[i].x, wps[i].y, cam, W, H);
+    const r = 14 * px;
+    const sel = i === wpSel;
+    ctx.beginPath();
+    ctx.arc(S.x, S.y, r, 0, Math.PI * 2);
+    ctx.fillStyle = sel ? "#8fb0ff" : "rgba(10, 14, 22, 0.85)";
+    ctx.fill();
+    ctx.lineWidth = (sel ? 2.5 : 1.5) * px;
+    ctx.strokeStyle = "#8fb0ff";
+    ctx.stroke();
+    ctx.fillStyle = sel ? "#0a0e16" : "#dfe6f5";
+    ctx.font = `600 ${13 * px}px system-ui, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(String(i + 1), S.x, S.y + 0.5 * px);
+  }
+  ctx.restore();
+}
+
+/** Ankunftszeit an Wegpunkt i im Plan (Sekunden ab Flugbeginn). */
+function scenarioArrival(i) {
+  const wps = state.waypoints;
+  let tA = 0;
+  for (let j = 0; j <= i && j < wps.length; j++) {
+    if (j > 0) tA += Math.max(0.2, wps[j].dur || 0.2);
+    if (j < i) tA += Math.max(0, wps[j].hold || 0);
+  }
+  return tA;
+}
+
+/** Wegpunkt auswaehlen: Highlight im Bild UND in der Liste (beide Wege). */
+function selectWaypoint(i) {
+  wpSel = i;
+  if (typeof markTimelineSel === "function") markTimelineSel();
+  document.querySelectorAll("#wpList .wprow").forEach((row, idx) => {
+    row.classList.toggle("sel", idx === i);
+  });
+  const row = document.querySelectorAll("#wpList .wprow")[i];
+  if (row && row.scrollIntoView) row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
+/** Kamera-Regler sperren/freigeben und Videolaenge an den Plan koppeln. */
+function updateScenarioUi() {
+  if (typeof histSchedule === "function") histSchedule();
+  const on = scenarioActive();
+  if (typeof rebuildTimelineWps === "function") rebuildTimelineWps();
+  const camLocked = state.scenarioOn;
+  if (typeof refreshRenderFoot === "function") refreshRenderFoot();
+  for (const id of ["ctlFlightMode", "ctlDriftDir", "ctlZoom", "ctlSpeed",
+    "ctlEaseMode", "ctlEase", "ctlDuration",
+    "ctlRotation", "ctlSwayAmp", "ctlTiltRamp"]) {
+    const el = $(id);
+    if (el) el.disabled = id === "ctlDuration" ? on : camLocked;
+  }
+  if (on) {
+    const total = scenarioTotal();
+    state.duration = state.loopMode ? total * 2 : total;
+    $("outDuration").textContent = state.duration.toFixed(1).replace(/\.0$/, "") + " s";
+    $("scenStatus").textContent = t("scenActive", state.waypoints.length,
+      state.duration.toFixed(1).replace(/\.0$/, ""));
+  } else {
+    state.duration = parseFloat($("ctlDuration").value);
+    $("outDuration").textContent = state.duration + " s";
+    $("scenStatus").textContent = state.scenarioOn && state.waypoints.length < 2
+      ? t("scenNeedTwo") : "";
+  }
+}
+
+/** Wegpunkt-Liste als editierbare Zeilen neu aufbauen. */
+// ---------------------------------------------------------------------------
+// Miniaturen an den Wegpunkten: zeigen den Bildausschnitt, den die Kamera an
+// diesem Wegpunkt sieht. Gerechnet wird dieselbe Abbildung wie im Renderer,
+// nur ohne Parallaxe und Kippen - fuer ein Vorschaubild ist die Ebene bei
+// mittlerer Tiefe genau richtig.
+// ---------------------------------------------------------------------------
+function wpThumbSource() {
+  if (!state.starless) return null;
+  if (state.thumbSrc && state.thumbSrcFor === state.starless &&
+      state.thumbSrcW === state.starless.width) return state.thumbSrc;
+  const maxW = 512;
+  const sc = Math.min(1, maxW / state.starless.width);
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(state.starless.width * sc));
+  c.height = Math.max(1, Math.round(state.starless.height * sc));
+  c.getContext("2d").drawImage(state.starless.canvas, 0, 0, c.width, c.height);
+  state.thumbSrc = c;
+  state.thumbSrcFor = state.starless;
+  state.thumbSrcW = state.starless.width;
+  return c;
+}
+
+/** Cache verwerfen (neues Bild, Spiegelung, geladenes Projekt). */
+function clearWpThumbCache() {
+  state.thumbSrc = null;
+  state.thumbSrcFor = null;
+}
+
+function drawWpThumb(cv, wp) {
+  const src = wpThumbSource();
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if (!src) return;
+  const W = cv.width, H = cv.height;
+  const viewAspect = state.aspect;
+  const imgAspect = state.starless.width / state.starless.height;
+  const scaleD = coverBase(viewAspect, imgAspect) * Math.max(1, wp.zoom || 1);
+  const ang = ((wp.angle || 0) * Math.PI) / 180;
+  const c = Math.cos(ang), sn = Math.sin(ang);
+  // Bildpixel -> Ebene
+  const a1 = imgAspect / src.width, b1 = -imgAspect / 2 - (wp.x || 0);
+  const a2 = -1 / src.height, b2 = 0.5 - (wp.y || 0);
+  // Ebene -> Miniatur (Drehung, Zoom, Seitenverhaeltnis)
+  const kx = (W * scaleD) / viewAspect, ky = H * scaleD;
+  ctx.setTransform(
+    kx * c * a1, -ky * sn * a1,
+    kx * -sn * a2, -ky * c * a2,
+    kx * (c * b1 - sn * b2) + W / 2, -ky * (sn * b1 + c * b2) + H / 2,
+  );
+  ctx.drawImage(src, 0, 0);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+
+function wpThumbSize() {
+  const h = Math.min(40, Math.round(64 / state.aspect));
+  return { w: Math.max(24, Math.round(h * state.aspect)), h };
+}
+
+function rebuildWaypointList() {
+  const list = $("wpList");
+  list.innerHTML = "";
+  buildSubTabs();   // Zaehler an der Untergruppe "Flugplan" mitfuehren
+  refreshStatusChips();
+  if (typeof rebuildTimelineWps === "function") rebuildTimelineWps();
+  const imgAspect = state.starless
+    ? state.starless.width / state.starless.height : 16 / 9;
+  state.waypoints.forEach((wp, i) => {
+    const row = document.createElement("div");
+    row.className = "wprow" + (i === wpSel ? " sel" : "");
+    row.addEventListener("click", (e) => {
+      if (e.target.closest("input, select, button")) return;
+      selectWaypoint(i);
+      // Zeile anklicken = diesen Wegpunkt in der Einrichtung zeigen
+      if (state.scenEdit) {
+        state.scenView = { x: wp.x, y: wp.y, zoom: wp.zoom, angle: wp.angle || 0 };
+        scenClampView();
+        startWpEdit(i);
+      }
+    });
+    const pos = `${Math.round(wp.x / imgAspect * 200)} | ${Math.round(wp.y * 200)}`;
+    const th = wpThumbSize();
+    row.innerHTML =
+      `<b>${i + 1}</b><canvas class="wpthumb" width="${th.w}" height="${th.h}"></canvas>` +
+      `<span class="wppos">${pos}</span>` +
+      `<label>${t("wpZoom")} <input type="number" data-k="zoom" min="1" max="8" step="0.05" value="${wp.zoom}"></label>` +
+      `<label>${t("wpAngle")} <input type="number" data-k="angle" min="-180" max="180" step="0.5" value="${wp.angle || 0}"></label>` +
+      (i > 0 ? `<label>${t("wpDur")} <input type="range" data-r="dur" min="0.2" max="10" step="0.1" value="${Math.min(10, wp.dur)}"><input type="number" data-k="dur" min="0.2" max="60" step="0.1" value="${wp.dur}"></label>` : "") +
+      `<label>${t("wpHold")} <input type="range" data-r="hold" min="0" max="10" step="0.1" value="${Math.min(10, wp.hold)}"><input type="number" data-k="hold" min="0" max="30" step="0.1" value="${wp.hold}"></label>` +
+      (i > 0 ? `<select data-k="ease"><option value="smooth">${t("wpEaseSmooth")}</option><option value="linear">${t("wpEaseLinear")}</option><option value="custom">${t("wpEaseCustom")}</option></select>` : "") +
+      (i > 0 ? `<button class="wpbtn" data-a="curve" title="${t("wpCurve")}">&#8767;</button>` : "") +
+      `<label class="wpchk" title="${t("wpFloatTip")}"><input type="checkbox" data-k="floatOn"${wp.floatOn ? " checked" : ""}> ${t("wpFloat")}</label>` +
+      (i > 0 ? `<button class="wpbtn" data-a="via" title="${wp.via ? t("wpViaClear") : t("wpViaSet")}">${wp.via ? "\u222a\u2715" : "\u222a"}</button>` : "") +
+      `<button class="wpbtn" data-a="center" title="${t("wpCenter")}">\u2302</button>` +
+      `<button class="wpbtn" data-a="play" title="${t("wpPlayFrom")}">\u25b6</button>` +
+      `<button class="wpbtn" data-a="goto" title="${t("wpGoto")}">\u2316</button>` +
+      `<button class="wpbtn" data-a="up" title="\u2191">\u2191</button>` +
+      `<button class="wpbtn" data-a="down" title="\u2193">\u2193</button>` +
+      `<button class="wpbtn" data-a="del" title="\u2715">\u2715</button>`;
+    const sel = row.querySelector('select[data-k="ease"]');
+    if (sel) sel.value = wp.ease || "smooth";
+    row.querySelectorAll("input[data-k], select[data-k]").forEach((el) => {
+      el.addEventListener("change", () => {
+        const k = el.dataset.k;
+        wp[k] = k === "ease" ? el.value
+          : el.type === "checkbox" ? el.checked : parseFloat(el.value);
+        if (k === "ease" && el.value === "custom") openEaseEditor(i);
+        const rng = row.querySelector(`input[data-r="${k}"]`);
+        if (rng) rng.value = String(Math.min(10, wp[k]));
+        updateScenarioUi();
+        // Zoom/Winkel eines Wegpunkts: in der Einrichtung sofort diesen
+        // Wegpunkt zeigen (die Vorschau zeigte sonst weiter die freie
+        // Einrichtungs-Ansicht - die Aenderung schien wirkungslos)
+        if ((k === "zoom" || k === "angle") && state.scenEdit) {
+          state.scenView = { x: wp.x, y: wp.y, zoom: wp.zoom, angle: wp.angle || 0 };
+          scenClampView();
+          selectWaypoint(i);
+          startWpEdit(i);
+        }
+        requestRender();
+      });
+    });
+    row.querySelectorAll("input[data-r]").forEach((el) => {
+      el.addEventListener("input", () => {
+        const k = el.dataset.r;
+        wp[k] = parseFloat(el.value);
+        const num = row.querySelector(`input[data-k="${k}"]`);
+        if (num) num.value = el.value;
+        updateScenarioUi();
+      });
+    });
+    row.querySelectorAll("button[data-a]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const a = btn.dataset.a;
+        if (a === "curve") {
+          openEaseEditor(i);
+          return;
+        }
+        if (a === "via") {
+          // Bogen setzen: aktueller Bildmittelpunkt der Einrichtung wird der
+          // Zwischenpunkt der Etappe; erneuter Klick entfernt den Bogen
+          wp.via = wp.via ? null : { x: state.scenView.x, y: state.scenView.y };
+          rebuildWaypointList();
+          return;
+        }
+        if (a === "center") {
+          wp.x = 0; wp.y = 0; wp.zoom = 1; wp.angle = 0;
+          rebuildWaypointList();
+          selectWaypoint(i);
+          updateScenarioUi();
+          return;
+        }
+        if (a === "play") {
+          if (!state.scenarioOn) {
+            state.scenarioOn = true;
+            $("ctlScenOn").checked = true;
+            updateScenarioUi();
+          }
+          setScenEdit(false);
+          const tStart = Math.min(state.duration - 0.01, scenarioArrival(i));
+          state.pausedAt = tStart;
+          state.t0 = performance.now() - tStart * 1000;
+          if (!state.playing) $("btnPlay").click();
+          return;
+        }
+        if (a === "goto") {
+          if (!state.scenarioOn) {
+            state.scenarioOn = true;
+            $("ctlScenOn").checked = true;
+            updateScenarioUi();
+          }
+          // Erst den Bearbeitungsmodus einschalten: setScenEdit setzt beim
+          // Einschalten selbst eine Ansicht (letzter Wegpunkt). Danach die
+          // gewuenschte Ansicht setzen, sonst landet der erste Klick woanders.
+          setScenEdit(true);
+          state.scenView = { x: wp.x, y: wp.y, zoom: wp.zoom, angle: wp.angle || 0 };
+          scenClampView();
+          selectWaypoint(i);
+          startWpEdit(i);
+          return;
+        }
+        if (a === "del") state.waypoints.splice(i, 1);
+        wpSel = -1;
+        $("easeEditor").hidden = true; easeEditIdx = -1;
+        if (a === "up" && i > 0) [state.waypoints[i - 1], state.waypoints[i]] = [state.waypoints[i], state.waypoints[i - 1]];
+        if (a === "down" && i < state.waypoints.length - 1) [state.waypoints[i + 1], state.waypoints[i]] = [state.waypoints[i], state.waypoints[i + 1]];
+        rebuildWaypointList();
+        updateScenarioUi();
+      });
+    });
+    const cv = row.querySelector(".wpthumb");
+    if (cv) drawWpThumb(cv, wp);
+    list.appendChild(row);
+  });
+}
+
+// Kurven-Editor fuer eigenes Easing je Etappe (Bezier wie in Schnittprogrammen)
+let easeEditIdx = -1;
+
+function easeEditorLayout() {
+  const cv = $("easeCanvas");
+  const P = 24; // Innenabstand
+  return { cv, g: cv.getContext("2d"), P, w: cv.width - P * 2, h: cv.height - P * 2 };
+}
+
+function drawEaseEditor() {
+  const wp = state.waypoints[easeEditIdx];
+  if (!wp) return;
+  const { cv, g, P, w, h } = easeEditorLayout();
+  const c = wp.curve || [0.42, 0, 0.58, 1];
+  const X = (x) => P + x * w;
+  const Y = (y) => P + (1 - y) * h;
+  g.clearRect(0, 0, cv.width, cv.height);
+  // Raster
+  g.strokeStyle = "#1d2331"; g.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    g.beginPath(); g.moveTo(X(i / 4), Y(0)); g.lineTo(X(i / 4), Y(1)); g.stroke();
+    g.beginPath(); g.moveTo(X(0), Y(i / 4)); g.lineTo(X(1), Y(i / 4)); g.stroke();
+  }
+  // Diagonale (linear) als Referenz
+  g.strokeStyle = "#2a3145";
+  g.beginPath(); g.moveTo(X(0), Y(0)); g.lineTo(X(1), Y(1)); g.stroke();
+  // Griff-Linien
+  g.strokeStyle = "#4a5570";
+  g.beginPath(); g.moveTo(X(0), Y(0)); g.lineTo(X(c[0]), Y(c[1])); g.stroke();
+  g.beginPath(); g.moveTo(X(1), Y(1)); g.lineTo(X(c[2]), Y(c[3])); g.stroke();
+  // Kurve
+  g.strokeStyle = "#8fb0ff"; g.lineWidth = 2;
+  g.beginPath();
+  for (let i = 0; i <= 60; i++) {
+    const k = i / 60;
+    const y = bezierEase(c[0], c[1], c[2], c[3], k);
+    if (i === 0) g.moveTo(X(k), Y(y)); else g.lineTo(X(k), Y(y));
+  }
+  g.stroke();
+  // Griffe
+  for (const [hx, hy] of [[c[0], c[1]], [c[2], c[3]]]) {
+    g.fillStyle = "#eef2ff";
+    g.beginPath(); g.arc(X(hx), Y(hy), 6, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = "#8fb0ff"; g.lineWidth = 1.5;
+    g.beginPath(); g.arc(X(hx), Y(hy), 6, 0, Math.PI * 2); g.stroke();
+  }
+}
+
+function openEaseEditor(i) {
+  easeEditIdx = i;
+  const wp = state.waypoints[i];
+  if (!wp.curve) wp.curve = wp.ease === "linear" ? [0.25, 0.25, 0.75, 0.75] : [0.42, 0, 0.58, 1];
+  wp.ease = "custom";
+  $("easeEditor").hidden = false;
+  $("easeEditWp").textContent = String(i + 1);
+  rebuildWaypointList();
+  drawEaseEditor();
+}
+
+let easeDrag = -1;
+$("easeCanvas").addEventListener("pointerdown", (e) => {
+  const wp = state.waypoints[easeEditIdx];
+  if (!wp) return;
+  const { cv, P, w, h } = easeEditorLayout();
+  const r = cv.getBoundingClientRect();
+  const sx = cv.width / r.width, sy = cv.height / r.height;
+  const px = (e.clientX - r.left) * sx, py = (e.clientY - r.top) * sy;
+  const c = wp.curve;
+  const d = (hx, hy) => Math.hypot(px - (P + hx * w), py - (P + (1 - hy) * h));
+  easeDrag = d(c[0], c[1]) < d(c[2], c[3]) ? 0 : 2;
+  if (Math.min(d(c[0], c[1]), d(c[2], c[3])) > 30) { easeDrag = -1; return; }
+  $("easeCanvas").setPointerCapture(e.pointerId);
+});
+$("easeCanvas").addEventListener("pointermove", (e) => {
+  if (easeDrag < 0) return;
+  const wp = state.waypoints[easeEditIdx];
+  if (!wp) return;
+  const { cv, P, w, h } = easeEditorLayout();
+  const r = cv.getBoundingClientRect();
+  const sx = cv.width / r.width, sy = cv.height / r.height;
+  const px = (e.clientX - r.left) * sx, py = (e.clientY - r.top) * sy;
+  wp.curve[easeDrag] = Math.min(1, Math.max(0, (px - P) / w));
+  wp.curve[easeDrag + 1] = Math.min(1.4, Math.max(-0.4, 1 - (py - P) / h));
+  drawEaseEditor();
+});
+for (const evName of ["pointerup", "pointercancel"]) {
+  $("easeCanvas").addEventListener(evName, () => { easeDrag = -1; });
+}
+for (const btn of document.querySelectorAll("#easePresets button")) {
+  btn.addEventListener("click", () => {
+    const wp = state.waypoints[easeEditIdx];
+    if (!wp) return;
+    wp.curve = btn.dataset.c.split(",").map(Number);
+    drawEaseEditor();
+  });
+}
+$("btnEaseClose").addEventListener("click", () => {
+  $("easeEditor").hidden = true;
+  easeEditIdx = -1;
+});
+
+// Sprachwechsel: dynamisch gebaute Wegpunkt-Zeilen und Status neu uebersetzen
+I18N.onChange.push(() => {
+  rebuildWaypointList();
+  updateScenarioUi();
+  buildSubTabs();
+});
+
+$("wpDurNextR").addEventListener("input", () => {
+  $("wpDurNext").value = $("wpDurNextR").value;
+});
+$("wpDurNext").addEventListener("change", () => {
+  $("wpDurNextR").value = String(Math.min(10, parseFloat($("wpDurNext").value) || 5));
+});
+
+$("btnWpAdd").addEventListener("click", () => {
+  if (!state.scenarioOn) {
+    state.scenarioOn = true;
+    $("ctlScenOn").checked = true;
+  }
+  if (!state.scenEdit) setScenEdit(true);
+  const v = state.scenView;
+  const durNext = Math.min(60, Math.max(0.2, parseFloat($("wpDurNext").value) || 5));
+  state.waypoints.push({
+    x: v.x, y: v.y, zoom: +v.zoom.toFixed(3), angle: +v.angle.toFixed(1),
+    dur: durNext, hold: 0.5, ease: "smooth",
+  });
+  rebuildWaypointList();
+  updateScenarioUi();
+});
+
+// Flugplan-Einrichtung: Steuerkreuz im Bild (Pan/Zoom/Rotation), gedrueckt
+// halten wiederholt. Der eingerichtete Blick wird per Wegpunkt gespeichert.
+function scenClampView() {
+  const v = state.scenView;
+  v.zoom = Math.min(8, Math.max(1, v.zoom));
+  const imgAspect = state.starless
+    ? state.starless.width / state.starless.height : 16 / 9;
+  const cover = coverBase(state.aspect, imgAspect);
+  const sc = cover * v.zoom;
+  const freeX = Math.max(0, imgAspect / 2 - (state.aspect / 2) / sc) * 0.98;
+  const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.98;
+  v.x = Math.min(freeX, Math.max(-freeX, v.x));
+  v.y = Math.min(freeY, Math.max(-freeY, v.y));
+}
+
+function scenPadStep(action) {
+  const v = state.scenView;
+  const pan = 0.02 / v.zoom;
+  const a = (state.orientation + v.angle) * Math.PI / 180;
+  const c = Math.cos(a), s = Math.sin(a);
+  // Bildschirm-Richtung in die (gedrehte) Bildebene uebersetzen
+  const move = (dx, dy) => { v.x += pan * (dx * c + dy * s); v.y += pan * (-dx * s + dy * c); };
+  switch (action) {
+    case "up": move(0, 1); break;
+    case "down": move(0, -1); break;
+    case "left": move(-1, 0); break;
+    case "right": move(1, 0); break;
+    case "zin": v.zoom *= 1.03; break;
+    case "zout": v.zoom /= 1.03; break;
+    case "rotl": v.angle -= 1; break;
+    case "rotr": v.angle += 1; break;
+  }
+  scenClampView();
+}
+
+// ---------------------------------------------------------------------------
+// Wegpunkt im Bild bearbeiten: nach "Ansteuern" merkt sich AstroFly, welcher
+// Wegpunkt geladen ist. Sobald der Blick davon abweicht (Maus, Steuerkreuz,
+// Marker), erscheint der Uebernehmen-Knopf im Bild - damit laesst sich ein
+// Wegpunkt neu setzen, ohne Zahlen in die Liste zu tippen.
+// ---------------------------------------------------------------------------
+// Der Zustand haengt am state-Objekt, damit fruehe Aufrufe (Tab-Wechsel beim
+// Start) nicht in die zeitliche Totzone einer let-Variablen laufen
+state.wpEditIdx = -1;
+state.wpEditBase = null;
+
+function wpViewDiffers(a, b) {
+  if (!a || !b) return false;
+  return Math.abs(a.x - b.x) > 0.002 || Math.abs(a.y - b.y) > 0.002 ||
+    Math.abs(a.zoom - b.zoom) > 0.005 || Math.abs((a.angle || 0) - (b.angle || 0)) > 0.2;
+}
+
+function startWpEdit(i) {
+  state.wpEditIdx = i;
+  const wp = state.waypoints[i];
+  state.wpEditBase = wp ? { x: wp.x, y: wp.y, zoom: wp.zoom, angle: wp.angle || 0 } : null;
+  updateWpApply();
+}
+
+function stopWpEdit() {
+  state.wpEditIdx = -1;
+  state.wpEditBase = null;
+  updateWpApply();
+}
+
+function updateWpApply() {
+  const btn = $("wpApply");
+  if (!btn) return;
+  const wp = state.wpEditIdx >= 0 ? state.waypoints[state.wpEditIdx] : null;
+  const show = !!wp && state.scenEdit && !state.playing &&
+    wpViewDiffers(state.scenView, state.wpEditBase);
+  btn.hidden = !show;
+  if (show) btn.textContent = t("wpApplyBtn", state.wpEditIdx + 1);
+}
+
+$("wpApply").addEventListener("click", () => {
+  const wp = state.waypoints[state.wpEditIdx];
+  if (!wp) return;
+  const v = state.scenView;
+  wp.x = v.x; wp.y = v.y; wp.zoom = v.zoom; wp.angle = v.angle || 0;
+  state.wpEditBase = { x: v.x, y: v.y, zoom: v.zoom, angle: v.angle || 0 };
+  selectWaypoint(state.wpEditIdx);
+  rebuildWaypointList();
+  updateScenarioUi();
+  updateWpApply();
+});
+
+function setScenEdit(on) {
+  on = on && state.scenarioOn; // Einrichtung nur, wenn der Plan aktiviert ist
+  if (on && !state.scenEdit) {
+    const last = state.waypoints[state.waypoints.length - 1];
+    state.scenView = last
+      ? { x: last.x, y: last.y, zoom: last.zoom, angle: last.angle || 0 }
+      : { x: 0, y: 0, zoom: state.zoomBase, angle: 0 };
+    scenClampView();
+  }
+  state.scenEdit = on;
+  if (on && state.playing) {
+    state.pausedAt = currentTime();
+    state.playing = false;
+    $("btnPlay").textContent = "\u25b6";
+  }
+  $("scenPad").hidden = !on || !state.starless;
+  if (!on) stopWpEdit(); else updateWpApply();
+}
+
+for (const btn of document.querySelectorAll("#scenPad button")) {
+  const action = btn.dataset.p;
+  if (action === "set") {
+    btn.addEventListener("click", () => $("btnWpAdd").click());
+    continue;
+  }
+  let rep = null;
+  const start = (e) => {
+    e.preventDefault();
+    scenPadStep(action);
+    clearInterval(rep);
+    rep = setInterval(() => scenPadStep(action), 60);
+  };
+  const stop = () => { clearInterval(rep); rep = null; };
+  btn.addEventListener("pointerdown", start);
+  for (const ev of ["pointerup", "pointerleave", "pointercancel"]) btn.addEventListener(ev, stop);
+}
+
+// Maussteuerung in der Einrichtung: Mausrad zoomt, Links-Ziehen greift das
+// Bild (Kamera folgt der Maus), Rechts-Ziehen dreht die Kamera
+let scenDrag = null;
+let scenDragDist = 0;
+canvas.addEventListener("wheel", (e) => {
+  if (!state.scenEdit || !state.starless) return;
+  e.preventDefault();
+  state.scenView.zoom *= Math.exp(-e.deltaY * 0.0013);
+  scenClampView();
+}, { passive: false });
+canvas.addEventListener("pointerdown", (e) => {
+  if (!state.scenEdit || !state.starless) return;
+  if (e.button !== 0 && e.button !== 1 && e.button !== 2) return;
+  e.preventDefault();
+  scenDrag = { b: e.button, x: e.clientX, y: e.clientY };
+  scenDragDist = 0;
+  // Linksklick auf einen Wegpunkt-Marker: den Punkt verschieben statt pannen
+  if (e.button === 0 && state.waypoints.length) {
+    const rect = canvas.getBoundingClientRect();
+    const cam = camAt(0);
+    // Bei ueberlappenden Markern gewinnt der OBERSTE (hoechster Index wird
+    // zuletzt gezeichnet) - nicht der naechstgelegene darunter
+    let best = -1;
+    state.waypoints.forEach((wp, i) => {
+      const S = wpToScreen(wp.x, wp.y, cam, canvas.width, canvas.height);
+      const sx = (S.x / canvas.width) * rect.width;
+      const sy = (S.y / canvas.height) * rect.height;
+      const d = Math.hypot(e.clientX - rect.left - sx, e.clientY - rect.top - sy);
+      if (d < 18) best = i;
+    });
+    if (best >= 0) {
+      scenDrag.wp = best;
+      selectWaypoint(best);
+    }
+  }
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener("pointermove", (e) => {
+  if (!scenDrag || !state.scenEdit) return;
+  const dx = e.clientX - scenDrag.x, dy = e.clientY - scenDrag.y;
+  scenDrag.x = e.clientX; scenDrag.y = e.clientY;
+  scenDragDist += Math.abs(dx) + Math.abs(dy);
+  // Wegpunkt-Marker ziehen: Zeigerposition -> Bildebene (gleiche
+  // tiefenbewusste Fixpunkt-Iteration wie das Klick-Ziel)
+  if (scenDrag.wp !== undefined) {
+    const wp = state.waypoints[scenDrag.wp];
+    const rect = canvas.getBoundingClientRect();
+    const fx = (e.clientX - rect.left) / rect.width;
+    const fy = (e.clientY - rect.top) / rect.height;
+    const cam = camAt(0);
+    const px = (fx - 0.5) * state.aspect;
+    const py = (0.5 - fy);
+    const c = Math.cos(cam.angle), s = Math.sin(cam.angle);
+    const rx = c * px + s * py;
+    const ry = -s * px + c * py;
+    const imgAspect = state.starless.width / state.starless.height;
+    const cover = coverBase(state.aspect, imgAspect);
+    const parallax = state.parallax / 100;
+    const depthRange = 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
+    let qx = cam.cx + rx / (cover * cam.zoom * (cam.lens || 1));
+    let qy = cam.cy + ry / (cover * cam.zoom * (cam.lens || 1));
+    for (let i = 0; i < 3; i++) {
+      const d = depthAtPlane(qx, qy, imgAspect);
+      const exD = 1 + parallax * (d - 0.45) * depthRange;
+      const sc = cover * Math.pow(cam.zoom, exD);
+      qx = cam.cx + rx / sc;
+      qy = cam.cy + ry / sc;
+    }
+    wp.x = Math.min(imgAspect * 0.475, Math.max(-imgAspect * 0.475, qx));
+    wp.y = Math.min(0.475, Math.max(-0.475, qy));
+    return;
+  }
+  const v = state.scenView;
+  if (scenDrag.b === 1 || scenDrag.b === 2) {
+    v.angle += dx * 0.25;
+    return;
+  }
+  const rect = canvas.getBoundingClientRect();
+  const imgAspect = state.starless.width / state.starless.height;
+  const cover = coverBase(state.aspect, imgAspect);
+  const k = 1 / (rect.height * cover * v.zoom);
+  const a = (state.orientation + v.angle) * Math.PI / 180;
+  const c = Math.cos(a), s = Math.sin(a);
+  const mx = -dx * k, my = dy * k;
+  v.x += mx * c + my * s;
+  v.y += -mx * s + my * c;
+  scenClampView();
+});
+for (const evName of ["pointerup", "pointercancel"]) {
+  canvas.addEventListener(evName, () => {
+    // Nach dem Verschieben eines Markers die Zeilen-Anzeige auffrischen
+    if (scenDrag && scenDrag.wp !== undefined) rebuildWaypointList();
+    scenDrag = null;
+  });
+}
+canvas.addEventListener("contextmenu", (e) => {
+  if (state.scenEdit) e.preventDefault();
+});
+
+$("btnScenReset").addEventListener("click", () => {
+  if (!state.scenarioOn) return;
+  if (!state.scenEdit) setScenEdit(true);
+  state.scenView = { x: 0, y: 0, zoom: 1, angle: 0 };
+});
+
+$("selMoonObj").addEventListener("change", () => {
+  state.moonObj = $("selMoonObj").value;
+});
+
+$("ctlScenOn").addEventListener("change", () => {
+  state.scenarioOn = $("ctlScenOn").checked;
+  setScenEdit(state.scenarioOn && state.uiMode === "pro" && state.activeTab === "szenario");
+  updateScenarioUi();
+});
+
+// Mond-Modus: Scheibe erkennen und Kugel-Tiefe aktivieren (Prototyp)
+$("ctlSuperSample").addEventListener("change", () => {
+  state.superSample = $("ctlSuperSample").checked;
+});
+$("ctlStarImg").addEventListener("change", () => {
+  state.starImage = $("ctlStarImg").checked;
+  if (state.starImage) ensureStarsImgTexture();
+  refreshStatusChips();
+});
+$("ctlRealStars").addEventListener("change", () => {
+  state.realStars = $("ctlRealStars").checked;
+});
+
+$("ctlMoonMode").addEventListener("change", () => {
+  const on = $("ctlMoonMode").checked;
+  const status = $("moonStatus");
+  $("moonObjRow").hidden = !on;
+  if (on) {
+    if (!state.starless) {
+      $("ctlMoonMode").checked = false;
+      status.textContent = t("moonNoImage");
+      return;
+    }
+    state.moonDisk = detectMoonDisk();
+    if (!state.moonDisk) {
+      $("ctlMoonMode").checked = false;
+      state.moonMode = false;
+      status.textContent = t("moonNotFound");
+      buildDepthMap();
+      return;
+    }
+    state.moonMode = true;
+    status.textContent = t("moonFound", Math.round(state.moonDisk.r * 200));
+  } else {
+    state.moonMode = false;
+    status.textContent = "";
+  }
+  buildDepthMap();
+});
+
+$("ctlFlipH").addEventListener("change", () => {
+  state.flipH = $("ctlFlipH").checked;
+  applyImageFlip(true, false);
+});
+$("ctlFlipV").addEventListener("change", () => {
+  state.flipV = $("ctlFlipV").checked;
+  applyImageFlip(false, true);
+});
+// Umfang wechseln, während eine Spiegelung aktiv ist: die Maske zieht
+// nach (Spiegelung anwenden bzw. zurücknehmen), Labels folgen
+$("ctlFlipOnly").addEventListener("change", () => {
+  state.flipOnlyStarless = $("ctlFlipOnly").checked;
+  if (state.flipH || state.flipV) {
+    flipMask(state.flipH, state.flipV);
+    if (state.wcs && state.gaiaCatalog) {
+      try { matchGaia(state.gaiaCatalog); } catch { state.wcsFit = null; }
+    } else if (state.wcsFit) {
+      state.wcsFit = null;
+    }
+    reprojectLabels();
+    uploadStars();
+    updateGaiaStatus();
+  }
+});
+
+// Demo-Bilder (Orionnebel, aufgenommen von Michael Döhler) aus dem Repo laden –
+// so kann jeder die App sofort ausprobieren, auch ohne eigene Dateien
+$("btnDemo").addEventListener("click", async () => {
+  const status = $("loadStatus");
+  status.classList.remove("error");
+  status.textContent = t("demoLoading");
+  $("btnDemo").disabled = true;
+  try {
+    const fetchImg = async (url, name) => {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return new File([await r.blob()], name, { type: "image/jpeg" });
+    };
+    const starless = await fetchImg("demo/orion_starless.jpg", "orion_demo.jpg");
+    const stars = await fetchImg("demo/orion_starmask.jpg", "orion_demo_starmask.jpg");
+    await loadFile("starless", starless);
+    await loadFile("stars", stars);
+    // Plate-Solve-Lösung des Demobilds automatisch übernehmen –
+    // Gaia-Abgleich und Objekterkennung sind damit sofort nutzbar
+    try {
+      const rw = await fetch("demo/orion.wcs");
+      if (rw.ok) {
+        const wcs = parseWcsHeader(new Uint8Array(await rw.arrayBuffer()));
+        wcs._name = "orion.wcs";
+        gaiaTransient = null;
+        state.wcs = wcs;
+        state.wcsFlip = undefined;
+        state.wcsFit = null;
+        state.gaiaCatalog = null;
+        state.gaiaDepth = null; state.gaiaInfo = null; state.gaiaColorRGB = null; state.gaiaPM = null;
+        reprojectLabels();
+        uploadStars();
+        updateGaiaStatus();
+      }
+    } catch { /* Demo funktioniert auch ohne Plate-Solve */ }
+    status.textContent = t("demoLoaded", state.starCount) +
+      (state.wcs && state.wcs._name === "orion.wcs" ? " " + t("demoWcs") : "");
+  } catch (err) {
+    console.error(err);
+    status.classList.add("error");
+    status.textContent = location.protocol === "file:"
+      ? t("demoNeedsHttp") : t("demoFailed", err.message);
+  } finally {
+    $("btnDemo").disabled = false;
+  }
+});
+
+$("fileStarless").addEventListener("change", (e) => {
+  if (e.target.files[0]) loadFile("starless", e.target.files[0]);
+});
+$("fileStars").addEventListener("change", (e) => {
+  if (e.target.files[0]) loadFile("stars", e.target.files[0]);
+});
+
+// Drag & Drop auf die Buttons und die Bühne
+for (const [zone, which] of [["dropStarless", "starless"], ["dropStars", "stars"]]) {
+  const el = $(zone);
+  el.addEventListener("dragover", (e) => { e.preventDefault(); el.classList.add("dragover"); });
+  el.addEventListener("dragleave", () => el.classList.remove("dragover"));
+  el.addEventListener("drop", (e) => {
+    e.preventDefault();
+    el.classList.remove("dragover");
+    if (e.dataTransfer.files[0]) loadFile(which, e.dataTransfer.files[0]);
+  });
+}
+const stage = $("stage");
+stage.addEventListener("dragover", (e) => e.preventDefault());
+stage.addEventListener("drop", (e) => {
+  e.preventDefault();
+  const files = [...e.dataTransfer.files];
+  if (files[0]) loadFile("starless", files[0]);
+  if (files[1]) loadFile("stars", files[1]);
+});
+
+// ---------------------------------------------------------------- Export
+
+function exportDims() {
+  const base = parseInt($("ctlRes").value, 10); // kurze Kante
+  let w, h;
+  if (state.aspect >= 1) { h = base; w = Math.round(base * state.aspect); }
+  else { w = base; h = Math.round(base / state.aspect); }
+  return [w & ~1, h & ~1];
+}
+
+function pickMime() {
+  if (typeof MediaRecorder === "undefined") return "";
+  const candidates = [
+    "video/mp4;codecs=avc1",
+    "video/mp4",
+    "video/webm;codecs=vp9",
+    "video/webm;codecs=vp8",
+    "video/webm",
+  ];
+  for (const m of candidates) {
+    if (MediaRecorder.isTypeSupported(m)) return m;
+  }
+  return "";
+}
+
+function saveBlob(blob, filename) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 30_000);
+}
+
+function beginExport(w, h, scale) {
+  state.exporting = true;
+  state.renderScale = scale || 1;
+  $("btnRenderFoot").disabled = true;
+  // Supersampling: intern groesser rendern, der Export rechnet auf w x h herunter
+  canvas.width = Math.round(w * state.renderScale);
+  canvas.height = Math.round(h * state.renderScale);
+  $("btnExport").disabled = true;
+  $("exportProgressWrap").hidden = false;
+  $("exportProgress").style.width = "0%";
+}
+
+function endExport(message) {
+  state.exporting = false;
+  state.renderScale = 1;
+  $("btnRenderFoot").disabled = false;
+  state.offlineExport = false;
+  $("btnExport").disabled = false;
+  $("exportProgressWrap").hidden = true;
+  fitCanvas();
+  state.t0 = performance.now();
+  $("exportStatus").textContent = message;
+}
+
+/** Basisnamen aus dem Starless-Dateinamen ableiten ("orion_starless.tif" -> "orion"). */
+function deriveExportName() {
+  const n = (state.starless && state.starless.name) || "";
+  let base = n.replace(/\.[a-z0-9]+(\s*×3)?$/i, "");
+  base = base.replace(/star_?less|sternlos/gi, "");
+  base = base.replace(/[-_ .]{2,}/g, "_").replace(/^[-_ .]+|[-_ .]+$/g, "");
+  return base || "astrofly";
+}
+
+function exportFilename(ext) {
+  const custom = $("ctlFilename").value.trim().replace(/[\\/:*?"<>|]/g, "");
+  const base = custom || deriveExportName();
+  return `${base}_${state.aspectName.replace(":", "x")}_${state.duration}s.${ext}`;
+}
+
+/**
+ * Bevorzugter Weg: deterministischer Offline-Export über WebCodecs.
+ * Jedes Frame wird einzeln gerendert und kodiert – das Ergebnis ist auch
+ * dann flüssig (30 fps), wenn der Rechner nicht in Echtzeit rendern kann.
+ * Gibt false zurück, wenn WebCodecs/H.264 nicht verfügbar ist.
+ */
+// Safari/WebKit: Der WebCodecs-Export erzeugt dort MP4s mit fehlerhaften
+// Metadaten (Schnitt-Apps wie Instagram Edits zeigen nur ein Standbild) und
+// kann die Seite sogar zum Absturz bringen. Safari nimmt deshalb immer den
+// bewährten MediaRecorder-Weg – der liefert dort saubere H.264-MP4s.
+const IS_SAFARI = /apple/i.test(navigator.vendor || "") &&
+  !/crios|fxios|chrome|edg/i.test(navigator.userAgent);
+
+// In-App-Browser (Instagram, Facebook, TikTok & Co.): deren WebView kann
+// Blob-Downloads nicht speichern – der Export liefe am Ende ins Leere
+// ("Seite kann nicht geladen werden"). Wir warnen früh und blocken den Export.
+const IS_INAPP = /instagram|fban|fbav|fbios|fb_iab|tiktok|musical_ly|snapchat|line\//i
+  .test(navigator.userAgent);
+
+async function exportOffline(w, h, fps) {
+  if (typeof VideoEncoder === "undefined" || IS_SAFARI) return false;
+
+  // Codec-Kandidaten: H.264 in MP4 (Chrome/Edge), sonst VP9/VP8 in WebM
+  const bitrate = Math.min(50_000_000, Math.round(w * h * fps * 0.12));
+  const candidates = [];
+  if (typeof Mp4Muxer !== "undefined") {
+    candidates.push({ codec: (w > 1920 || h > 1920) ? "avc1.640033" : "avc1.640028", container: "mp4" });
+  }
+  if (typeof WebMMuxer !== "undefined") {
+    candidates.push({ codec: "vp09.00.41.08", container: "webm" });
+    candidates.push({ codec: "vp8", container: "webm" });
+  }
+
+  let config = null, container = null;
+  for (const cand of candidates) {
+    const c = {
+      codec: cand.codec, width: w, height: h, framerate: fps,
+      bitrate, latencyMode: "quality",
+    };
+    try {
+      const support = await VideoEncoder.isConfigSupported(c);
+      if (support.supported) { config = c; container = cand.container; break; }
+    } catch { /* Kandidat nicht unterstützt */ }
+  }
+  if (!config) return false;
+
+  // Supersampling bis Full HD (kurze Kante <= 1080): 2x rendern, sauber
+  // herunterrechnen - glatte Sternkanten, kein Restflimmern kleiner Sterne.
+  // 4K hat bereits die vierfache Pixelzahl und bleibt bei 1x (Speicher)
+  const S = state.superSample && Math.min(w, h) <= 1080 ? 2 : 1;
+  beginExport(w, h, S);
+  state.offlineExport = true;
+  const status = $("exportStatus");
+  status.textContent = t("renderingOffline", w, h, state.duration);
+
+  const muxer = container === "mp4"
+    ? new Mp4Muxer.Muxer({
+        target: new Mp4Muxer.ArrayBufferTarget(),
+        video: { codec: "avc", width: w, height: h },
+        fastStart: "in-memory",
+      })
+    : new WebMMuxer.Muxer({
+        target: new WebMMuxer.ArrayBufferTarget(),
+        video: { codec: config.codec.startsWith("vp09") ? "V_VP9" : "V_VP8", width: w, height: h, frameRate: fps },
+      });
+  let encodeError = null;
+  const encoder = new VideoEncoder({
+    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+    error: (e) => { encodeError = e; },
+  });
+  encoder.configure(config);
+
+  const totalFrames = Math.round(state.duration * fps);
+  // Overlay (Infokarte/Labels) wird über einen 2D-Zwischenpuffer eingebrannt;
+  // beim Supersampling rechnet derselbe Puffer auf die Zielgroesse herunter
+  const burnOverlay = overlayActive();
+  const needComp = burnOverlay || S > 1;
+  let compCanvas = null, compCtx = null;
+  if (needComp) {
+    compCanvas = document.createElement("canvas");
+    compCanvas.width = w; compCanvas.height = h;
+    compCtx = compCanvas.getContext("2d");
+    compCtx.imageSmoothingEnabled = true;
+    compCtx.imageSmoothingQuality = "high";
+  }
+  try {
+    for (let i = 0; i < totalFrames; i++) {
+      const t = i / fps;
+      render(t);
+      let src = canvas;
+      if (needComp) {
+        // bei S = 2 ist das ein exaktes 2x2-Mittel je Zielpixel
+        compCtx.drawImage(canvas, 0, 0, w, h);
+        if (burnOverlay) {
+          const ap = animParams(t);
+          drawOverlayTo(compCtx, w, h, ap.loopT, ap.cam, ap.fade);
+        }
+        src = compCanvas;
+      }
+      const vf = new VideoFrame(src, {
+        timestamp: Math.round(i * 1e6 / fps),
+        duration: Math.round(1e6 / fps),
+      });
+      encoder.encode(vf, { keyFrame: i % (fps * 3) === 0 });
+      vf.close();
+      if (encodeError) throw encodeError;
+
+      // Encoder nicht fluten und UI am Leben halten
+      while (encoder.encodeQueueSize > 8) {
+        await new Promise((r) => setTimeout(r, 4));
+      }
+      if (i % 3 === 0) {
+        $("exportProgress").style.width = ((i + 1) / totalFrames * 100).toFixed(1) + "%";
+        await new Promise((r) => setTimeout(r));
+      }
+    }
+    status.textContent = t("finalizing");
+    await encoder.flush();
+    muxer.finalize();
+    const blob = new Blob([muxer.target.buffer], { type: "video/" + container });
+    const name = exportFilename(container);
+    saveBlob(blob, name);
+    endExport(t("doneFps", name, (blob.size / 1e6).toFixed(1)));
+  } catch (err) {
+    console.error(err);
+    try { encoder.close(); } catch { /* bereits geschlossen */ }
+    endExport(t("exportFailed", err.message));
+  }
+  return true;
+}
+
+/** Fallback: Echtzeit-Aufnahme über MediaRecorder (WebM/MP4). */
+function exportRealtime(w, h, fps) {
+  const status = $("exportStatus");
+  const mime = pickMime();
+  if (!mime || typeof MediaRecorder === "undefined") {
+    status.textContent = t("noExportSupport");
+    return;
+  }
+
+  beginExport(w, h);
+  state.playing = true;
+  state.t0 = performance.now();
+  status.textContent = t("renderingRealtime", w, h, state.duration);
+
+  // Overlay einbrennen: Stream kommt dann aus einem 2D-Zwischenpuffer
+  const burnOverlay = overlayActive();
+  let compCanvas = null, compCtx = null;
+  if (burnOverlay) {
+    compCanvas = document.createElement("canvas");
+    compCanvas.width = w; compCanvas.height = h;
+    compCtx = compCanvas.getContext("2d");
+  }
+  const stream = (burnOverlay ? compCanvas : canvas).captureStream(fps);
+  const rec = new MediaRecorder(stream, {
+    mimeType: mime,
+    videoBitsPerSecond: Math.min(60_000_000, Math.round(w * h * fps * 0.15)),
+  });
+  const chunks = [];
+  rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+  rec.onstop = () => {
+    const ext = mime.startsWith("video/mp4") ? "mp4" : "webm";
+    const blob = new Blob(chunks, { type: mime.split(";")[0] });
+    const name = exportFilename(ext);
+    saveBlob(blob, name);
+    endExport(t("done", name, (blob.size / 1e6).toFixed(1)));
+  };
+
+  rec.start(250);
+  const tick = () => {
+    const t = (performance.now() - state.t0) / 1000;
+    if (burnOverlay) {
+      compCtx.drawImage(canvas, 0, 0, w, h);
+      const ap = animParams(Math.min(t, state.duration));
+      drawOverlayTo(compCtx, w, h, ap.loopT, ap.cam, ap.fade);
+    }
+    $("exportProgress").style.width = Math.min(100, (t / state.duration) * 100) + "%";
+    if (t >= state.duration) rec.stop();
+    else if (state.exporting) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+$("btnExport").addEventListener("click", async () => {
+  if (state.exporting || !texColor) return;
+  if (IS_INAPP) {
+    // Nicht rendern lassen und dann am Speichern scheitern - klar sagen, warum
+    $("exportStatus").textContent = t("inappExport");
+    return;
+  }
+  const [w, h] = exportDims();
+  const fps = 30;
+  const usedOffline = await exportOffline(w, h, fps);
+  if (!usedOffline) exportRealtime(w, h, fps);
+});
+
+// Browser-Hinweis im Export-Panel: Safari nutzt den Kompatibilitätsmodus,
+// reine WebM-Browser (z. B. Firefox) bekommen eine MP4-Warnung
+(async () => {
+  const hint = $("exportBrowserHint");
+  if (IS_INAPP) {
+    hint.setAttribute("data-i18n", "inappExport");
+    hint.textContent = t("inappExport");
+    hint.hidden = false;
+    const banner = $("inappBanner");
+    banner.setAttribute("data-i18n", "inappExport");
+    banner.textContent = t("inappExport");
+    banner.hidden = false;
+    return;
+  }
+  // Firefox kann das Video nicht zuverlässig rendern/exportieren (kein
+  // WebCodecs-MP4, MediaRecorder-Probleme) - deutliche Warnung ganz oben
+  if (/firefox/i.test(navigator.userAgent)) {
+    for (const el of [hint, $("inappBanner")]) {
+      el.setAttribute("data-i18n", "firefoxWarn");
+      el.textContent = t("firefoxWarn");
+      el.hidden = false;
+    }
+    return;
+  }
+  if (IS_SAFARI) {
+    hint.setAttribute("data-i18n", "safariExport");
+    hint.textContent = t("safariExport");
+    hint.hidden = false;
+    return;
+  }
+  let mp4 = false;
+  if (typeof VideoEncoder !== "undefined" && typeof Mp4Muxer !== "undefined") {
+    try {
+      const s = await VideoEncoder.isConfigSupported({
+        codec: "avc1.640028", width: 1920, height: 1080, framerate: 30, bitrate: 8_000_000,
+      });
+      mp4 = !!s.supported;
+    } catch { /* bleibt false */ }
+  }
+  if (!mp4 && typeof MediaRecorder !== "undefined") {
+    mp4 = MediaRecorder.isTypeSupported("video/mp4;codecs=avc1") ||
+      MediaRecorder.isTypeSupported("video/mp4");
+  }
+  if (!mp4) {
+    hint.setAttribute("data-i18n", "webmExport");
+    hint.textContent = t("webmExport");
+    hint.hidden = false;
+  }
+})();
+
+// ---------------------------------------------------------------- Feedback
+
+const FEEDBACK_REPO = "https://github.com/michaeld1988/AstroFly";
+const FEEDBACK_MAIL = "mail@michaeldoehler.com";
+const INSTAGRAM_URL = "https://www.instagram.com/astrofly_app/";
+
+/** Technische Angaben für Bug-Reports (nur was der Browser ohnehin preisgibt). */
+function feedbackDiagnostics() {
+  let gpu = "unknown";
+  try {
+    const ext = gl.getExtension("WEBGL_debug_renderer_info");
+    if (ext) gpu = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
+  } catch { /* optional */ }
+  return [
+    "App: AstroFly (" + location.host + ")",
+    "Browser: " + navigator.userAgent,
+    "GPU: " + gpu,
+    "Language: " + I18N.lang,
+    "Screen: " + screen.width + "×" + screen.height,
+  ].join("\n");
+}
+
+$("btnFeedbackGithub").addEventListener("click", () => {
+  const body = t("feedbackBodyIntro") + "\n---\n" + feedbackDiagnostics();
+  const url = FEEDBACK_REPO + "/issues/new?title=" +
+    encodeURIComponent("[Feedback] ") + "&body=" + encodeURIComponent(body);
+  window.open(url, "_blank", "noopener");
+});
+
+$("btnInstagram").addEventListener("click", () => {
+  window.open(INSTAGRAM_URL, "_blank", "noopener");
+});
+
+$("btnFeedbackMail").addEventListener("click", () => {
+  const body = t("feedbackMailIntro") + "---\n" + feedbackDiagnostics();
+  location.href = "mailto:" + FEEDBACK_MAIL +
+    "?subject=" + encodeURIComponent("AstroFly Feedback") +
+    "&body=" + encodeURIComponent(body);
+});
+
+// ---------------------------------------------------------------- Hilfen
+
+/** Tiefe (0..1) an einem Punkt der Bildebene, aus der CPU-Kopie der Tiefenkarte. */
+/**
+ * Wohin verschiebt die Galaxien-Rotation einen Ebenen-Punkt? Gleiche Ellipsen,
+ * Winkel und Wirbel wie im Shader (der Inhalt dreht um +Winkel). Fuer Sterne
+ * laeuft die Drehung am Ellipsenrand aus wie im Stern-Shader
+ */
+function spinDisplace(px, py, te, star) {
+  if (!state.spinSpeed || !state.galaxies || !state.galaxies.length) return { x: px, y: py };
+  const ang = galAngles(te);
+  let best = -1, rb = 1, eb = null;
+  state.galaxies.slice(0, 8).forEach((g, k) => {
+    const t = g.tilt * Math.PI / 180, c = Math.cos(t), s = Math.sin(t);
+    const dx = px - g.x, dy = py - g.y;
+    const ex = c * dx + s * dy, ey = (-s * dx + c * dy) / Math.max(0.05, g.flat);
+    const r = Math.hypot(ex, ey) / g.rad;
+    if (r < rb) { rb = r; best = k; eb = [ex, ey]; }
+  });
+  if (best < 0) return { x: px, y: py };
+  const g = state.galaxies[best], t = 1 - rb;
+  let a = ang[best].a + ang[best].tw * t * t;
+  if (star) { const u = Math.min(1, Math.max(0, (rb - 1) / (0.85 - 1))); a *= u * u * (3 - 2 * u); }
+  const ca = Math.cos(a), sa = Math.sin(a);
+  const rx = ca * eb[0] - sa * eb[1], ry = (sa * eb[0] + ca * eb[1]) * Math.max(0.05, g.flat);
+  const tl = g.tilt * Math.PI / 180, c = Math.cos(tl), s = Math.sin(tl);
+  return { x: g.x + c * rx - s * ry, y: g.y + s * rx + c * ry };
+}
+
+function depthAtPlane(qx, qy, imgAspect) {
+  const dd = state.depthData;
+  if (!dd) return 0.45;
+  const u = Math.min(1, Math.max(0, qx / imgAspect + 0.5));
+  const v = Math.min(1, Math.max(0, qy + 0.5)); // Ebene ist y-up
+  // Bilinear statt Nearest-Neighbor: Die Marker-Projektion nutzt die Tiefe
+  // für den Parallaxe-Exponenten - gestufte Werte ließen die Beschriftungen
+  // bei langsamer Kamerabewegung sichtbar "zittern"
+  const fx = u * (dd.w - 1), fy = (1 - v) * (dd.h - 1);
+  const x0 = Math.floor(fx), y0 = Math.floor(fy);
+  const x1 = Math.min(dd.w - 1, x0 + 1), y1 = Math.min(dd.h - 1, y0 + 1);
+  const ax = fx - x0, ay = fy - y0;
+  const at = dd.f ? (x, y) => dd.f[y * dd.w + x] : (x, y) => dd.data[(y * dd.w + x) * 4] / 255;
+  return (at(x0, y0) * (1 - ax) + at(x1, y0) * ax) * (1 - ay) +
+         (at(x0, y1) * (1 - ax) + at(x1, y1) * ax) * ay;
+}
+
+// Vorschaugröße (wird gespeichert)
+{
+  const saved = parseInt(localStorage.getItem("astrofly-viewscale"), 10);
+  if (saved >= 40 && saved <= 100) state.viewScale = saved;
+  const el = $("ctlViewSize");
+  el.value = state.viewScale;
+  el.addEventListener("input", () => {
+    state.viewScale = parseInt(el.value, 10);
+    localStorage.setItem("astrofly-viewscale", el.value);
+    fitCanvas();
+  });
+  fitCanvas();
+}
+
+// ---------------------------------------------------------------- Sternmasken-Streckung
+
+/**
+ * Iterative, farberhaltende Asinh-Streckung für lineare Sternmasken.
+ * Pro Durchgang wird die Luminanz moderat gestreckt (asinh) und RGB
+ * proportional skaliert, sodass die Sternfarben exakt erhalten bleiben.
+ * Gestoppt wird, sobald das 99,9-Perzentil der Luminanz das Ziel erreicht –
+ * bereits gestreckte Masken bleiben dadurch praktisch unverändert.
+ */
+function stretchStarMask(srcCanvas) {
+  const w = srcCanvas.width, h = srcCanvas.height;
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const cx = c.getContext("2d", { willReadFrequently: true });
+  cx.drawImage(srcCanvas, 0, 0);
+  const id = cx.getImageData(0, 0, w, h);
+  const d = id.data;
+  const n = w * h;
+
+  const K = 10;                    // moderate Stärke pro Durchgang
+  const denom = Math.asinh(K);
+  // Ziel-Perzentil aus der eingestellten Intensität (0..100 -> 0.12..0.6)
+  const TARGET = 0.12 + 0.0048 * state.stretchAmount;
+  const MAX_PASSES = 14;
+
+  let passes = 0;
+  while (passes < MAX_PASSES) {
+    const hist = new Uint32Array(256);
+    for (let j = 0; j < d.length; j += 4) {
+      hist[(d[j] * 77 + d[j + 1] * 150 + d[j + 2] * 29) >> 8]++;
+    }
+    let cum = 0, p999 = 1;
+    const cut = n * 0.999;
+    for (let v = 0; v < 256; v++) {
+      cum += hist[v];
+      if (cum >= cut) { p999 = v / 255; break; }
+    }
+    if (p999 >= TARGET) break;
+
+    for (let j = 0; j < d.length; j += 4) {
+      const L = (0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2]) / 255;
+      if (L <= 0) continue;
+      const scale = Math.asinh(K * L) / denom / L;
+      d[j]     = Math.min(255, d[j] * scale);
+      d[j + 1] = Math.min(255, d[j + 1] * scale);
+      d[j + 2] = Math.min(255, d[j + 2] * scale);
+    }
+    passes++;
+  }
+  if (passes > 0) cx.putImageData(id, 0, 0);
+  return { canvas: c, passes };
+}
+
+/** Sternmaske (neu) verarbeiten: optional strecken, dann Sterne extrahieren. */
+function processStarMask() {
+  const orig = state.starsOriginal;
+  if (!orig) return;
+  const status = $("loadStatus");
+  // Auf Arbeitsgröße verkleinern (dort findet auch die Sternerkennung statt)
+  const work = downscale(orig, 3000);
+  let passes = 0;
+  let canvas = work;
+  if (!state.maskStretched) {
+    const res = stretchStarMask(work);
+    canvas = res.canvas;
+    passes = res.passes;
+  }
+  state.stars = { canvas, width: canvas.width, height: canvas.height, name: orig.name };
+  buildStarBuffer();
+  status.classList.remove("error");
+  status.textContent = t("starsDetected", state.maskStarCount) +
+    (passes > 0 ? " " + t("stretchInfo", passes) : "");
+}
+
+$("ctlMaskStretched").addEventListener("change", () => {
+  state.maskStretched = $("ctlMaskStretched").checked;
+  if (state.starsOriginal) processStarMask();
+});
+
+// ---------------------------------------------------------------- Panel-Menüs
+
+// ?-Hilfen: Erklärtexte erscheinen erst auf Klick aufs Fragezeichen.
+// stopPropagation, damit der Klick in einem <label> nicht die Checkbox schaltet
+document.addEventListener("click", (e) => {
+  const qm = e.target.closest(".qm");
+  if (!qm || !qm.dataset.help) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const el = $(qm.dataset.help);
+  if (el) el.hidden = !el.hidden;
+});
+
+// ------------------------------------------------- Zugaenglichkeit und PWA
+// Wer im System "weniger Bewegung" eingestellt hat, bekommt die Vorschau
+// erst auf Knopfdruck - kein automatisch laufender Flug
+if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  state.playing = false;
+  $("btnPlay").textContent = "\u25b6";
+}
+// Offline-faehig und installierbar: der Service Worker haelt die App samt
+// Demo und Bibliotheken vor; Katalogabfragen gehen weiterhin immer ins Netz
+if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
+  navigator.serviceWorker.register("sw.js").then((reg) => {
+    reg.addEventListener("updatefound", () => {
+      const nw = reg.installing;
+      if (!nw) return;
+      nw.addEventListener("statechange", () => {
+        if (nw.state === "installed" && navigator.serviceWorker.controller) {
+          const el = $("exportStatus");
+          if (el && !el.textContent) el.textContent = t("swUpdated");
+        }
+      });
+    });
+  }).catch(() => { /* ohne Service Worker laeuft alles wie bisher */ });
+}
