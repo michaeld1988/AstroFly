@@ -119,6 +119,10 @@ const state = {
   relight: 0,            // Sternlicht auf dem Nebel 0..100
   shutterMode: "off",    // Verschluss: off | 90 | 180 | 360 (Grad)
   exportFps: 30,         // Bildrate des Exports
+  camMass: 0,            // Kamera-Traegheit im Flugplan 0..100 (rundet Ecken, kein Verzug)
+  nebFlow: 0,            // innere Stroemung des Nebels 0..100
+  titleCard: false,      // Titelkarte am Anfang (Objektname wie ein Filmtitel)
+  presetPlan: false,     // der aktive Flug-Preset hat den Flugplan gesetzt
   scenarioOn: false,     // Szenario-Flug: Kamera fliegt die Wegpunkte ab
   scenEdit: false,       // Flugplan-Einrichtung: Kamera folgt dem Steuerkreuz
   scenView: { x: 0, y: 0, zoom: 1, angle: 0 }, // aktuell eingerichteter Blick
@@ -298,6 +302,8 @@ uniform int uLightN;        // Sternlicht (Relight): Anzahl Leuchtsterne
 uniform vec4 uLightP[8];    // x, y (Ebene), Tiefe, Helligkeit
 uniform vec4 uLightC[8];    // Sternfarbe
 uniform float uRelight;     // Staerke 0..1
+uniform float uFlow;        // innere Stroemung des Nebels 0..1
+uniform float uFlowT;       // Flugzeit fuer die Stroemung
 uniform sampler2D uVolD;    // rgb = entstaubtes Leuchten (aufgefuellt), a = Staubmaske
 uniform sampler2D uVolB;    // Grund-Leuchten (glatt, geringe Aufloesung, Float)
 uniform float uVolSep;      // so weit liegt das Grund-Leuchten hinter den Strukturen
@@ -466,6 +472,17 @@ vec2 solveUv(vec2 pr, float mode, float off, out vec2 qOut, float rigid) {
 // damit eine reine Abdunklung (Verhaeltnis <= 1), und helle Details am Rand
 // einer Staubstelle leben nur im Leuchten - sie koennen sich beim
 // Verschieben nicht auf zwei Schichten aufteilen (kein Geisterstreifen)
+// Innere Stroemung: das Gas treibt langsam in sich (Tree of Life), als
+// weiche, zeitabhaengige Verschiebung der Abtastung in Bildkoordinaten -
+// winzig (Promille), damit nichts reisst, aber der Nebel lebt
+vec2 flowOff(vec2 uv) {
+  if (uFlow <= 0.0) return vec2(0.0);
+  float t = uFlowT;
+  vec2 p = uv * 6.0;
+  vec2 o = vec2(sin(p.y * 1.3 + t * 0.23) + 0.5 * sin(p.y * 2.9 - t * 0.31 + 1.7),
+                sin(p.x * 1.1 - t * 0.19 + 0.6) + 0.5 * sin(p.x * 2.3 + t * 0.27 + 2.1));
+  return o * uFlow * 0.0025;
+}
 float dustW(float a) { return smoothstep(0.0, 0.3, a); }
 vec3 emission(vec2 uv) {
   vec4 D = texture(uVolD, uv);
@@ -498,7 +515,7 @@ vec3 volumetric(vec2 pr, vec2 uvF, vec2 qF) {
   // gilt die starre Drehung des Fotos - gleitendes Grund-Leuchten oder
   // schwebender Staub wuerden ihr widersprechen und am Rand reissen
   float lay = uGalN > 0 ? smoothstep(1.0, 1.25, galRmin(qF)) : 1.0;
-  vec3 eF = emission(uvF);
+  vec3 eF = emission(uvF + flowOff(uvF) * lay);
   vec3 col = max(eF + lay * (texture(uVolB, uvB).rgb - texture(uVolB, uvF).rgb), 0.0);
   // Abtastungen ohne Verzweigung (definierte Ableitungen an Staubraendern)
   vec4 DF = texture(uVolD, uvF), Dt = texture(uVolD, uvT);
@@ -530,7 +547,7 @@ void main() {
   if (uVol > 0.5 && uObjFar < 0.5 && uMoonMode < 0.5) {
     col = volumetric(pr, uv, q);
   } else {
-    col = sampleCol(uv);
+    col = sampleCol(uv + flowOff(uv));
   }
   // Galaxien-Rotation: gedrehtes Galaxienlicht (Bild minus Himmel an der
   // Quelle) auf den stehenden Himmel am Zielpunkt. Im Ruhebild exakt das
@@ -4127,7 +4144,23 @@ function uploadStars() {
 
 function overlayActive() {
   return (state.showLabels && state.labels && state.labels.some((l) => l.on)) ||
-    (state.showInfo && (state.objInfo || cardHasCustom()));
+    (state.showInfo && (state.objInfo || cardHasCustom())) || !!titleCardText();
+}
+
+/** Text der Titelkarte: Objektname (eigener Name vor Katalogname), Unterzeile Typ und Entfernung. */
+function titleCardText() {
+  if (!state.titleCard) return null;
+  const lang = I18N.lang === "de" ? "de" : "en";
+  const info = state.objInfo;
+  const cf = labelCustom({ custom: state.cardCustom });
+  const f = info && info.facts ? info.facts[lang] : null;
+  const name = cf.name || (f ? f.name : (info ? prettyObjId(info.id) : ""));
+  if (!name) return null;
+  const parts = [];
+  if (info && !info.user && (cf.name || f)) parts.push(prettyObjId(info.id));
+  parts.push(cf.type || (f ? f.type : ""));
+  parts.push(cf.dist || (f ? f.dist : ""));
+  return { name, sub: parts.filter(Boolean).join("  ·  ") };
 }
 
 /**
@@ -4147,6 +4180,42 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
   }
   drawOverlayTo._lastT = loopT;
   const lang = I18N.lang === "de" ? "de" : "en";
+  // Titelkarte (Alpha): Objektname gross in der Bildmitte, blendet nach dem
+  // Start ein und wieder aus - wie ein Filmtitel; die Infokarte folgt danach
+  const tc = titleCardText();
+  const titleEnd = tc ? Math.min(5.6, Math.max(2.5, state.duration - 1.5)) : 0;
+  if (tc) {
+    const tIn = 0.5, tFull = 1.6, tOutS = titleEnd - 1.0;
+    const aT = Math.min(1, Math.max(0, (loopT - tIn) / (tFull - tIn))) *
+      Math.min(1, Math.max(0, (titleEnd - loopT) / (titleEnd - tOutS)));
+    if (aT > 0.01) {
+      ctx.save();
+      const uT = H / 720;
+      ctx.globalAlpha = aT * baseA;
+      // Weiches dunkles Band hinter dem Titel: lesbar auch ueber dem hellen Kern
+      const band = ctx.createLinearGradient(0, H * 0.46 - 90 * uT, 0, H * 0.46 + 90 * uT);
+      band.addColorStop(0, "rgba(0,0,0,0)");
+      band.addColorStop(0.5, "rgba(0,0,0,0.42)");
+      band.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = band;
+      ctx.fillRect(0, H * 0.46 - 90 * uT, W, 180 * uT);
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.shadowColor = "rgba(0,0,0,0.85)";
+      ctx.shadowBlur = 16 * uT;
+      ctx.fillStyle = "rgba(240,244,255,0.96)";
+      ctx.font = `600 ${Math.round(44 * uT)}px "Segoe UI", system-ui, -apple-system, Roboto, sans-serif`;
+      try { ctx.letterSpacing = `${Math.round(7 * uT)}px`; } catch (e) { /* aeltere Browser kennen kein letterSpacing */ }
+      ctx.fillText(tc.name.toUpperCase(), W / 2, H * 0.46);
+      if (tc.sub) {
+        ctx.font = `400 ${Math.round(17 * uT)}px "Segoe UI", system-ui, -apple-system, Roboto, sans-serif`;
+        try { ctx.letterSpacing = `${Math.round(2 * uT)}px`; } catch (e) { /* s. o. */ }
+        ctx.fillStyle = "rgba(220,228,245,0.88)";
+        ctx.fillText(tc.sub, W / 2, H * 0.46 + 42 * uT);
+      }
+      ctx.restore();
+    }
+  }
   const viewAspect = state.aspect;
   const imgAspect = state.starless.width / state.starless.height;
   const cover = coverBase(viewAspect, imgAspect);
@@ -4249,7 +4318,9 @@ function drawOverlayTo(ctx, W, H, loopT, cam, fade) {
   let cardRect = null;
   if (state.showInfo && (state.objInfo || cardHasCustom())) {
     const outStart = Math.min(7, state.duration - 2);
-    const a = Math.min(1, Math.max(0, (loopT - 0.8) / 0.8)) *
+    // Mit Titelkarte erscheint die Infokarte erst, wenn der Titel weg ist
+    const cardIn = titleEnd ? titleEnd - 0.3 : 0.8;
+    const a = Math.min(1, Math.max(0, (loopT - cardIn) / 0.8)) *
       Math.min(1, Math.max(0, (outStart + 1 - loopT) / 1));
     if (a > 0.01) {
       ctx.globalAlpha = a * baseA;
@@ -4853,7 +4924,53 @@ function scenarioTotal() {
  * auf dem Schirm gleichmaessig laeuft. Position wird wie im Zoom-Modus
  * an die Bildkanten geklemmt.
  */
+/**
+ * Kamera mit Masse: der Flugplan wird einmal fein abgetastet und vorwaerts
+ * wie rueckwaerts exponentiell geglaettet (nullphasig: keine Verzoegerung,
+ * die Kamera kommt weiterhin puenktlich an den Wegpunkten an - nur die
+ * Ecken an Wegpunkten und Pausen werden rund, wie bei einer Kamera, die
+ * nicht schlagartig anhalten kann). Tabelle wird nur bei Aenderung neu gebaut.
+ */
+let scenSmoothCache = { key: "", n: 0 };
+function scenarioSmoothTable() {
+  const total = scenarioTotal();
+  const key = JSON.stringify(state.waypoints) + "|" + total + "|" + state.camMass + "|" + state.aspect + "|" +
+    (state.starless ? state.starless.width + "x" + state.starless.height : "");
+  if (scenSmoothCache.key === key) return scenSmoothCache;
+  const n = Math.max(64, Math.min(4096, Math.round(total * 60)));
+  const cx = new Float64Array(n), cy = new Float64Array(n), lz = new Float64Array(n), ang = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const r = scenarioRaw(i / (n - 1));
+    cx[i] = r.cx; cy[i] = r.cy; lz[i] = Math.log(Math.max(1e-3, r.zoom)); ang[i] = r.angle;
+  }
+  const dt = total / (n - 1);
+  const tau = (state.camMass / 100) * 1.5;
+  const a = dt / (tau + dt);
+  for (const arr of [cx, cy, lz, ang]) {
+    for (let i = 1; i < n; i++) arr[i] = arr[i - 1] + (arr[i] - arr[i - 1]) * a;
+    for (let i = n - 2; i >= 0; i--) arr[i] = arr[i + 1] + (arr[i] - arr[i + 1]) * a;
+  }
+  scenSmoothCache = { key, n, cx, cy, lz, ang };
+  return scenSmoothCache;
+}
+
 function scenarioAt(p) {
+  if (!(state.camMass > 0) || state.waypoints.length < 2) return scenarioRaw(p);
+  const tb = scenarioSmoothTable();
+  const u = Math.min(1, Math.max(0, p)) * (tb.n - 1);
+  const i = Math.floor(u), f = u - i, j = Math.min(tb.n - 1, i + 1);
+  const L = (arr) => arr[i] + (arr[j] - arr[i]) * f;
+  const zoom = Math.exp(L(tb.lz));
+  // Randklemme wie im ungeglaetteten Plan
+  const viewAspect = state.aspect;
+  const imgAspect = state.starless ? state.starless.width / state.starless.height : 16 / 9;
+  const sc = coverBase(viewAspect, imgAspect) * zoom;
+  const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.98;
+  const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.98;
+  return { zoom, angle: L(tb.ang), cx: Math.min(freeX, Math.max(-freeX, L(tb.cx))), cy: Math.min(freeY, Math.max(-freeY, L(tb.cy))) };
+}
+
+function scenarioRaw(p) {
   const wps = state.waypoints;
   const total = scenarioTotal();
   let s = Math.min(1, Math.max(0, p)) * total;
@@ -4974,6 +5091,10 @@ function camAt(loopT) {
     case "linear": curve = p; break;
     case "in":     curve = p * p; break;
     case "out":    curve = 1 - (1 - p) * (1 - p); break;
+    // Filmisch: zuegig in Fahrt, dann ein langes, weiches Ausrollen (2001)
+    case "cine":   curve = bezierEase(0.5, 0.0, 0.15, 1.0, p); break;
+    // Anlanden: die Kamera hat Masse und schwingt am Ziel minimal nach (Gravity)
+    case "settle": curve = bezierEase(0.5, 0.0, 0.25, 1.12, p); break;
     default:       curve = smoothstep(p); // sanft beschleunigen & abbremsen
   }
   const e = state.ease / 100;
@@ -5481,6 +5602,8 @@ function render(forcedT) {
   u4fv(bgProg, "uLightP", RL.P);
   u4fv(bgProg, "uLightC", RL.C);
   u1f(bgProg, "uRelight", (state.relight / 100) * 1.2);
+  u1f(bgProg, "uFlow", state.nebFlow / 100);
+  u1f(bgProg, "uFlowT", cam.te);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
   // Bewegungsgrößen numerisch aus der Kamerakurve ableiten (für die
@@ -6083,6 +6206,9 @@ $("ctlAnamBokeh").addEventListener("change", () => { state.anamBokeh = $("ctlAna
 $("ctlLetterbox").addEventListener("change", () => { state.letterbox = $("ctlLetterbox").value; });
 $("ctlShutter").addEventListener("change", () => { state.shutterMode = $("ctlShutter").value; });
 $("ctlFps").addEventListener("change", () => { state.exportFps = parseInt($("ctlFps").value, 10) || 30; });
+bindSlider("ctlCamMass", "outCamMass", "camMass", asInt);
+bindSlider("ctlNebFlow", "outNebFlow", "nebFlow", asInt);
+$("ctlTitleCard").addEventListener("change", () => { state.titleCard = $("ctlTitleCard").checked; });
 bindSlider("ctlExposure", "outExposure", "exposure", asInt);
 bindSlider("ctlContrast", "outContrast", "contrast", asInt);
 bindSlider("ctlSaturation", "outSaturation", "saturation", asInt);
@@ -6517,12 +6643,32 @@ const SIMPLE_DEFAULTS = {
   ctlTwinkle: 25, ctlTwinkleSpeed: 100, ctlStarSize: 100, ctlStarBright: 100,
   ctlStarSat: 100, ctlGenStars: 0, ctlStarCull: 0, ctlDolly: 0, ctlZoomDrift: 30,
   ctlHazeTint: 0, ctlFocusA: 55, ctlFocusB: 55, ctlWeave: 0, ctlFlicker: 0, ctlExtinct: 0, ctlRelight: 0,
+  ctlCamMass: 0, ctlNebFlow: 0,
 };
 
 // 8 Objekt-Presets: 3 Nebel, 3 Galaxien, 2 Sternhaufen. "look" wählt den
 // Look-Preset aus Sektion 5 mit; "set"/"checks" überschreiben danach gezielt.
 // Nach Michaels Beta-Test deutlich gezähmt - die Effektstärke skaliert
 // die Bewegungs-Parameter zusätzlich (50 = wie hier definiert)
+// Flugplaene der Kino-Presets: um das Zoomziel herum gebaut (Klick ins Bild)
+function planThreeAct() {
+  const T = state.target || { x: 0, y: 0 };
+  return [
+    { x: 0, y: 0, zoom: 1, angle: 0, dur: 0, hold: 2.5, ease: "smooth", floatOn: true },
+    { x: T.x * 0.25, y: T.y * 0.25, zoom: 1.25, angle: 0, dur: 5, hold: 0, ease: "smooth" },
+    { x: T.x, y: T.y, zoom: 2.4, angle: 0, dur: 7, hold: 1.5, ease: "smooth", floatOn: true },
+    { x: T.x, y: T.y, zoom: 2.9, angle: 0, dur: 4.5, hold: 0.5, ease: "smooth" },
+  ];
+}
+function planContact() {
+  const T = state.target || { x: 0, y: 0 };
+  return [
+    { x: T.x, y: T.y, zoom: 3.2, angle: 0, dur: 0, hold: 1.2, ease: "smooth", floatOn: true },
+    // beschleunigender Rueckzug ohne Abbremsen - der Schnitt beendet die Fahrt
+    { x: T.x * 0.3, y: T.y * 0.3, zoom: 1.0, angle: 0, dur: 14, hold: 0.3, ease: "custom", curve: [0.55, 0.0, 0.85, 0.55] },
+  ];
+}
+
 const FLIGHT_PRESETS = {
   nebGentle:      { look: "neutral", set: { ctlSpeed: 30, ctlParallax: 60, ctlDepthBoost: 40, ctlStarPar: 250, ctlBloom: 15 } },
   nebDrift:       { look: "neutral", flightMode: "lateral", set: { ctlZoom: 1.35, ctlSpeed: 55, ctlStarPar: 260, ctlGenStars: 1000, ctlBloom: 15 } },
@@ -6560,6 +6706,14 @@ const FLIGHT_PRESETS = {
   cineDiagLeft:    { look: "neutral", flightMode: "lateral", fixedDir: true, set: { ctlDriftDir: 180, ctlSpread: 50, ctlStarDist: 57, ctlStarPar: 530, ctlStarBright: 140, ctlZoomDrift: 49, ctlBloom: 41, ctlSaturation: 8, ctlClarity: 14, ctlStructure: 10, ctlSharpen: 25, ctlFilmic: 70 }, checks: { ctlRealStars: false } },
   cineDiagRight:   { look: "neutral", flightMode: "lateral", fixedDir: true, set: { ctlDriftDir: 0, ctlSpread: 50, ctlStarDist: 57, ctlStarPar: 530, ctlStarBright: 140, ctlZoomDrift: 49, ctlBloom: 41, ctlSaturation: 8, ctlClarity: 14, ctlStructure: 10, ctlSharpen: 25, ctlFilmic: 70 }, checks: { ctlRealStars: false } },
   cineArc:         { look: "kino", flightMode: "orbit", ease: "inout", set: { ctlSpeed: 45, ctlEase: 65, ctlParallax: 80, ctlDepthBoost: 50, ctlStarPar: 220, ctlBloom: 18 } },
+  // Alpha: Dreiakter (Etablieren - Annaehern - Enthuellen) als Flugplan mit traeger Kamera
+  cineThreeAct:    { look: "film", ease: "cine", set: { ctlParallax: 65, ctlDepthBoost: 40, ctlStarPar: 180, ctlBloom: 25, ctlFade: 12, ctlCamMass: 55, ctlHaze: 20 }, plan: planThreeAct },
+  // Contact: vom Detail beschleunigend zurueck ins Weite
+  cineContact:     { look: "film", ease: "cine", set: { ctlParallax: 70, ctlDepthBoost: 45, ctlStarPar: 220, ctlBloom: 22, ctlFade: 15, ctlCamMass: 30 }, plan: planContact },
+  // Gravity: schwerelos treibende Kamera mit Masse, langsame Rolle, landet weich
+  cineGravity:     { look: "deepspace", flightMode: "lateral", ease: "settle", set: { ctlZoom: 1.3, ctlSpeed: 32, ctlEase: 85, ctlParallax: 70, ctlStarPar: 240, ctlRotation: 0.25, ctlSwayAmp: 8, ctlSwayTempo: 15, ctlSwayRandom: 40, ctlHaze: 15 } },
+  // Tree of Life: kaum Flug, der Nebel selbst atmet
+  cineMalick:      { look: "glow", ease: "cine", set: { ctlSpeed: 14, ctlEase: 90, ctlParallax: 45, ctlDepthBoost: 35, ctlStarPar: 150, ctlBloom: 35, ctlNebFlow: 60, ctlFade: 10, ctlHalation: 20 } },
 };
 
 // Effektstärke im Einfach-Modus: skaliert die Bewegungs-Parameter eines
@@ -6601,6 +6755,25 @@ function applyFlightPreset(name) {
   for (const [id, v] of Object.entries(p.checks || {})) {
     $(id).checked = v;
     $(id).dispatchEvent(new Event("change"));
+  }
+  // Flugplan-Presets (Dreiakter, Contact): Wegpunkte um das Zoomziel bauen.
+  // Ein spaeter gewaehltes Preset ohne Plan raeumt ihn wieder weg - ein von
+  // Hand gebauter Plan bleibt dagegen unangetastet
+  if (p.plan) {
+    state.waypoints = p.plan();
+    state.scenarioOn = true;
+    $("ctlScenOn").checked = true;
+    state.presetPlan = true;
+  } else if (state.presetPlan) {
+    state.waypoints = [];
+    state.scenarioOn = false;
+    $("ctlScenOn").checked = false;
+    state.presetPlan = false;
+  }
+  if (p.plan || !state.scenarioOn) {
+    if (typeof clearWpThumbCache === "function") clearWpThumbCache();
+    if (typeof rebuildWaypointList === "function") rebuildWaypointList();
+    if (typeof updateScenarioUi === "function") updateScenarioUi();
   }
   // Richtungswahl nur bei seitlichen Flügen anbieten und anwenden
   const lateral = p.flightMode === "lateral" && !p.fixedDir;
