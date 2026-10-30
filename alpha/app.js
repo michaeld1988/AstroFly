@@ -99,6 +99,26 @@ const state = {
   gaiaPmYears: 0,        // Zeitraffer-Spanne in Jahren (0 = aus)
   objFar: false,         // Objekt einheitlich in die Ferne (hinter alle Sterne)
   occlude: 0,
+  // Film & Optik (Alpha)
+  halation: 0,           // rot-oranger Saum um ausgebrannte Lichter 0..100
+  haze: 0,               // Tiefendunst 0..100
+  hazeTint: 0,           // Dunstfarbe -100 warm .. 100 kalt
+  dof: 0,                // Schaerfentiefe 0..100
+  focusA: 55,            // Fokusebene am Anfang (0 fern .. 100 nah)
+  focusB: 55,            // Fokusebene am Ende (Fokusfahrt, wenn ungleich)
+  anamorph: 0,           // anamorphe Flares 0..100
+  anamBokeh: false,      // ovale Zerstreuungskreise
+  lift: 0,               // Schwaerzen anheben 0..100
+  splitTone: 0,          // kuehle Schatten / warme Lichter 0..100
+  grainSize: 1,          // Korngroesse in px
+  grainChroma: 30,       // Farbanteil des Korns 0..100
+  weave: 0,              // Bildstand (Gate Weave) 0..100
+  flicker: 0,            // Helligkeitsflimmern 0..100
+  letterbox: "off",      // Kinobalken: off | 2.39 | 2.00 | 1.85
+  extinct: 0,            // Roetung hinter Staub 0..100
+  relight: 0,            // Sternlicht auf dem Nebel 0..100
+  shutterMode: "off",    // Verschluss: off | 90 | 180 | 360 (Grad)
+  exportFps: 30,         // Bildrate des Exports
   scenarioOn: false,     // Szenario-Flug: Kamera fliegt die Wegpunkte ab
   scenEdit: false,       // Flugplan-Einrichtung: Kamera folgt dem Steuerkreuz
   scenView: { x: 0, y: 0, zoom: 1, angle: 0 }, // aktuell eingerichteter Blick
@@ -274,6 +294,10 @@ uniform float uBandShow;    // Erkennungsmaske: 0 = aus, 1 = HII, 2 = OIII, 3 = 
 uniform float uBandFeather; // weiche Kante der Banderkennung (0 = hart, 1 = sehr weich)
 uniform float uBandOn;      // 1 = mindestens ein Band-Regler aktiv
 uniform float uVol;         // Volumetrischer Nebel: 1 = an
+uniform int uLightN;        // Sternlicht (Relight): Anzahl Leuchtsterne
+uniform vec4 uLightP[8];    // x, y (Ebene), Tiefe, Helligkeit
+uniform vec4 uLightC[8];    // Sternfarbe
+uniform float uRelight;     // Staerke 0..1
 uniform sampler2D uVolD;    // rgb = entstaubtes Leuchten (aufgefuellt), a = Staubmaske
 uniform sampler2D uVolB;    // Grund-Leuchten (glatt, geringe Aufloesung, Float)
 uniform float uVolSep;      // so weit liegt das Grund-Leuchten hinter den Strukturen
@@ -595,7 +619,27 @@ void main() {
     vec2 ddM = vec2(uv.x - uMoonC.x, (uv.y - uMoonC.y) / uImgAspect);
     col *= 1.0 - smoothstep(uMoonR * 1.005, uMoonR * 1.04, length(ddM));
   }
-  outColor = vec4(col, 1.0);
+  // Sternlicht auf dem Nebel (Relight): die hellsten Vordergrundsterne
+  // hellen das Gas in ihrer Umgebung in ihrer Farbe auf - nur wo Gas ist
+  // (Dichte = Helligkeit des Starless) und nur, wenn der Stern VOR dem
+  // Nebel steht. Der Lichtfleck sitzt in Nebel-Koordinaten fest (q), also
+  // wandert er mit der Parallaxe korrekt gegen den Stern
+  float dScr = depthOf(uv, 0.0);
+  if (uLightN > 0 && uRelight > 0.0) {
+    float dens = smoothstep(0.02, 0.35, dot(col, vec3(0.299, 0.587, 0.114)));
+    vec3 add = vec3(0.0);
+    for (int j = 0; j < 8; j++) {
+      if (j >= uLightN) break;
+      vec2 dl = q - uLightP[j].xy;
+      float rl = 0.05 + 0.12 * uLightP[j].w;
+      float fall = exp(-dot(dl, dl) / (rl * rl));
+      float front = smoothstep(0.0, 0.12, uLightP[j].z - dScr);
+      add += uLightC[j].rgb * (fall * front * uLightP[j].w);
+    }
+    col += (col * 1.2 + 0.06) * add * uRelight * dens;
+  }
+  // Alphakanal = Tiefe dieses Bildschirmpunkts (fuer Dunst und Schaerfentiefe)
+  outColor = vec4(col, dScr);
 }`;
 
 // --- Pass 1b: Sterne (Punkt-Sprites mit individueller Tiefe) ---
@@ -667,6 +711,15 @@ uniform sampler2D uColorS; // Starless-Bild (Dichte der Nebelschwaden)
 uniform float uSpikes;     // Beugungsspikes: Staerke 0..1 (0 = aus)
 uniform float uSpikeMax;   // Zusatzlaenge der Spikes hellster Sterne in px
 uniform float uSpikeW;     // Grundbreite der Spikes in Render-Pixeln (1 Ausgabepixel)
+uniform float uDofS;       // Schaerfentiefe fuer Sterne (0 = aus)
+uniform float uFocusS;     // Fokusebene (Tiefe)
+uniform float uBokehMax;   // groesster Zerstreuungskreis in px
+uniform float uAnamorph;   // anamorphe Flares: Staerke 0..1
+uniform float uExtinct;    // Roetung hinter Staub 0..1
+uniform float uHazeS;      // Tiefendunst auf Sternen
+out float vBokeh;          // Radius des Zerstreuungskreises in px (0 = scharf)
+out float vAnam;           // halbe Laenge des anamorphen Streifens in px
+out float vBokehGate;      // Helligkeits-Tor fuer Zerstreuungskreise
 out vec3 vColor;
 out float vAlpha;
 out vec2 vDir;    // Streifen-Richtung in Pixeln (normiert)
@@ -742,7 +795,7 @@ void main() {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 1.0;
     vAlpha = 0.0; vColor = vec3(0.0); vDir = vec2(1.0, 0.0);
     vLen = 0.0; vBase = 1.0; vSize = 1.0; vGlow = 0.0;
-    vAtlasUv = vec3(-1.0); vPatchHalf = 0.0; vSpike = 0.0; vOrgP = vec4(0.0);
+    vAtlasUv = vec3(-1.0); vPatchHalf = 0.0; vSpike = 0.0; vOrgP = vec4(0.0); vBokeh = 0.0; vAnam = 0.0; vBokehGate = 0.0;
     return;
   }
   // Scheibenstern? (Atlas-Feld x < 0, y = Galaxie + 10, z = Korotation)
@@ -765,7 +818,7 @@ void main() {
     gl_PointSize = 1.0;
     vColor = vec3(0.0); vAlpha = 0.0;
     vDir = vec2(1.0, 0.0); vLen = 0.0; vBase = 1.0; vSize = 1.0;
-    vAtlasUv = vec3(-1.0); vPatchHalf = 0.0; vGlow = 0.0; vSpike = 0.0; vOrgP = vec4(0.0);
+    vAtlasUv = vec3(-1.0); vPatchHalf = 0.0; vGlow = 0.0; vSpike = 0.0; vOrgP = vec4(0.0); vBokeh = 0.0; vAnam = 0.0; vBokehGate = 0.0;
     return;
   }
 
@@ -830,8 +883,8 @@ void main() {
   // dieses Sterns? Gleiche Fixpunkt-Iteration wie im Hintergrund-Shader;
   // liegt der Nebel dort NÄHER an der Kamera als der Stern, schluckt seine
   // Dichte (Helligkeit des Starless-Bilds) das Sternlicht
-  float occ = 0.0;
-  float occStr = max(uOcclude, uMoonMode);
+  float occ = 0.0, occRaw = 0.0;
+  float occStr = max(max(uOcclude, uMoonMode), uExtinct);
   if (occStr > 0.0) {
     vec2 qn = uCenter + pr / (uCover * uZoom);
     vec2 uvN = vec2(qn.x / uImgAspectS, qn.y) + 0.5;
@@ -853,7 +906,8 @@ void main() {
         vec2 ddM = vec2(uvN.x - uMoonCS.x, (uvN.y - uMoonCS.y) / uImgAspectS);
         dens = 1.0 - smoothstep(uMoonRS * 0.99, uMoonRS * 1.02, length(ddM));
       }
-      occ = occStr * front * dens;
+      occRaw = front * dens;
+      occ = max(uOcclude, uMoonMode) * occRaw;
     }
   }
 
@@ -960,6 +1014,31 @@ void main() {
     float tileI = floor(hv * 16.0) + (fract(hv * 13.7) < 0.5 ? 16.0 : 0.0);
     vOrgP = vec4(org, rOrg, tileI, fract(hv * 7.31) * 6.2831853);
   }
+  // Schaerfentiefe: Sterne abseits der Fokusebene werden zu weichen
+  // Zerstreuungskreisen (Bokeh) - die Flaeche waechst, die Helligkeit sinkt,
+  // Spikes, Atlas-Abbild und Strahlenkranz entfallen (unscharf)
+  vBokeh = 0.0;
+  vBokehGate = smoothstep(0.15, 0.6, aBright);
+  if (uDofS > 0.0) {
+    float coc = smoothstep(0.04, 0.75, abs(depth - uFocusS)) * uDofS;
+    float rB = coc * uBokehMax * (0.6 + 0.4 * aBright);
+    if (rB > base * 0.6) {
+      vBokeh = min(rB, uMaxPoint * 0.5 - 2.0);
+      size = min(max(size, vBokeh * 2.0 + 2.0), uMaxPoint);
+      vAtlasUv = vec3(-1.0); vPatchHalf = 0.0; spike = 0.0; vOrgP = vec4(0.0); len = 0.0;
+    }
+  }
+  vSpike = spike;
+  // Anamorphe Flares: waagerechter blauer Streifen der hellsten Sterne,
+  // Bildschirm-waagerecht wie bei einem anamorphen Objektiv
+  vAnam = 0.0;
+  if (uAnamorph > 0.0 && vBokeh <= 0.0) {
+    float an = uAnamorph * smoothstep(0.55, 1.0, aBright);
+    if (an > 0.002) {
+      vAnam = min(an * (base * 2.0 + 0.22 * uPixelsY), uMaxPoint * 0.5 - 2.0);
+      size = min(max(size, vAnam * 2.0 + 4.0), uMaxPoint);
+    }
+  }
   gl_PointSize = size;
   vDir = dirPx;
   vLen = len;
@@ -975,6 +1054,9 @@ void main() {
   // ließ schwache Sterne bei mittleren Reglerwerten unter die
   // Sichtbarkeitsschwelle fallen - der Regler war nicht dosierbar.
   vAlpha *= 1.0 - occ;
+  // Extinktion: Staub schluckt Blau staerker als Rot - Sterne hinter
+  // Nebelschwaden roeten sich (zusaetzlich zur Abdunklung durch die Okklusion)
+  vec3 redden = mix(vec3(1.0), vec3(1.0, 0.68, 0.42), clamp(occRaw * uExtinct * 2.0, 0.0, 1.0));
   // Kleine-Sterne-Dimmen nur fuer prozedurale Sprites - echte Sternabbilder
   // bringen ihre Groesse aus dem Atlas-Patch mit
   if (vAtlasUv.x < 0.0) vAlpha *= dimSmall;
@@ -991,7 +1073,12 @@ void main() {
     float mx = max(cS.r, max(cS.g, cS.b)) + 1e-5;
     cS = pow(cS / mx, vec3(1.0 + (uStarSat - 1.0) * 2.0)) * mx;
   }
-  vColor = max(mix(vec3(lumS), cS, min(uStarSat, 1.0)), 0.0) * uStarBright;
+  vColor = max(mix(vec3(lumS), cS, min(uStarSat, 1.0)), 0.0) * uStarBright * redden;
+  // Tiefendunst: ferne Sterne etwas matter und kuehler (wie der Nebel dahinter)
+  if (uHazeS > 0.0) {
+    float farS = clamp((0.75 - depth) / 0.75, 0.0, 1.0);
+    vColor = mix(vColor, vColor * vec3(0.8, 0.9, 1.05) * 0.7, uHazeS * farS * farS);
+  }
 }`;
 
 const starFS = `#version 300 es
@@ -1015,7 +1102,22 @@ uniform float uAiry;        // 1 = Airy-Kern statt Gauss-Glocke
 uniform float uSpikeArms;   // Anzahl der Spikes (4, 6, 8)
 uniform float uSpikeRot;    // Drehung der Spikes (rad)
 uniform float uSpikeWF;     // Grundbreite der Spikes in Render-Pixeln
+uniform float uAnamBokeh;   // 1 = ovale Zerstreuungskreise (anamorph)
+in float vBokeh;
+in float vAnam;
+in float vBokehGate;
 out vec4 outColor;
+
+// Anamorpher Flare: duenner waagerechter Streifen, innen hell, langer
+// blaeulicher Auslauf - in Bildschirm-Koordinaten (dPx), nicht mitrotiert
+vec3 anamLight(vec2 dPx) {
+  if (vAnam <= 0.0) return vec3(0.0);
+  float t = abs(dPx.x) / vAnam;
+  if (t >= 1.0) return vec3(0.0);
+  float w = uSpikeWF * (0.9 + 1.6 * (1.0 - t));
+  float prof = exp(-dPx.y * dPx.y / (2.0 * w * w)) * (1.0 - t) / (1.0 + 5.0 * t);
+  return prof * vec3(0.42, 0.62, 1.0) * 0.9;
+}
 
 // Airy-Beugungsscheibchen: I = (2 J1(x) / x)^2 mit x = 7 r (r = 1 am Sprite-
 // Rand): heller Kern, erster dunkler Ring bei r = 0.55, schwacher zweiter
@@ -1077,6 +1179,19 @@ void main() {
     rays = lib.r * vOrgP.x * 0.4 * inR;
     fib = 1.0 + (lib.g * 2.0 - 1.0) * 0.8 * vOrgP.x;
   }
+  // Bokeh: weiche Scheibe mit leicht hellem Rand (wie ein echtes Objektiv),
+  // bei anamorpher Optik hochkant-oval. Helligkeit sinkt mit der Flaeche
+  if (vBokeh > 0.5) {
+    vec2 qb = vec2(dPx.x * (uAnamBokeh > 0.5 ? 1.45 : 1.0), dPx.y) / vBokeh;
+    float rb = length(qb);
+    if (rb > 1.0) discard;
+    float disc = (1.0 - smoothstep(0.85, 1.0, rb)) * (1.0 + 0.3 * smoothstep(0.55, 0.95, rb));
+    // Schwache Sterne verschwinden unscharf im Rauschen, nur hellere bleiben als Scheiben
+    float iB = pow(clamp(vBase / (2.0 * vBokeh), 0.0, 1.0), 1.6) * (1.0 + vGlow * 2.0) * vBokehGate;
+    float aB = disc * iB * vAlpha;
+    outColor = vec4(vColor * aB, aB);
+    return;
+  }
   // Echtes Sternabbild: Patch aus dem Atlas statt prozeduraler Glocke.
   // Additives Blending -> schwarzer Patch-Hintergrund addiert nichts;
   // ein weicher radialer Rand vermeidet sichtbare Kachelkanten
@@ -1090,7 +1205,7 @@ void main() {
     // wird dann treiberabhaengig falsch und kleine Sterne blitzen wie ein
     // Stroboskop (vom Nutzer gemeldetes Flackern)
     vec3 c = texture(uAtlas, uv).rgb;
-    vec3 sp = spikeLight(di) * vAlpha * 1.4;
+    vec3 sp = (spikeLight(di) + anamLight(dPx)) * vAlpha * 1.4;
     if (rn > 1.0 && max(sp.r, sp.b) < 0.002 && rays < 0.002) discard;
     float edge = 1.0 - smoothstep(0.78, 1.0, rn);
     // Helligkeit wirkt RADIAL wie eine kuerzere Belichtung: Der Kern bleibt
@@ -1106,7 +1221,7 @@ void main() {
   // Kapsel entlang der Flugrichtung: Abstand zur Streifen-Mittellinie,
   // normiert auf den Stern-Radius (vLen = 0 -> runder Stern wie bisher)
   vec2 d = dPx;
-  vec3 sp = spikeLight(di) * vAlpha * 1.4;
+  vec3 sp = (spikeLight(di) + anamLight(dPx)) * vAlpha * 1.4;
   float along = dot(d, vDir);
   float across = dot(d, vec2(-vDir.y, vDir.x));
   float da = max(abs(along) - vLen * 0.5, 0.0);
@@ -1209,9 +1324,25 @@ uniform float uSharpen;    // 0 = aus
 uniform vec2 uTexel;       // 1 px der Szene in UV
 uniform sampler2D uStarsTex; // separate Sternebene ("nur Sterne"-Unschärfe)
 uniform float uSplit;      // 1 = Bewegungsunschärfe nur auf die Sterne
+uniform sampler2D uHalo;   // weiter Bloom-Hof (ab Stufe 2 der Pyramide) fuer die Halation
+uniform float uHalation;   // Film-Halation: rot-oranger Saum um ausgebrannte Lichter
+uniform float uHaze;       // Tiefendunst 0..1
+uniform vec3 uHazeCol;     // Dunstfarbe
+uniform float uDof;        // Schaerfentiefe: Unschaerfe je Tiefenabstand zur Fokusebene
+uniform float uFocus;      // Fokusebene (Tiefe 0..1)
+uniform float uLift;       // Schwaerzen anheben (Fog-Level des Films)
+uniform float uSplitTone;  // kuehle Schatten / warme Lichter
+uniform float uGrainSize;  // Korngroesse in Render-Pixeln
+uniform float uGrainChroma;// Farbanteil des Korns 0..1
+uniform vec2 uWeaveOff;    // Bildstand (Gate Weave) in UV
+uniform float uLetterbox;  // Balkenhoehe oben/unten in UV (0 = aus)
+
+float hash12(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 
 void main() {
-  vec2 r = vec2((vUv.x - 0.5) * uViewAspect, vUv.y - 0.5);
+  // Bildstand: das ganze Bild zittert minimal wie Film im Projektor
+  vec2 uvW = vUv + uWeaveOff;
+  vec2 r = vec2((uvW.x - 0.5) * uViewAspect, uvW.y - 0.5);
 
   // Bewegungsvektor dieses Pixels: radial (Zoom) + tangential (Rotation) + Fahrt
   vec2 vel = r * uZoomRate + vec2(-r.y, r.x) * uRotRate + uPanVel;
@@ -1226,8 +1357,8 @@ void main() {
   vec3 col;
   vec3 stars;
   if (uSplit > 0.5) {
-    col = texture(uScene, vUv).rgb;
-    stars = texture(uStarsTex, vUv).rgb;
+    col = texture(uScene, uvW).rgb;
+    stars = texture(uStarsTex, uvW).rgb;
   } else {
     vec3 acc = vec3(0.0);
     vec3 accS = vec3(0.0);
@@ -1235,12 +1366,12 @@ void main() {
     for (int i = 0; i < N; i++) {
       float f = float(i) / float(N - 1) - 0.5;
       vec2 o = off * f;
-      acc.r += texture(uScene, vUv + o * (1.0 + uChroma) + ca).r;
-      acc.g += texture(uScene, vUv + o).g;
-      acc.b += texture(uScene, vUv + o * (1.0 - uChroma) - ca).b;
-      accS.r += texture(uStarsTex, vUv + o * (1.0 + uChroma) + ca).r;
-      accS.g += texture(uStarsTex, vUv + o).g;
-      accS.b += texture(uStarsTex, vUv + o * (1.0 - uChroma) - ca).b;
+      acc.r += texture(uScene, uvW + o * (1.0 + uChroma) + ca).r;
+      acc.g += texture(uScene, uvW + o).g;
+      acc.b += texture(uScene, uvW + o * (1.0 - uChroma) - ca).b;
+      accS.r += texture(uStarsTex, uvW + o * (1.0 + uChroma) + ca).r;
+      accS.g += texture(uStarsTex, uvW + o).g;
+      accS.b += texture(uStarsTex, uvW + o * (1.0 - uChroma) - ca).b;
     }
     col = acc / float(N);
     stars = accS / float(N);
@@ -1248,28 +1379,64 @@ void main() {
 
   // Klarheit: lokaler Kontrast gegen stark weichgezeichnete Szene
   if (uClarity != 0.0) {
-    vec3 soft = texture(uSoft, vUv).rgb;
+    vec3 soft = texture(uSoft, uvW).rgb;
     col += (col - soft) * uClarity;
   }
   // Struktur: feiner Lokalkontrast gegen mittel weichgezeichnete Szene
   if (uStructure != 0.0) {
-    vec3 med = texture(uMed, vUv).rgb;
+    vec3 med = texture(uMed, uvW).rgb;
     col += (col - med) * uStructure;
   }
   // Schärfe: Unsharp-Mask mit 1-Pixel-Radius
   if (uSharpen > 0.0) {
-    vec3 nb = texture(uScene, vUv + vec2(uTexel.x, 0.0)).rgb
-            + texture(uScene, vUv - vec2(uTexel.x, 0.0)).rgb
-            + texture(uScene, vUv + vec2(0.0, uTexel.y)).rgb
-            + texture(uScene, vUv - vec2(0.0, uTexel.y)).rgb;
-    col += (texture(uScene, vUv).rgb - nb * 0.25) * uSharpen;
+    vec3 nb = texture(uScene, uvW + vec2(uTexel.x, 0.0)).rgb
+            + texture(uScene, uvW - vec2(uTexel.x, 0.0)).rgb
+            + texture(uScene, uvW + vec2(0.0, uTexel.y)).rgb
+            + texture(uScene, uvW - vec2(0.0, uTexel.y)).rgb;
+    col += (texture(uScene, uvW).rgb - nb * 0.25) * uSharpen;
+  }
+
+  // Schaerfentiefe (Nebel): je weiter die Tiefe von der Fokusebene weg,
+  // desto mehr der weichen Fassungen (halbe/viertel Aufloesung) mischt sich ein
+  float dScr = texture(uScene, uvW).a;
+  if (uDof > 0.0) {
+    float coc = smoothstep(0.04, 0.75, abs(dScr - uFocus)) * uDof;
+    vec3 medD = texture(uMed, uvW).rgb, softD = texture(uSoft, uvW).rgb;
+    col = mix(col, mix(medD, softD, smoothstep(0.25, 1.0, coc)), smoothstep(0.0, 0.5, coc));
+  }
+  // Tiefendunst (Luftperspektive): ferne Schichten verlieren Kontrast und
+  // Saettigung und nehmen die Dunstfarbe an - nur wo Licht ist (Streuung),
+  // der Himmel selbst bleibt schwarz
+  if (uHaze > 0.0) {
+    float far = clamp((0.85 - dScr) / 0.7, 0.0, 1.0);
+    float k = uHaze * far * (0.4 + 0.6 * far);
+    float lumH = dot(texture(uSoft, uvW).rgb, vec3(0.2126, 0.7152, 0.0722));
+    float lumC = dot(col, vec3(0.2126, 0.7152, 0.0722));
+    col = mix(col, vec3(lumC), 0.7 * k);
+    col = col * (1.0 - 0.75 * k) + uHazeCol * k * (0.045 + 1.1 * lumH);
   }
 
   // Sterne erst NACH Klarheit/Struktur/Schärfe dazulegen
   // Sterne per Screen-Modus auf den Nebel legen (Astro-Standard wie in
   // Photoshop/PixInsight): 1-(1-a)*(1-b) statt Addition - weicher Uebergang,
   // helle Sternkerne auf hellem Nebel brennen nicht mehr aus
-  vec3 bloom = texture(uBloom, vUv).rgb * uBloomStrength;
+  vec3 bloom = texture(uBloom, uvW).rgb * uBloomStrength;
+  // Halation: Licht, das durch die Emulsion dringt und vom Filmtraeger
+  // zurueckgestreut wird - ein rot-oranger Saum um ausgebrannte Lichter
+  if (uHalation > 0.0) {
+    // Schmaler Ring (zwei Radien, 8 Richtungen) nur um Pixel ueber der
+    // Clipping-Schwelle - dazu ein Hauch des weiten Hofs fuer die Tönung
+    vec3 h = vec3(0.0);
+    for (int i = 0; i < 8; i++) {
+      float a = float(i) * 0.785398;
+      vec2 o = vec2(cos(a), sin(a)) * uTexel * 6.0;
+      vec3 c1 = texture(uScene, uvW + o).rgb + texture(uStarsTex, uvW + o).rgb;
+      vec3 c2 = texture(uScene, uvW + o * 2.2).rgb + texture(uStarsTex, uvW + o * 2.2).rgb;
+      h += max(c1 - 0.82, 0.0) + max(c2 - 0.82, 0.0) * 0.5;
+    }
+    float hl = max(max(h.r, h.g), h.b) / 12.0;
+    bloom += (hl * 1.6 + texture(uHalo, uvW).rgb * 0.12) * uHalation * vec3(1.0, 0.26, 0.05);
+  }
   float expo = exp2(uExposure);
   // Bisheriger Weg (Standard): Screen-Mischung, bei Weiss gedeckelt
   vec3 ldr = (1.0 - (1.0 - clamp(col, 0.0, 1.0)) * (1.0 - clamp(stars, 0.0, 1.0)) + bloom) * expo;
@@ -1289,6 +1456,13 @@ void main() {
   col = (col - 0.5) * uContrast + 0.5;
   float lum = dot(max(col, 0.0), vec3(0.2126, 0.7152, 0.0722));
   col = mix(vec3(lum), col, uSaturation);
+  // Split-Toning: kuehle Schatten, warme Lichter (klassischer Kino-Look)
+  if (uSplitTone > 0.0) {
+    float lt = clamp(dot(col, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+    col += (vec3(-0.07, -0.02, 0.08) * (1.0 - lt) + vec3(0.09, 0.03, -0.07) * lt) * uSplitTone;
+  }
+  // Angehobene Schwaerzen: Film hat nie reines Schwarz (Fog-Level)
+  col = uLift + max(col, 0.0) * (1.0 - uLift);
 
   float d = length(r) / (0.7071 * max(uViewAspect, 1.0));
   col *= 1.0 - uVignette * smoothstep(0.45, 1.25, d);
@@ -1298,11 +1472,19 @@ void main() {
   // Schatten staerker als in den Lichtern - wie analoges Korn. Gibt der
   // Videokompression zudem etwas zum Festhalten (weniger Matsch)
   if (uGrain > 0.0) {
-    vec3 seed = vec3(gl_FragCoord.xy, uNoiseSeed);
-    float n = fract(sin(dot(seed, vec3(12.9898, 78.233, 37.719))) * 43758.5453) - 0.5;
+    // Korn v2: Koerner groesser als ein Pixel (uGrainSize), je Kanal eigenes
+    // Rauschen mit einstellbarem Farbanteil, dreieckig verteilt (Summe
+    // zweier Gleichverteilungen) statt hart gleichverteilt
+    vec2 gp = floor(gl_FragCoord.xy / uGrainSize) + uNoiseSeed * vec2(7.0, 3.0);
+    vec3 n1 = vec3(hash12(gp), hash12(gp + vec2(37.0, 91.0)), hash12(gp + vec2(71.0, 29.0)));
+    vec3 n2 = vec3(hash12(gp + vec2(5.0, 53.0)), hash12(gp + vec2(23.0, 61.0)), hash12(gp + vec2(89.0, 7.0)));
+    vec3 n = ((n1 + n2) - 1.0) * 0.7;
+    n = mix(vec3(dot(n, vec3(0.3333))), n, uGrainChroma);
     float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
     col += n * uGrain * (0.35 + 0.65 * (1.0 - clamp(lum, 0.0, 1.0)));
   }
+  // Kinobalken (Letterbox) - fest am Bildrand, nicht am Bildstand
+  if (uLetterbox > 0.0 && (vUv.y < uLetterbox || vUv.y > 1.0 - uLetterbox)) col = vec3(0.0);
   // Dither gegen Banding: die Ausgabe wird gleich auf 8 Bit quantisiert.
   // Interleaved-Gradient-Noise (blue-noise-aehnlich, texturfrei) mit
   // Frame-Versatz verteilt den Quantisierungsfehler unsichtbar - dunkle
@@ -5066,6 +5248,95 @@ function maxPointSize() {
   return _maxPoint;
 }
 
+// ------------------------------------------------ Film & Optik (Alpha)
+
+/** Verschlusszeit in Sekunden: physikalisch (Winkel/Bildrate) oder der alte Regler. */
+function shutterSeconds() {
+  if (state.shutterMode && state.shutterMode !== "off") {
+    return (parseInt(state.shutterMode, 10) / 360) / (state.exportFps || 30);
+  }
+  return (state.mblur / 100) * 1.5;
+}
+
+/**
+ * Fokusebene zum Zeitpunkt: Fokusfahrt von A nach B ueber den Flug, mit
+ * derselben Zeitlogik wie die Kamera (Loop hin und zurueck, Rueckwaerts
+ * gespiegelt), weich beschleunigt und abgebremst.
+ */
+function focusAt(loopT) {
+  const D = state.duration || 1;
+  const u0 = Math.min(1, Math.max(0, loopT / D));
+  const u = state.reverse ? 1 - u0 : u0;
+  const p = state.loopMode ? 1 - Math.abs(1 - 2 * u) : u;
+  const k = smoothstep(p);
+  return (state.focusA + (state.focusB - state.focusA) * k) / 100;
+}
+
+/** Bildstand (Gate Weave): langsames, unregelmaessiges Zittern in Pixeln. */
+function weaveAt(t) {
+  const a = (state.weave / 100) * 2.2;
+  if (a <= 0) return { x: 0, y: 0 };
+  return {
+    x: a * (Math.sin(t * 4.1) * 0.6 + Math.sin(t * 9.7 + 1.3) * 0.4),
+    y: a * (Math.sin(t * 3.3 + 0.7) * 0.6 + Math.sin(t * 11.2 + 2.1) * 0.4),
+  };
+}
+
+/** Helligkeitsflimmern in Blendenstufen: pro Filmbild (24 Hz) leicht zufaellig. */
+function flickerAt(t) {
+  const a = (state.flicker / 100) * 0.08;
+  if (a <= 0) return 0;
+  const f = Math.floor(t * 24);
+  const h = (Math.sin(f * 12.9898) * 43758.5453) % 1;
+  return a * ((h < 0 ? h + 1 : h) - 0.5) + a * 0.3 * Math.sin(t * 0.9);
+}
+
+/** Kinobalken: Balkenhoehe (UV) fuer das gewaehlte Seitenverhaeltnis im aktuellen Format. */
+function letterboxBars(viewAspect) {
+  const r = { "2.39": 2.39, "2.00": 2.0, "1.85": 1.85 }[state.letterbox] || 0;
+  if (!r) return 0;
+  return Math.max(0, (1 - viewAspect / r) / 2);
+}
+
+/**
+ * Leuchtsterne fuer das Sternlicht: die hellsten Masken-Sterne (hoechstens
+ * acht) mit Position, Tiefe und Farbe. Tiefe wie im Stern-Shader (Gaia,
+ * sonst die reproduzierbare Zufallstiefe). Wird nur bei Bedarf neu gebaut.
+ */
+let relightCache = { key: "", N: 0, P: new Float32Array(32), C: new Float32Array(32) };
+function relightUniforms() {
+  const mask = state.maskStarFloats, n = state.maskStarCount;
+  const key = [state.starCount, n, state.seed, state.starDist, state.spread, !!state.gaiaDepth,
+    state.gaiaDepth ? state.gaiaInfo && state.gaiaInfo.matched : 0, state.flipH, state.flipV].join("|");
+  if (relightCache.key === key) return relightCache;
+  const P = new Float32Array(32), C = new Float32Array(32);
+  let N = 0;
+  if (mask && n) {
+    const cand = [];
+    for (let i = 0; i < Math.min(n, 400); i++) {
+      const b = mask[i * 7 + 2];
+      if (b < 0.72) continue;
+      const x = mask[i * 7], y = mask[i * 7 + 1];
+      let d;
+      if (state.gaiaDepth && state.gaiaDepth[i] >= 0) d = state.gaiaDepth[i];
+      else {
+        const hv = Math.sin(x * 127.1 + y * 311.7 + state.seed * 17.0) * 43758.5453;
+        const h = hv - Math.floor(hv);
+        d = Math.min(1, Math.max(0.02, state.starDist / 100 + (h - 0.5) * (state.spread / 100) * 1.15 + b * 0.12));
+      }
+      cand.push({ x, y, d, b, r: mask[i * 7 + 4], g: mask[i * 7 + 5], bl: mask[i * 7 + 6] });
+    }
+    cand.sort((a, b) => b.b - a.b);
+    for (const c of cand.slice(0, 8)) {
+      P[N * 4] = c.x; P[N * 4 + 1] = c.y; P[N * 4 + 2] = c.d; P[N * 4 + 3] = c.b;
+      C[N * 4] = c.r; C[N * 4 + 1] = c.g; C[N * 4 + 2] = c.bl; C[N * 4 + 3] = 1;
+      N++;
+    }
+  }
+  relightCache = { key, N, P, C };
+  return relightCache;
+}
+
 function render(forcedT) {
   const w = canvas.width, h = canvas.height;
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -5082,6 +5353,9 @@ function render(forcedT) {
 
   const t = forcedT !== undefined ? forcedT : currentTime();
   const { loopT, cam, fade } = animParams(t);
+  const focusNow = focusAt(loopT);
+  const shutterSec = shutterSeconds();
+  const dofOn = state.dof > 0, hazeOn = state.haze > 0;
   // Supersampling: alle in Pixeln definierten Radien (Bloom, Klarheit,
   // Struktur, Schaerfe, Korn) mitskalieren, damit der Export so aussieht
   // wie die Vorschau
@@ -5201,6 +5475,12 @@ function render(forcedT) {
   u1f(bgProg, "uVol", volOn ? 1 : 0);
   u1f(bgProg, "uVolSep", 0.3 * state.volSpread / 100);
   u1f(bgProg, "uVolDustZ", 0.08 * state.volDust / 100);
+  // Sternlicht auf dem Nebel: die hellsten Sterne als Lichtquellen
+  const RL = relightUniforms();
+  u1i(bgProg, "uLightN", state.relight > 0 ? RL.N : 0);
+  u4fv(bgProg, "uLightP", RL.P);
+  u4fv(bgProg, "uLightC", RL.C);
+  u1f(bgProg, "uRelight", (state.relight / 100) * 1.2);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
   // Bewegungsgrößen numerisch aus der Kamerakurve ableiten (für die
@@ -5211,7 +5491,7 @@ function render(forcedT) {
   // "Nur Sterne"-Unschärfe: Sterne als Geschwindigkeits-Streifen in eine
   // eigene Ebene rendern – Streifenlänge pro Stern nach seiner echten
   // Bildschirmgeschwindigkeit (nahe Sterne lang, ferne fast punktförmig)
-  const splitBlur = state.mblurStars && state.mblur > 0 && state.starCount > 0;
+  const splitBlur = state.mblurStars && shutterSec > 0 && state.starCount > 0;
   const tilt2X = (state.tiltX / 100) * 0.08 + cam2.tiltAddX;
   const tilt2Y = (state.tiltY / 100) * 0.08 + cam2.tiltAddY;
   const starTilt2X = tilt2X + cam2.driftTX * drKStar;
@@ -5295,7 +5575,14 @@ function render(forcedT) {
     u1f(starProg, "uAngle2", cam2.angle);
     u2f(starProg, "uCenter2", cam2.cx, cam2.cy);
     u2f(starProg, "uTilt2", starTilt2X, starTilt2Y);
-    u1f(starProg, "uStreak", splitBlur ? (state.mblur / 100) / dt : 0);
+    u1f(starProg, "uStreak", splitBlur ? (shutterSec / 1.5) / dt : 0);
+    u1f(starProg, "uDofS", state.dof / 100);
+    u1f(starProg, "uFocusS", focusNow);
+    u1f(starProg, "uBokehMax", 0.022 * fbScene.h);
+    u1f(starProg, "uAnamorph", state.anamorph / 100);
+    u1f(starProg, "uAnamBokeh", state.anamBokeh ? 1 : 0);
+    u1f(starProg, "uExtinct", state.extinct / 100);
+    u1f(starProg, "uHazeS", (state.haze / 100) * 0.85);
     u1f(starProg, "uMaxPoint", maxPointSize());
     u1f(starProg, "uGaiaAmt", state.gaiaAmt / 100);
     u1f(starProg, "uGaiaOnly", state.gaiaOnly && state.gaiaDepth ? 1 : 0);
@@ -5358,7 +5645,8 @@ function render(forcedT) {
   const BLOOM_W = [1.0, 0.85, 1.1, 1.4];
   const bloomNorm = 1 / (BLOOM_W[0] + BLOOM_W[1]);
   const bloomStrength = (state.bloom / 100) * 0.7;
-  if (bloomStrength > 0) {
+  const halation = (state.halation / 100) * 0.7;
+  if (bloomStrength > 0 || halation > 0) {
     gl.bindVertexArray(quadVao);
     gl.activeTexture(gl.TEXTURE0);
 
@@ -5418,7 +5706,8 @@ function render(forcedT) {
 
   // ---- Pass 2b: weichgezeichnete Szene für "Klarheit" (Viertelauflösung) ----
   const clarity = (state.clarity / 100) * 0.8;
-  if (clarity !== 0) {
+  const softOn = clarity !== 0 || dofOn || hazeOn;
+  if (softOn) {
     gl.bindVertexArray(quadVao);
     gl.activeTexture(gl.TEXTURE0);
     gl.useProgram(blurProg);
@@ -5437,7 +5726,8 @@ function render(forcedT) {
 
   // ---- Pass 2c: mittel weichgezeichnete Szene für "Struktur" (halbe Auflösung) ----
   const structure = (state.structure / 100) * 0.9;
-  if (structure !== 0) {
+  const medOn = structure !== 0 || dofOn;
+  if (medOn) {
     gl.bindVertexArray(quadVao);
     gl.activeTexture(gl.TEXTURE0);
     gl.useProgram(blurProg);
@@ -5474,9 +5764,9 @@ function render(forcedT) {
   gl.activeTexture(gl.TEXTURE1);
   gl.bindTexture(gl.TEXTURE_2D, fbBloom[0].a.tex);
   gl.activeTexture(gl.TEXTURE2);
-  gl.bindTexture(gl.TEXTURE_2D, clarity !== 0 ? fbSoftB.tex : fbScene.tex);
+  gl.bindTexture(gl.TEXTURE_2D, softOn ? fbSoftB.tex : fbScene.tex);
   gl.activeTexture(gl.TEXTURE3);
-  gl.bindTexture(gl.TEXTURE_2D, structure !== 0 ? fbMedB.tex : fbScene.tex);
+  gl.bindTexture(gl.TEXTURE_2D, medOn ? fbMedB.tex : fbScene.tex);
   gl.activeTexture(gl.TEXTURE4);
   gl.bindTexture(gl.TEXTURE_2D, fbStars.tex);
   gl.activeTexture(gl.TEXTURE0);
@@ -5489,7 +5779,31 @@ function render(forcedT) {
   u1f(compProg, "uViewAspect", viewAspect);
   u1f(compProg, "uBloomStrength", bloomStrength * bloomNorm);
   u1f(compProg, "uFilmic", state.filmic / 100);
-  u1f(compProg, "uShutter", (state.mblur / 100) * 1.5);
+  u1f(compProg, "uShutter", shutterSec);
+  // Film & Optik
+  gl.activeTexture(gl.TEXTURE5);
+  gl.bindTexture(gl.TEXTURE_2D, fbBloom[1] ? fbBloom[1].a.tex : texBlack);
+  gl.activeTexture(gl.TEXTURE0);
+  u1i(compProg, "uHalo", 5);
+  u1f(compProg, "uHalation", halation);
+  u1f(compProg, "uHaze", (state.haze / 100) * 0.85);
+  {
+    const tn = state.hazeTint / 100, a = Math.abs(tn);
+    const neutral = [0.70, 0.75, 0.84], warm = [0.95, 0.72, 0.50], cold = [0.50, 0.64, 0.95];
+    const to = tn >= 0 ? cold : warm;
+    u3f(compProg, "uHazeCol", neutral[0] * (1 - a) + to[0] * a, neutral[1] * (1 - a) + to[1] * a, neutral[2] * (1 - a) + to[2] * a);
+  }
+  u1f(compProg, "uDof", state.dof / 100);
+  u1f(compProg, "uFocus", focusNow);
+  u1f(compProg, "uLift", (state.lift / 100) * 0.08);
+  u1f(compProg, "uSplitTone", state.splitTone / 100);
+  u1f(compProg, "uGrainSize", Math.max(1, state.grainSize) * ssc);
+  u1f(compProg, "uGrainChroma", state.grainChroma / 100);
+  {
+    const wv = weaveAt(t);
+    u2f(compProg, "uWeaveOff", wv.x * ssc / fbScene.w, wv.y * ssc / fbScene.h);
+  }
+  u1f(compProg, "uLetterbox", letterboxBars(viewAspect));
   u1f(compProg, "uZoomRate", zoomRate);
   u1f(compProg, "uRotRate", rotRate);
   u2f(compProg, "uPanVel", pvx, pvy);
@@ -5501,7 +5815,7 @@ function render(forcedT) {
   // Frame-Index als Rausch-Seed: beim Export deterministisch pro Frame,
   // in der Vorschau aus der Zeit
   u1f(compProg, "uNoiseSeed", (Math.floor(t * 60) % 4096) + 1);
-  u1f(compProg, "uExposure", (state.exposure / 100) * 2);
+  u1f(compProg, "uExposure", (state.exposure / 100) * 2 + flickerAt(t));
   u1f(compProg, "uContrast", 1 + (state.contrast / 100) * 0.6);
   u1f(compProg, "uSaturation", 1 + state.saturation / 100);
   u1f(compProg, "uClarity", clarity);
@@ -5749,6 +6063,26 @@ bindSlider("ctlWarp", "outWarp", "warp", asInt);
 bindSlider("ctlVignette", "outVignette", "vignette", asInt);
 bindSlider("ctlGrain", "outGrain", "grain", asInt);
 bindSlider("ctlFilmic", "outFilmic", "filmic", asInt);
+// Film & Optik (Alpha)
+bindSlider("ctlHalation", "outHalation", "halation", asInt);
+bindSlider("ctlHaze", "outHaze", "haze", asInt);
+bindSlider("ctlHazeTint", "outHazeTint", "hazeTint", asInt);
+bindSlider("ctlDof", "outDof", "dof", asInt);
+bindSlider("ctlFocusA", "outFocusA", "focusA", asInt);
+bindSlider("ctlFocusB", "outFocusB", "focusB", asInt);
+bindSlider("ctlAnamorph", "outAnamorph", "anamorph", asInt);
+bindSlider("ctlLift", "outLift", "lift", asInt);
+bindSlider("ctlSplitTone", "outSplitTone", "splitTone", asInt);
+bindSlider("ctlGrainSize", "outGrainSize", "grainSize", (v) => v + " px");
+bindSlider("ctlGrainChroma", "outGrainChroma", "grainChroma", asInt);
+bindSlider("ctlWeave", "outWeave", "weave", asInt);
+bindSlider("ctlFlicker", "outFlicker", "flicker", asInt);
+bindSlider("ctlExtinct", "outExtinct", "extinct", asInt);
+bindSlider("ctlRelight", "outRelight", "relight", asInt);
+$("ctlAnamBokeh").addEventListener("change", () => { state.anamBokeh = $("ctlAnamBokeh").checked; });
+$("ctlLetterbox").addEventListener("change", () => { state.letterbox = $("ctlLetterbox").value; });
+$("ctlShutter").addEventListener("change", () => { state.shutterMode = $("ctlShutter").value; });
+$("ctlFps").addEventListener("change", () => { state.exportFps = parseInt($("ctlFps").value, 10) || 30; });
 bindSlider("ctlExposure", "outExposure", "exposure", asInt);
 bindSlider("ctlContrast", "outContrast", "contrast", asInt);
 bindSlider("ctlSaturation", "outSaturation", "saturation", asInt);
@@ -6131,6 +6465,8 @@ const PRESET_SLIDERS = {
   exposure: "ctlExposure", contrast: "ctlContrast", saturation: "ctlSaturation",
   clarity: "ctlClarity", structure: "ctlStructure", sharpen: "ctlSharpen",
   grain: "ctlGrain", filmic: "ctlFilmic",
+  halation: "ctlHalation", haze: "ctlHaze", dof: "ctlDof", lift: "ctlLift", splitTone: "ctlSplitTone",
+  grainSize: "ctlGrainSize", grainChroma: "ctlGrainChroma", anamorph: "ctlAnamorph",
 };
 
 const PRESETS = {
@@ -6147,7 +6483,14 @@ const PRESETS = {
   // Hyperraum: Warp + Streifen nur auf den Sternen (mblurStars) - der Nebel
   // bleibt scharf, sonst brennt das Bild bei hellen Kernen komplett aus
   hyper:     { bloom: 28, mblur: 0, warp: 45, vignette: 30, exposure: 5,   contrast: 12, saturation: 10,   clarity: 10,  structure: 5,  sharpen: 0, grain: 0, filmic: 20 },
+  // 35-mm-Film: Halation, angehobene Schwaerzen, Split-Tone, groberes Korn,
+  // Tiefendunst und ein Hauch anamorpher Flares
+  film:      { bloom: 30, mblur: 0, warp: 0,  vignette: 30, exposure: 3,   contrast: 12, saturation: 4,    clarity: 8,   structure: 5,  sharpen: 5, grain: 18, filmic: 65,
+               halation: 40, haze: 25, dof: 0, lift: 22, splitTone: 35, grainSize: 2, grainChroma: 35, anamorph: 25 },
 };
+// Film-Regler, die aeltere Looks nicht kennen: neutral
+const FILM_NEUTRAL = { halation: 0, haze: 0, dof: 0, lift: 0, splitTone: 0, grainSize: 1, grainChroma: 30, anamorph: 0 };
+for (const p of Object.values(PRESETS)) for (const [k, v] of Object.entries(FILM_NEUTRAL)) if (p[k] === undefined) p[k] = v;
 
 $("ctlPreset").addEventListener("change", () => {
   const preset = PRESETS[$("ctlPreset").value];
@@ -6173,6 +6516,7 @@ const SIMPLE_DEFAULTS = {
   ctlSpread: 70, ctlStarDist: 55, ctlLayers: 0, ctlStarPar: 100,
   ctlTwinkle: 25, ctlTwinkleSpeed: 100, ctlStarSize: 100, ctlStarBright: 100,
   ctlStarSat: 100, ctlGenStars: 0, ctlStarCull: 0, ctlDolly: 0, ctlZoomDrift: 30,
+  ctlHazeTint: 0, ctlFocusA: 55, ctlFocusB: 55, ctlWeave: 0, ctlFlicker: 0, ctlExtinct: 0, ctlRelight: 0,
 };
 
 // 8 Objekt-Presets: 3 Nebel, 3 Galaxien, 2 Sternhaufen. "look" wählt den
@@ -6293,7 +6637,7 @@ for (const card of document.querySelectorAll(".pcard")) {
 // eingestellter Stil weitergeben und wieder einspielen, ohne jeden Wert
 // einzeln abzutippen.
 // ---------------------------------------------------------------------------
-const STYLE_CHECKS = ["ctlMblurStars", "ctlLoop", "ctlReverse", "ctlRealStars", "ctlSpinStars", "ctlStarImg"];
+const STYLE_CHECKS = ["ctlMblurStars", "ctlLoop", "ctlReverse", "ctlRealStars", "ctlSpinStars", "ctlStarImg", "ctlAnamBokeh"];
 
 /**
  * Bezugswert eines Reglers fuer den Stil-Code: Kamera- und Sternregler messen
@@ -6525,7 +6869,7 @@ const TAB_GROUPS = [
   { id: "projekte", subs: [["projekte", "subProjekte"]] },
   { id: "bild", subs: [["bilder", "subLaden"], ["tiefe", "subTiefe"], ["spiegel", "subSpiegel"]] },
   { id: "kamera", subs: [["kamera", "subFlug"], ["szenario", "subFlugplan"], ["galaxie", "subGalaxie"]] },
-  { id: "look", subs: [["sterne", "subSterne"], ["look", "subEffekte"], ["nebel", "subNebel"], ["presets", "subStile"]] },
+  { id: "look", subs: [["sterne", "subSterne"], ["look", "subEffekte"], ["film", "subFilm"], ["nebel", "subNebel"], ["presets", "subStile"]] },
   { id: "daten", subs: [["gaia", "subGaia"], ["objekte", "subObjekte"]] },
   { id: "export", subs: [["export", "subExport"]] },
 ];
@@ -6649,7 +6993,7 @@ applyUiMode();
 const CTL_DEFAULTS = new Map();
 // Regler, die nichts ueber das Bild aussagen (Ansicht, Namen, Auswahllisten)
 const CHANGE_IGNORE = new Set([
-  "ctlViewSize", "ctlSimpleFx", "ctlSimpleDir", "ctlSimpleDuration",
+  "ctlViewSize", "ctlFps", "ctlSimpleFx", "ctlSimpleDir", "ctlSimpleDuration",
   "ctlBandShow", "ctlSpinShow", "selMoonObj", "ctlDepthRes",
 ]);
 
@@ -9748,7 +10092,7 @@ $("btnExport").addEventListener("click", async () => {
     return;
   }
   const [w, h] = exportDims();
-  const fps = 30;
+  const fps = state.exportFps || 30;
   const usedOffline = await exportOffline(w, h, fps);
   if (!usedOffline) exportRealtime(w, h, fps);
 });

@@ -10,7 +10,7 @@
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <title>AstroFly Alpha – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-10-30-a1">
+<link rel="stylesheet" href="style.css?v=2026-10-30-a2">
 </head>
 <body>
 
@@ -876,6 +876,7 @@
           <option value="glow" data-i18n="presetGlow">Dreamy Glow</option>
           <option value="mono" data-i18n="presetMono">Monochrome</option>
           <option value="hyper" data-i18n="presetHyper">Hyperspace</option>
+          <option value="film" data-i18n="presetFilm">Film (35 mm)</option>
         </select>
       </label>
       <label class="slider">
@@ -942,6 +943,128 @@
         </label>
       </details>
 
+    </section>
+
+    <!-- ==================== FILM & OPTIK (Alpha) ==================== -->
+    <section data-tab="film">
+      <h2><span data-i18n="secFilm">Film &amp; lens</span> <button class="qm" data-help="hintFilm">?</button></h2>
+      <p class="tip hint2" id="hintFilm" hidden data-i18n="filmHint">What separates a render from
+      a film: how the emulsion responds to light, how a lens draws depth, and a camera with
+      a real shutter. Everything here is off by default; the look preset "Film (35 mm)" in
+      Effects switches on a balanced set.</p>
+
+      <details class="adv" open>
+        <summary data-i18n="filmStock">Film stock</summary>
+        <label class="slider">
+          <span><span data-i18n="halation">Halation</span> <button class="qm" data-help="hintHalation">?</button> <output id="outHalation">0</output></span>
+          <input type="range" id="ctlHalation" min="0" max="100" step="1" value="0">
+        </label>
+        <p class="tip hint2" id="hintHalation" hidden data-i18n="halationHint">The red-orange
+        rim around clipped highlights on film: light passes through the emulsion and scatters
+        back from the base. Bright stars are the ideal case.</p>
+        <label class="slider">
+          <span><span data-i18n="lift">Lifted blacks</span> <output id="outLift">0</output></span>
+          <input type="range" id="ctlLift" min="0" max="100" step="1" value="0">
+        </label>
+        <label class="slider">
+          <span><span data-i18n="splitTone">Split tone (cool shadows, warm lights)</span> <output id="outSplitTone">0</output></span>
+          <input type="range" id="ctlSplitTone" min="0" max="100" step="1" value="0">
+        </label>
+        <label class="slider">
+          <span><span data-i18n="grainSize">Grain size</span> <output id="outGrainSize">1 px</output></span>
+          <input type="range" id="ctlGrainSize" min="1" max="4" step="1" value="1">
+        </label>
+        <label class="slider">
+          <span><span data-i18n="grainChroma">Grain color</span> <output id="outGrainChroma">30</output></span>
+          <input type="range" id="ctlGrainChroma" min="0" max="100" step="1" value="30">
+        </label>
+        <label class="slider">
+          <span><span data-i18n="weave">Gate weave (projector jitter)</span> <output id="outWeave">0</output></span>
+          <input type="range" id="ctlWeave" min="0" max="100" step="1" value="0">
+        </label>
+        <label class="slider">
+          <span><span data-i18n="flicker">Flicker</span> <output id="outFlicker">0</output></span>
+          <input type="range" id="ctlFlicker" min="0" max="100" step="1" value="0">
+        </label>
+        <label class="selfull">
+          <span data-i18n="shutter">Shutter</span>
+          <select id="ctlShutter">
+            <option value="off" selected data-i18n="shutterOff">Off (motion blur slider)</option>
+            <option value="180" data-i18n="shutter180">180° – film standard</option>
+            <option value="90" data-i18n="shutter90">90° – crisp (action)</option>
+            <option value="360" data-i18n="shutter360">360° – soft</option>
+          </select>
+        </label>
+        <p class="tip hint2" id="hintShutter" hidden data-i18n="shutterHint">Physical motion
+        blur from the export frame rate: 180° at 24 fps is what cinema looks like – nearly
+        invisible, but it is what separates film from video.</p>
+      </details>
+
+      <details class="adv" open>
+        <summary data-i18n="depthLens">Depth &amp; lens</summary>
+        <label class="slider">
+          <span><span data-i18n="haze">Depth haze</span> <button class="qm" data-help="hintHaze">?</button> <output id="outHaze">0</output></span>
+          <input type="range" id="ctlHaze" min="0" max="100" step="1" value="0">
+        </label>
+        <p class="tip hint2" id="hintHaze" hidden data-i18n="hazeHint">Aerial perspective:
+        distant layers lose contrast and saturation and take on the haze color – only where
+        there is light, the sky itself stays black. The strongest single depth cue after
+        parallax.</p>
+        <label class="slider">
+          <span><span data-i18n="hazeTint">Haze color (warm … cool)</span> <output id="outHazeTint">0</output></span>
+          <input type="range" id="ctlHazeTint" min="-100" max="100" step="1" value="0">
+        </label>
+        <label class="slider">
+          <span><span data-i18n="dof">Depth of field</span> <button class="qm" data-help="hintDof">?</button> <output id="outDof">0</output></span>
+          <input type="range" id="ctlDof" min="0" max="100" step="1" value="0">
+        </label>
+        <p class="tip hint2" id="hintDof" hidden data-i18n="dofHint">Blur by distance from the
+        focus plane: nebula layers soften, stars turn into bokeh discs. With different start
+        and end focus the focus travels during the flight (rack focus).</p>
+        <label class="slider">
+          <span><span data-i18n="focusA">Focus at start (far … near)</span> <output id="outFocusA">55</output></span>
+          <input type="range" id="ctlFocusA" min="0" max="100" step="1" value="55">
+        </label>
+        <label class="slider">
+          <span><span data-i18n="focusB">Focus at end</span> <output id="outFocusB">55</output></span>
+          <input type="range" id="ctlFocusB" min="0" max="100" step="1" value="55">
+        </label>
+        <label class="slider">
+          <span><span data-i18n="anamorph">Anamorphic flares</span> <output id="outAnamorph">0</output></span>
+          <input type="range" id="ctlAnamorph" min="0" max="100" step="1" value="0">
+        </label>
+        <label class="check">
+          <input type="checkbox" id="ctlAnamBokeh">
+          <span data-i18n="anamBokeh">Anamorphic bokeh (oval discs)</span>
+        </label>
+        <label class="selfull">
+          <span data-i18n="letterbox">Letterbox</span>
+          <select id="ctlLetterbox">
+            <option value="off" selected data-i18n="letterboxOff">Off</option>
+            <option value="2.39">2.39:1 (Scope)</option>
+            <option value="2.00">2.00:1 (Univisium)</option>
+            <option value="1.85">1.85:1 (Flat)</option>
+          </select>
+        </label>
+      </details>
+
+      <details class="adv" open>
+        <summary data-i18n="starLight">Star light</summary>
+        <label class="slider">
+          <span><span data-i18n="extinct">Reddening behind dust</span> <button class="qm" data-help="hintExtinct">?</button> <output id="outExtinct">0</output></span>
+          <input type="range" id="ctlExtinct" min="0" max="100" step="1" value="0">
+        </label>
+        <p class="tip hint2" id="hintExtinct" hidden data-i18n="extinctHint">Interstellar
+        extinction: dust absorbs blue light more than red, so stars behind nebula layers turn
+        reddish. Works together with the nebula occlusion in the Stars tab.</p>
+        <label class="slider">
+          <span><span data-i18n="relight">Star light on the nebula</span> <button class="qm" data-help="hintRelight">?</button> <output id="outRelight">0</output></span>
+          <input type="range" id="ctlRelight" min="0" max="100" step="1" value="0">
+        </label>
+        <p class="tip hint2" id="hintRelight" hidden data-i18n="relightHint">The brightest
+        foreground stars light up the gas around them in their own color – a reflection
+        nebula effect that ties stars and nebula into the same space.</p>
+      </details>
     </section>
 
     <!-- ==================== NEBELFARBEN ==================== -->
@@ -1161,6 +1284,15 @@
         <span data-i18n="fileName">File name</span>
         <input type="text" id="ctlFilename" placeholder="astrofly" spellcheck="false" autocomplete="off">
       </label>
+      <label class="selfull">
+        <span data-i18n="fpsLabel">Frame rate</span>
+        <select id="ctlFps">
+          <option value="30" selected>30 fps</option>
+          <option value="24">24 fps (cinema)</option>
+          <option value="25">25 fps</option>
+          <option value="60">60 fps</option>
+        </select>
+      </label>
       <div class="exportrow">
         <select id="ctlRes">
           <option value="1080" selected>Full HD (1080)</option>
@@ -1266,8 +1398,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-10-30-a1"></script>
-<script src="objectinfo.js?v=2026-10-30-a1"></script>
-<script src="app.js?v=2026-10-30-a1"></script>
+<script src="i18n.js?v=2026-10-30-a2"></script>
+<script src="objectinfo.js?v=2026-10-30-a2"></script>
+<script src="app.js?v=2026-10-30-a2"></script>
 </body>
 </html>
