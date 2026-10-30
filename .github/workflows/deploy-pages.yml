@@ -23,6 +23,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # volle Historie: die Cache-Busting-Marke je Kanal kommt aus dem letzten Commit des Kanals
+          fetch-depth: 0
+
+      - name: Stamp cache-busting version
+        run: bash tools/stamp-version.sh
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

@@ -10521,7 +10521,7 @@ if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").m
 }
 // Offline-faehig und installierbar: der Service Worker haelt die App samt
 // Demo und Bibliotheken vor; Katalogabfragen gehen weiterhin immer ins Netz
-if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
+if ("serviceWorker" in navigator && (location.protocol === "https:" || /^(localhost|127\.0\.0\.1)$/.test(location.hostname))) {
   navigator.serviceWorker.register("sw.js").then((reg) => {
     reg.addEventListener("updatefound", () => {
       const nw = reg.installing;
@@ -10535,3 +10535,41 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || location.
     });
   }).catch(() => { /* ohne Service Worker laeuft alles wie bisher */ });
 }
+
+// ------------------------------------------------------- Diagnosebericht
+// Letzten Fehler merken: der Bericht nennt ihn, auch wenn die Konsole zu ist
+let lastAppError = "";
+window.addEventListener("error", (e) => { lastAppError = `${e.message} @ ${(e.filename || "").split("/").pop()}:${e.lineno}`; });
+window.addEventListener("unhandledrejection", (e) => { lastAppError = "Promise: " + (e.reason && e.reason.message ? e.reason.message : String(e.reason)); });
+function diagnosticReport() {
+  const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+  const renderer = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+  const ver = (document.querySelector('script[src*="app.js"]') || { src: "" }).src.split("v=")[1] || "?";
+  const lines = [
+    "AstroFly Diagnose " + new Date().toISOString(),
+    "Version: " + ver + " (" + location.pathname + ")",
+    "Browser: " + navigator.userAgent,
+    "Bildschirm: " + screen.width + "x" + screen.height + " @" + window.devicePixelRatio + ", Fenster " + innerWidth + "x" + innerHeight,
+    "GPU: " + renderer + " | HDR-Puffer: " + (HDR_OK ? "ja" : "nein") + " | max. Punkt: " + maxPointSize() + " | max. Textur: " + gl.getParameter(gl.MAX_TEXTURE_SIZE),
+    "WebCodecs: " + (typeof VideoEncoder !== "undefined") + " | WebGPU: " + !!navigator.gpu + " | Service Worker: " + ("serviceWorker" in navigator),
+    "Bild: " + (state.starless ? state.starless.width + "x" + state.starless.height : "keins") + " | Sterne: " + state.maskStarCount +
+      " | WCS: " + !!state.wcs + " | Gaia: " + (state.gaiaInfo ? state.gaiaInfo.matched + "/" + state.gaiaInfo.total : "nein") +
+      " | Galaxien: " + (state.galaxies || []).length + " | Flugplan: " + (state.scenarioOn ? state.waypoints.length + " Wegpunkte" : "aus"),
+    "Format: " + state.aspectName + " | Dauer: " + state.duration + " s | Export: " + $("ctlRes").value + "p " + (state.exportFps || 30) + " fps",
+    "Stil: " + buildStyleCode(),
+    "Letzter Fehler: " + (lastAppError || "keiner"),
+  ];
+  return lines.join("\n");
+}
+$("btnDiag").addEventListener("click", async () => {
+  const rep = diagnosticReport();
+  const st = $("diagStatus");
+  try {
+    await navigator.clipboard.writeText(rep);
+    st.textContent = t("diagCopied");
+  } catch (e) {
+    st.textContent = t("diagFailed") + "\n\n" + rep;
+    st.style.whiteSpace = "pre-wrap";
+    st.style.userSelect = "all";
+  }
+});

@@ -94,14 +94,27 @@ aufgebaut (vorher konnte ein Bild im Export dunkel werden).
    mit **maximal 5 Hashtags**.
 2. **Todo-Regel:** Schreibt Michael Todos, nur sammeln/bestätigen – erst
    umsetzen, wenn er das Startsignal gibt („Leg los" o. ä.).
-3. **Beta-first:** Features zuerst in `beta/` deployen (Beta-Deploy-PRs
-   werden sofort gemerged), live erst nach Michaels Freigabe. Kleine,
-   eindeutige **Bugfixes dürfen direkt live** (Michaels Ansage).
-4. **Deploys:** GitHub Pages serviert `main` (Root = live, `beta/` = Beta).
+3. **Alpha → Beta → Live:** Neue Funktionen zuerst in `alpha/` (privater
+   Teststand nur für Michael, nirgends verlinkt, `noindex`; Alpha-PRs sofort
+   mergen), auf Michaels „rüber in die Beta“ nach `beta/` (für seine Tester),
+   live erst nach seiner Freigabe. Kleine, eindeutige **Bugfixes dürfen
+   direkt live** (Michaels Ansage).
+4. **Deploys:** GitHub Pages serviert `main` (Root = live, `beta/` = Beta,
+   `alpha/` = Alpha). Der Deploy-Workflow stempelt das Cache-Busting
+   automatisch (`tools/stamp-version.sh`: `?v=<datum>-<sha>` je Kanal aus
+   dem letzten Commit des Kanals, `VERSION` im Service Worker ebenso) –
+   die ausgelieferte `index.html` weicht darin vom Repo ab; JS/CSS sind
+   byteidentisch. Manuelles Hochzählen im Repo bleibt erlaubt.
    Nach jedem Merge auf main das Deployment per curl verifizieren.
    `index.html` referenziert JS/CSS mit `?v=<Datum>` – bei jedem Release
    die Version hochzählen (Cache-Busting).
-5. **Tests:** Playwright-Headless-Tests (Chromium mit SwiftShader) gegen
+5. **Tests:** `node tests/run.js` (Playwright, echtes Chromium) prüft alle
+   drei Kanäle: Seite lädt, Demo erkannt, jeder Flug-Preset rendert, Gaia
+   gegen den echten Server, Offline-Export liefert eine Datei. Läuft als
+   GitHub Action „Smoke tests“ auf jedem PR und Push auf `main`
+   (`.github/workflows/smoke-tests.yml`); lokal mit
+   `PW_CHROMIUM=<pfad> CHANNELS=alpha node tests/run.js`.
+   Ad-hoc-Tests weiterhin als Playwright-Skripte (Chromium mit SwiftShader) gegen
    einen lokalen `python3 -m http.server`. Achtung: Der Server serviert die
    Arbeitskopie – vor Testläufen Branch prüfen. Jeder Test muss vorab
    `localStorage.setItem("astrofly-tour-seen", "1")` setzen, sonst legt sich
@@ -126,6 +139,16 @@ aufgebaut (vorher konnte ein Bild im Export dunkel werden).
   Symbolsammlung als SVG-Sprite (`#i-*`), Instrumenten-Look (monochrom,
   Akzent #8fb0ff, zweiter Akzent #b07aff)
 - `beta/` – vollständige Kopie der App für den Beta-Kanal
+- `alpha/` – privater Teststand (Kopie der Beta plus Alpha-Features):
+  PWA (`manifest.webmanifest`, `sw.js`, `icons/`), Untertab Look → Film
+  (Halation, Korn v2, Schwärzen, Split-Tone, Bildstand, Flimmern,
+  Verschluss; Tiefendunst, Schärfentiefe mit Fokusfahrt, anamorphe Optik,
+  Kinobalken, Nebel-Strömung; Extinktion, Sternlicht), Kamera-Trägheit
+  (`scenarioSmoothTable`), Ease „cine“/„settle“, Presets Dreiakter/Contact/
+  Gravity/Tree of Life (`plan:`-Funktionen), Titelkarte, Diagnosebericht.
+  Technik: `bgFS` schreibt die Tiefe in den Alphakanal der Szene (`dScr`),
+  `compFS` nutzt sie für Dunst und Schärfentiefe
+- `tests/run.js` – Smoke-Tests; `tools/stamp-version.sh` – Cache-Busting beim Deploy
 - `demo/` – Orion-Demobilder + `orion.wcs` (Plate-Solve-Lösung, wird vom
   Demo-Button automatisch mitgeladen); `vendor/` – UTIF, mp4-muxer u. a.
 - `tools/instagram-mcp/` – optionaler MCP-Server (Cloudflare Worker) für
