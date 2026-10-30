@@ -10,7 +10,7 @@
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <title>AstroFly Alpha – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-10-30-a3">
+<link rel="stylesheet" href="style.css?v=2026-10-30-a4">
 </head>
 <body>
 
@@ -1340,6 +1340,12 @@
       4K is always rendered at 1×.</p>
       <p class="tip" id="exportBrowserHint" hidden></p>
       <div id="exportStatus" aria-live="polite"></div>
+      <details class="adv">
+        <summary data-i18n="diagHead">Trouble? Diagnostic report</summary>
+        <p class="tip" data-i18n="diagTip">Copies browser, graphics chip, version, your style code and the last error to the clipboard – paste it into a message and the bug is half found.</p>
+        <button id="btnDiag" class="secondary" data-i18n="diagBtn">Copy diagnostic report</button>
+        <p class="tip" id="diagStatus" aria-live="polite"></p>
+      </details>
       <div class="progress" id="exportProgressWrap" hidden><div id="exportProgress"></div></div>
     </section>
 
@@ -1426,8 +1432,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-10-30-a3"></script>
-<script src="objectinfo.js?v=2026-10-30-a3"></script>
-<script src="app.js?v=2026-10-30-a3"></script>
+<script src="i18n.js?v=2026-10-30-a4"></script>
+<script src="objectinfo.js?v=2026-10-30-a4"></script>
+<script src="app.js?v=2026-10-30-a4"></script>
 </body>
 </html>
