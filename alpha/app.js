@@ -123,6 +123,10 @@ const state = {
   nebFlow: 0,            // innere Stroemung des Nebels 0..100
   titleCard: false,      // Titelkarte am Anfang (Objektname wie ein Filmtitel)
   presetPlan: false,     // der aktive Flug-Preset hat den Flugplan gesetzt
+  ldi: false,            // Schichten-Tiefe: Bild in Tiefenschichten zerlegt, verdeckte Bereiche aufgefuellt
+  ldiLayers: 5,          // Anzahl der Schichten 3..8
+  stereo: "off",         // Stereo-Export: off | sbs | anaglyph
+  eyeSep: 50,            // Augenabstand 0..100
   scenarioOn: false,     // Szenario-Flug: Kamera fliegt die Wegpunkte ab
   scenEdit: false,       // Flugplan-Einrichtung: Kamera folgt dem Steuerkreuz
   scenView: { x: 0, y: 0, zoom: 1, angle: 0 }, // aktuell eingerichteter Blick
@@ -304,6 +308,21 @@ uniform vec4 uLightC[8];    // Sternfarbe
 uniform float uRelight;     // Staerke 0..1
 uniform float uFlow;        // innere Stroemung des Nebels 0..1
 uniform float uFlowT;       // Flugzeit fuer die Stroemung
+uniform int uLdiN;          // Schichten-Tiefe: Anzahl Schichten (0 = aus)
+uniform float uLdiD[8];     // Tiefe je Schicht (fern .. nah)
+uniform sampler2D uLdi0; uniform sampler2D uLdi1; uniform sampler2D uLdi2; uniform sampler2D uLdi3;
+uniform sampler2D uLdi4; uniform sampler2D uLdi5; uniform sampler2D uLdi6; uniform sampler2D uLdi7;
+// Sampler-Felder lassen sich in GLSL ES 3.0 nicht variabel indizieren
+vec4 ldiTex(int k, vec2 uv) {
+  if (k == 0) return texture(uLdi0, uv);
+  if (k == 1) return texture(uLdi1, uv);
+  if (k == 2) return texture(uLdi2, uv);
+  if (k == 3) return texture(uLdi3, uv);
+  if (k == 4) return texture(uLdi4, uv);
+  if (k == 5) return texture(uLdi5, uv);
+  if (k == 6) return texture(uLdi6, uv);
+  return texture(uLdi7, uv);
+}
 uniform sampler2D uVolD;    // rgb = entstaubtes Leuchten (aufgefuellt), a = Staubmaske
 uniform sampler2D uVolB;    // Grund-Leuchten (glatt, geringe Aufloesung, Float)
 uniform float uVolSep;      // so weit liegt das Grund-Leuchten hinter den Strukturen
@@ -544,7 +563,32 @@ void main() {
   gDy = dFdy(imgUv(q));
 
   vec3 col;
-  if (uVol > 0.5 && uObjFar < 0.5 && uMoonMode < 0.5) {
+  float dOverride = -1.0;
+  if (uLdiN > 0) {
+    // Schichten-Tiefe (Multiplane): jede Schicht ist eine starre Ebene in
+    // ihrer Tiefe - reine Verschiebung und Skalierung, also nie Falten oder
+    // Doppelbilder innerhalb einer Schicht. Verdeckte Bereiche sind beim
+    // Aufbau aufgefuellt, deshalb reisst zwischen den Ebenen nichts auf,
+    // auch bei grossen Tiefenspruengen. Von hinten nach vorn ueberblendet
+    vec3 acc = vec3(0.0);
+    float dAcc = 0.02;
+    for (int k = 0; k < 8; k++) {
+      if (k >= uLdiN) break;
+      float d = uLdiD[k];
+      float ex = 1.0 + uParallax * (d - 0.45) * uDepthRange;
+      vec2 qk = uCenter + pr / (uCover * pow(uZoom, ex)) + uTilt * (d - 0.45);
+      vec2 uvk = vec2(qk.x / uImgAspect, qk.y) + 0.5;
+      vec4 L = ldiTex(k, uvk);
+      // vorderste Schichten enden am Bildrand (keine Spiegelkopie), die
+      // hinterste Schicht traegt den Himmel bis an den Rand
+      float inside = k == 0 ? 1.0 : step(0.0, uvk.x) * step(uvk.x, 1.0) * step(0.0, uvk.y) * step(uvk.y, 1.0);
+      float a = L.a * inside;
+      acc = mix(acc, L.rgb, a);
+      dAcc = mix(dAcc, d, a);
+    }
+    col = acc;
+    dOverride = dAcc;
+  } else if (uVol > 0.5 && uObjFar < 0.5 && uMoonMode < 0.5) {
     col = volumetric(pr, uv, q);
   } else {
     col = sampleCol(uv + flowOff(uv));
@@ -641,7 +685,7 @@ void main() {
   // (Dichte = Helligkeit des Starless) und nur, wenn der Stern VOR dem
   // Nebel steht. Der Lichtfleck sitzt in Nebel-Koordinaten fest (q), also
   // wandert er mit der Parallaxe korrekt gegen den Stern
-  float dScr = depthOf(uv, 0.0);
+  float dScr = dOverride >= 0.0 ? dOverride : depthOf(uv, 0.0);
   if (uLightN > 0 && uRelight > 0.0) {
     float dens = smoothstep(0.02, 0.35, dot(col, vec3(0.299, 0.587, 0.114)));
     vec3 add = vec3(0.0);
@@ -4946,9 +4990,28 @@ function scenarioSmoothTable() {
   const dt = total / (n - 1);
   const tau = (state.camMass / 100) * 1.5;
   const a = dt / (tau + dt);
+  // Abschnitte zwischen Schnitten getrennt glaetten: ueber einen Schnitt
+  // hinweg darf die Kamera nicht "schwenken", sie springt
+  const bounds = [0];
+  {
+    let acc = 0;
+    const wps = state.waypoints;
+    for (let i = 0; i < wps.length; i++) {
+      acc += Math.max(0, wps[i].hold || 0);
+      if (i > 0) {
+        const dur = Math.max(0.2, wps[i].dur || 0.2);
+        if (wps[i].cut) bounds.push(Math.round((acc - Math.max(0, wps[i].hold || 0) + dur / 2) / total * (n - 1)));
+        acc += dur;
+      }
+    }
+    bounds.push(n);
+  }
   for (const arr of [cx, cy, lz, ang]) {
-    for (let i = 1; i < n; i++) arr[i] = arr[i - 1] + (arr[i] - arr[i - 1]) * a;
-    for (let i = n - 2; i >= 0; i--) arr[i] = arr[i + 1] + (arr[i] - arr[i + 1]) * a;
+    for (let b = 0; b < bounds.length - 1; b++) {
+      const s0 = Math.max(0, bounds[b]), s1 = Math.min(n, bounds[b + 1]);
+      for (let i = s0 + 1; i < s1; i++) arr[i] = arr[i - 1] + (arr[i] - arr[i - 1]) * a;
+      for (let i = s1 - 2; i >= s0; i--) arr[i] = arr[i + 1] + (arr[i] - arr[i + 1]) * a;
+    }
   }
   scenSmoothCache = { key, n, cx, cy, lz, ang };
   return scenSmoothCache;
@@ -4967,13 +5030,15 @@ function scenarioAt(p) {
   const sc = coverBase(viewAspect, imgAspect) * zoom;
   const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.98;
   const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.98;
-  return { zoom, angle: L(tb.ang), cx: Math.min(freeX, Math.max(-freeX, L(tb.cx))), cy: Math.min(freeY, Math.max(-freeY, L(tb.cy))) };
+  return { zoom, angle: L(tb.ang), cx: Math.min(freeX, Math.max(-freeX, L(tb.cx))), cy: Math.min(freeY, Math.max(-freeY, L(tb.cy))),
+    cutFade: scenarioRaw(p).cutFade };
 }
 
 function scenarioRaw(p) {
   const wps = state.waypoints;
   const total = scenarioTotal();
   let s = Math.min(1, Math.max(0, p)) * total;
+  let cutFade = 1;
   let ax = wps[0].x, ay = wps[0].y, zoom = Math.max(1, wps[0].zoom || 1);
   let ang = wps[0].angle || 0;
   outer:
@@ -4990,6 +5055,16 @@ function scenarioRaw(p) {
           k = smoothstep(k);
         }
         const a = wps[i - 1], b = wps[i];
+        if (b.cut) {
+          // Schnitt mit Schwarzblende: erste Haelfte der Etappe am alten
+          // Wegpunkt ausblenden, zweite Haelfte am neuen einblenden
+          const kc = s / dur;
+          const atA = kc < 0.5;
+          const P = atA ? a : b;
+          cutFade = atA ? 1 - smoothstep(Math.min(1, kc / 0.5)) : smoothstep(Math.min(1, (kc - 0.5) / 0.5));
+          ax = P.x; ay = P.y; zoom = Math.max(1, P.zoom || 1); ang = P.angle || 0;
+          break outer;
+        }
         const za = Math.max(1, a.zoom || 1), zb = Math.max(1, b.zoom || 1);
         // Zoom-kompensierter Weg: der Zoom laeuft geometrisch, deshalb wuerde
         // eine Position, die linear in Bildkoordinaten laeuft, auf dem Schirm
@@ -5030,7 +5105,7 @@ function scenarioRaw(p) {
   const sc = cover * zoom;
   const freeX = Math.max(0, imgAspect / 2 - (viewAspect / 2) / sc) * 0.98;
   const freeY = Math.max(0, 0.5 - 0.5 / sc) * 0.98;
-  return { zoom, angle: ang, cx: Math.min(freeX, Math.max(-freeX, ax)), cy: Math.min(freeY, Math.max(-freeY, ay)) };
+  return { zoom, angle: ang, cx: Math.min(freeX, Math.max(-freeX, ax)), cy: Math.min(freeY, Math.max(-freeY, ay)), cutFade };
 }
 
 function scenarioActive() {
@@ -5105,10 +5180,11 @@ function camAt(loopT) {
   let angle = (state.orientation + state.rotationSpeed * te) * Math.PI / 180;
 
   // Flugmodus: entweder in den Nebel zoomen oder seitlich übers Bild gleiten
-  let zoom, cx, cy, driftTX = 0, driftTY = 0;
+  let zoom, cx, cy, driftTX = 0, driftTY = 0, cutFade = 1;
   if (scenarioCam()) {
     const sp = state.waypoints.length ? scenarioAt(p) : { zoom: state.zoomBase, angle: 0, cx: 0, cy: 0 };
     zoom = sp.zoom; cx = sp.cx; cy = sp.cy;
+    if (sp.cutFade !== undefined) cutFade = sp.cutFade;
     angle = (state.orientation + sp.angle) * Math.PI / 180;
   } else if (state.flightMode === "orbit") {
     // Orbit um die ausgewaehlte Galaxie: die Kamera rahmt sie ein und
@@ -5322,7 +5398,7 @@ function camAt(loopT) {
       cy = Math.min(freeY, Math.max(-freeY, (state.frameY / 100) * freeY0));
     }
   }
-  return { zoom, angle, rate, te, tiltAddX, tiltAddY, cx, cy, driftTX, driftTY, lens };
+  return { zoom, angle, rate, te, tiltAddX, tiltAddY, cx, cy, driftTX, driftTY, lens, cutFade };
 }
 
 // Kamera um dt voraus (fuer Bewegungsunschaerfe und Stern-Streifen). Am
@@ -5353,6 +5429,8 @@ function animParams(t) {
     const fadeOut = Math.min(1, Math.max(0, (state.duration - loopT) / fadeDur));
     fade = Math.min(fadeIn, fadeOut);
   }
+  // Schnitte im Flugplan (Schwarzblende)
+  if (cam.cutFade !== undefined && cam.cutFade < 1) fade *= cam.cutFade;
   return { loopT, cam, fade };
 }
 
@@ -5458,6 +5536,102 @@ function relightUniforms() {
   return relightCache;
 }
 
+// ------------------------------------------- Schichten-Tiefe (Multiplane / LDI)
+// Das Bild wird nach der Tiefenkarte in Baender zerlegt (gleich besetzte
+// Quantile). Jede Schicht: Farbe + weiche Zugehoerigkeit (Partition der
+// Eins ueber die Bandgrenzen). Was naehere Schichten verdecken, wird in der
+// Schicht aus ihrer eigenen Umgebung aufgefuellt (Push-Pull), die hinterste
+// Schicht ist ueberall gefuellt. Beim Flug gleiten die Ebenen starr
+// uebereinander; hinter einer weichenden Vordergrund-Schicht erscheint
+// aufgefuellter Hintergrund statt eines Lochs
+let texLdi = [], ldiDepths = [], ldiSig = "", ldiTimer = 0;
+let stereoShift = 0; // Augenversatz des gerade gerenderten Auges (Ebenen-Einheiten)
+function ldiSignature() {
+  return [state.ldiLayers, state.depthRaw ? state.depthRaw.w + "x" + state.depthRaw.h : 0,
+    state.smooth, state.invertDepth, !!state.customDepth, !!state.aiDepth, state.depthAiMix,
+    state.starless ? state.starless.width + "x" + state.starless.height : 0, state.flipH, state.flipV].join("|");
+}
+function buildLdiLayers() {
+  if (!state.starless || !state.depthRaw) return;
+  for (const t of texLdi) gl.deleteTexture(t);
+  texLdi = []; ldiDepths = [];
+  const K = Math.max(3, Math.min(8, Math.round(state.ldiLayers || 5)));
+  const src = downscale(state.starless, 1280);
+  const w = src.width, h = src.height, n = w * h;
+  const px = canvasPixels(src);
+  const raw = state.depthRaw;
+  // Tiefenkarte bilinear auf die Schichtaufloesung
+  const D = new Float32Array(n);
+  {
+    const sx = raw.w / w, sy = raw.h / h;
+    for (let y = 0; y < h; y++) {
+      const fy = Math.min(raw.h - 1.001, (y + 0.5) * sy - 0.5), y0 = Math.max(0, Math.floor(fy)), ty = fy - y0;
+      for (let x = 0; x < w; x++) {
+        const fx = Math.min(raw.w - 1.001, (x + 0.5) * sx - 0.5), x0 = Math.max(0, Math.floor(fx)), tx = fx - x0;
+        const i00 = y0 * raw.w + x0;
+        D[y * w + x] = (raw.f[i00] * (1 - tx) + raw.f[i00 + 1] * tx) * (1 - ty) +
+          (raw.f[i00 + raw.w] * (1 - tx) + raw.f[i00 + raw.w + 1] * tx) * ty;
+      }
+    }
+  }
+  // Bandgrenzen gleichmaessig ueber den genutzten Tiefenbereich (1.-99.
+  // Perzentil): Quantile klumpten im dunklen Himmel (fast alle Pixel liegen
+  // bei derselben kleinen Tiefe) und liessen dem Nebel nur eine Schicht
+  const sorted = Float32Array.from(D).sort();
+  const dLo = sorted[Math.floor(sorted.length * 0.01)], dHi = sorted[Math.floor(sorted.length * 0.99)];
+  const edges = [0];
+  for (let k = 1; k < K; k++) edges.push(dLo + (dHi - dLo) * k / K);
+  edges.push(1.0001);
+  const feather = 0.02;
+  const sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / Math.max(1e-6, b - a))); return t * t * (3 - 2 * t); };
+  const member = (k, d) => {
+    const lo = k === 0 ? 1 : sm(edges[k] - feather, edges[k] + feather, d);
+    const hi = k === K - 1 ? 1 : 1 - sm(edges[k + 1] - feather, edges[k + 1] + feather, d);
+    return lo * hi;
+  };
+  const rgb = new Float32Array(n * 3);
+  for (let i = 0, j = 0; i < n; i++, j += 4) { rgb[i * 3] = px[j] / 255; rgb[i * 3 + 1] = px[j + 1] / 255; rgb[i * 3 + 2] = px[j + 2] / 255; }
+  const masks = [];
+  for (let k = 0; k < K; k++) {
+    const m = new Float32Array(n);
+    for (let i = 0; i < n; i++) m[i] = member(k, D[i]);
+    masks.push(m);
+  }
+  // Je Schicht: Tiefe = mittlere Tiefe ihrer Pixel; Farbe und Deckung im
+  // verdeckten Bereich (alles Naehere) aus der eigenen Umgebung auffuellen
+  const alpha3 = new Float32Array(n * 3);
+  for (let k = 0; k < K; k++) {
+    const m = masks[k];
+    let sd = 0, sw = 0;
+    for (let i = 0; i < n; i++) { sd += D[i] * m[i]; sw += m[i]; }
+    const dk = sw > 0 ? sd / sw : (edges[k] + edges[k + 1]) / 2;
+    const near = new Float32Array(n);
+    for (let j = k + 1; j < K; j++) { const mj = masks[j]; for (let i = 0; i < n; i++) near[i] = Math.max(near[i], mj[i]); }
+    const valid = new Float32Array(n);
+    for (let i = 0; i < n; i++) valid[i] = m[i] > 0.5 && near[i] < 0.5 ? 1 : 0;
+    const colF = pushPullFill(rgb, valid, w, h);
+    let aF = null;
+    if (k > 0) {
+      // Deckung: eigene Zugehoerigkeit, unter Naeherem aus der Umgebung fortgesetzt
+      const validA = new Float32Array(n);
+      for (let i = 0; i < n; i++) { validA[i] = near[i] < 0.5 ? 1 : 0; alpha3[i * 3] = alpha3[i * 3 + 1] = alpha3[i * 3 + 2] = m[i]; }
+      aF = pushPullFill(alpha3, validA, w, h);
+    }
+    const out = new Uint8ClampedArray(n * 4);
+    for (let i = 0, j = 0; i < n; i++, j += 4) {
+      const occl = near[i] >= 0.5 ? 1 : 0;
+      const r = occl ? colF[i * 3] : rgb[i * 3], g = occl ? colF[i * 3 + 1] : rgb[i * 3 + 1], b = occl ? colF[i * 3 + 2] : rgb[i * 3 + 2];
+      const a = k === 0 ? 1 : (occl ? Math.max(m[i], aF[i * 3]) : m[i]);
+      out[j] = Math.round(r * 255); out[j + 1] = Math.round(g * 255); out[j + 2] = Math.round(b * 255); out[j + 3] = Math.round(a * 255);
+    }
+    texLdi.push(makeTextureRaw(w, h, out));
+    ldiDepths.push(dk);
+  }
+  ldiSig = ldiSignature();
+  if (typeof stageToast === "function") stageToast(null);
+  requestRender();
+}
+
 function render(forcedT) {
   const w = canvas.width, h = canvas.height;
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -5487,7 +5661,9 @@ function render(forcedT) {
   const parallax = state.parallax / 100;
   const warp = state.warp / 100;
   const depthRange = 0.85 * (0.4 + 1.8 * state.depthBoost / 100);
-  const tiltX = (state.tiltX / 100) * 0.08 + cam.tiltAddX;
+  // Stereo-Export: der Augenversatz ist eine tiefenabhaengige Verschiebung -
+  // genau das, was der Kipp-Mechanismus macht (Nebel und Sterne gleich)
+  const tiltX = (state.tiltX / 100) * 0.08 + cam.tiltAddX + stereoShift;
   const tiltY = (state.tiltY / 100) * 0.08 + cam.tiltAddY;
   // Seitlicher Flug: die Fahrt-Parallaxe nutzt den Kipp-Mechanismus
   // (tiefenabhängige Verschiebung); Sterne reagieren wie beim Zoom stärker
@@ -5512,6 +5688,14 @@ function render(forcedT) {
   galSyncFromState();
   const galShow = (state.spinShow || state.spinPick) && !state.exporting;
   const galOn = state.spinSpeed !== 0 || galShow || state.galaxies.some((g) => g.auto);
+  // Schichten-Tiefe: nicht zusammen mit drehenden Galaxien oder Mond (dort
+  // fuehrt die starre Drehung bzw. die Kugel); Aufbau entprellt, im Export sofort
+  const ldiWanted = state.ldi && state.starless && state.depthRaw && !galOn && !state.moonMode && !state.objFar;
+  if (ldiWanted && (ldiSig !== ldiSignature() || texLdi.length === 0)) {
+    if (state.exporting) { clearTimeout(ldiTimer); ldiTimer = 0; buildLdiLayers(); }
+    else if (!ldiTimer) { if (typeof stageToast === "function") stageToast(window.t("ldiBuilding")); ldiTimer = setTimeout(() => { ldiTimer = 0; buildLdiLayers(); }, 150); }
+  }
+  const ldiOn = ldiWanted && texLdi.length > 0 && ldiSig === ldiSignature();
   if (galOn && state.starless && (galBkTex !== texColor || galBkSig !== galGeomSig())) {
     if (state.exporting || !texGalBk) { clearTimeout(galBkTimer); galBkTimer = 0; buildGalaxyBg(); }
     else if (!galBkTimer) galBkTimer = setTimeout(() => { galBkTimer = 0; buildGalaxyBg(); }, 250);
@@ -5585,7 +5769,7 @@ function render(forcedT) {
   u1f(bgProg, "uBandOn",
     bandSat.some((v) => v !== 1) || bandHue.some((v) => v !== 0) || bandShow ? 1 : 0);
   // Volumetrischer Nebel v2: entstaubtes Leuchten + Grund-Leuchten (3, 4)
-  const volOn = state.vol && texVolL.length === 2 && volBuiltN > 0;
+  const volOn = state.vol && texVolL.length === 2 && volBuiltN > 0 && !ldiOn;
   for (let k = 0; k < 2; k++) {
     gl.activeTexture(gl.TEXTURE3 + k);
     gl.bindTexture(gl.TEXTURE_2D, texVolL[k] || texBlack);
@@ -5604,6 +5788,19 @@ function render(forcedT) {
   u1f(bgProg, "uRelight", (state.relight / 100) * 1.2);
   u1f(bgProg, "uFlow", state.nebFlow / 100);
   u1f(bgProg, "uFlowT", cam.te);
+  // Schichten-Tiefe: Texturen auf den Einheiten 6..13
+  u1i(bgProg, "uLdiN", ldiOn ? texLdi.length : 0);
+  if (ldiOn) {
+    for (let k = 0; k < 8; k++) {
+      gl.activeTexture(gl.TEXTURE6 + k);
+      gl.bindTexture(gl.TEXTURE_2D, texLdi[k] || texClear);
+      u1i(bgProg, "uLdi" + k, 6 + k);
+    }
+    gl.activeTexture(gl.TEXTURE0);
+    const dArr = new Float32Array(8);
+    for (let k = 0; k < ldiDepths.length; k++) dArr[k] = ldiDepths[k];
+    gl.uniform1fv(loc(bgProg, "uLdiD"), dArr);
+  }
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
   // Bewegungsgrößen numerisch aus der Kamerakurve ableiten (für die
@@ -6209,6 +6406,10 @@ $("ctlFps").addEventListener("change", () => { state.exportFps = parseInt($("ctl
 bindSlider("ctlCamMass", "outCamMass", "camMass", asInt);
 bindSlider("ctlNebFlow", "outNebFlow", "nebFlow", asInt);
 $("ctlTitleCard").addEventListener("change", () => { state.titleCard = $("ctlTitleCard").checked; });
+$("ctlLdi").addEventListener("change", () => { state.ldi = $("ctlLdi").checked; requestRender(); });
+bindSlider("ctlLdiLayers", "outLdiLayers", "ldiLayers", asInt);
+$("ctlStereo").addEventListener("change", () => { state.stereo = $("ctlStereo").value; });
+bindSlider("ctlEyeSep", "outEyeSep", "eyeSep", asInt);
 bindSlider("ctlExposure", "outExposure", "exposure", asInt);
 bindSlider("ctlContrast", "outContrast", "contrast", asInt);
 bindSlider("ctlSaturation", "outSaturation", "saturation", asInt);
@@ -8589,12 +8790,151 @@ $("timeline").addEventListener("click", (e) => {
 
 // ---------------------------------------------------------------- Dateien laden
 
-async function loadFile(which, file) {
+/**
+ * Ein Bild mit Sternen in Starless + Sternmaske trennen (einfaches
+ * Verfahren, kein neuronales Netz): Sterne mit der vorhandenen Watershed-
+ * Segmentierung finden, ihre Flaeche samt Saum und (bei hellen Sternen)
+ * Halo als fehlend markieren und aus der Umgebung auffuellen (Push-Pull).
+ * Starless = Original ausserhalb, Fuellung innerhalb (weich ueberblendet);
+ * Sternmaske = Original minus Starless. Grosse Sterne mit weiten Hoefen
+ * lassen einen Rest im Starless - fuer Weitfeld und mittlere Sterne reicht
+ * es, StarNet/StarXTerminator bleiben die bessere Wahl.
+ */
+async function separateStars(img, onStatus) {
+  const W = img.width, H = img.height;
+  const work = downscale(img, 2048);
+  const w = work.width, h = work.height, n = w * h;
+  const data = canvasPixels(work);
+  const lum = new Uint8Array(n);
+  for (let i = 0, j = 0; i < n; i++, j += 4) lum[i] = (data[j] * 77 + data[j + 1] * 150 + data[j + 2] * 29) >> 8;
+  if (onStatus) onStatus(t("sepDetect"));
+  await new Promise((r) => setTimeout(r));
+  const { found, labels } = segmentStars(lum, data, w, h, 24);
+  // Sternflaeche: die Segmentierung vergibt Labels fuer ganze Einzugsgebiete
+  // (auch dunkle Umgebung) - Sternpixel sind davon nur die mit lokalem
+  // Kontrast (Top-Hat gegen eine Oeffnung, groesser als die meisten Sterne)
+  // und etwas Helligkeit; dazu ein Saum von 2 px und bei hellen Sternen ein Halo
+  const Lf = new Float32Array(n);
+  for (let i = 0; i < n; i++) Lf[i] = lum[i] / 255;
+  const opened = openChannel(Lf, w, h, Math.max(3, Math.round(w * 0.004)));
+  // Nur kompakte Gebiete sind Sterne (Nebelknoten und Filamente sind
+  // ausgedehnter); Sternpixel liegen nahe am Zentrum ihres Sterns und
+  // heben sich lokal ab - in hellen Zonen muss der Kontrast groesser sein
+  const extMax = Math.max(8, w * 0.02);
+  const byLab = new Map(found.map((st) => [st.lab, st]));
+  const mask = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const l = labels[i];
+    if (l < 0 || lum[i] < 10) continue;
+    const st = byLab.get(l);
+    if (!st || st.ext > extMax) continue;
+    const dx = (i % w) - st.x, dy = ((i / w) | 0) - st.y;
+    if (dx * dx + dy * dy > (st.ext * 1.3 + 3) * (st.ext * 1.3 + 3)) continue;
+    if (Lf[i] - opened[i] > 0.02 + 0.12 * opened[i]) mask[i] = 1;
+  }
+  const tmp = new Float32Array(n);
+  const dil = (src, dst, r) => {
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let v = 0; for (let k = -r; k <= r; k++) { const xx = x + k; if (xx >= 0 && xx < w && src[y * w + xx] > v) v = src[y * w + xx]; }
+      tmp[y * w + x] = v;
+    }
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let v = 0; for (let k = -r; k <= r; k++) { const yy = y + k; if (yy >= 0 && yy < h && tmp[yy * w + x] > v) v = tmp[yy * w + x]; }
+      dst[y * w + x] = v;
+    }
+  };
+  dil(mask, mask, 2);
+  const fluxMax = found.length ? Math.max(...found.map((st) => st.flux)) : 1;
+  for (const st of found) {
+    const rel = st.flux / fluxMax;
+    if (rel < 0.02 || st.ext > extMax) continue;
+    const r = Math.min(120, Math.ceil((st.ext || 3) * 1.2 + 3 + 40 * Math.sqrt(rel)));
+    const x0 = Math.max(0, Math.floor(st.x - r)), x1 = Math.min(w - 1, Math.ceil(st.x + r));
+    const y0 = Math.max(0, Math.floor(st.y - r)), y1 = Math.min(h - 1, Math.ceil(st.y + r));
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      const d = Math.hypot(x - st.x, y - st.y) / r;
+      if (d < 1) mask[y * w + x] = Math.max(mask[y * w + x], 1 - d * d * d);
+    }
+  }
+  if (onStatus) onStatus(t("sepFill", found.length));
+  await new Promise((r) => setTimeout(r));
+  const rgb = new Float32Array(n * 3);
+  for (let i = 0, j = 0; i < n; i++, j += 4) { rgb[i * 3] = data[j] / 255; rgb[i * 3 + 1] = data[j + 1] / 255; rgb[i * 3 + 2] = data[j + 2] / 255; }
+  const valid = new Float32Array(n);
+  for (let i = 0; i < n; i++) valid[i] = mask[i] < 0.15 ? 1 : 0;
+  const fill = pushPullFill(rgb, valid, w, h);
+  // Fuellung als RGBA mit weicher Maske: ueber das Original in voller Groesse legen
+  const fc = document.createElement("canvas");
+  fc.width = w; fc.height = h;
+  const fid = fc.getContext("2d").createImageData(w, h);
+  for (let i = 0, j = 0; i < n; i++, j += 4) {
+    fid.data[j] = Math.round(fill[i * 3] * 255); fid.data[j + 1] = Math.round(fill[i * 3 + 1] * 255); fid.data[j + 2] = Math.round(fill[i * 3 + 2] * 255);
+    fid.data[j + 3] = Math.round(Math.min(1, mask[i] * 1.2) * 255);
+  }
+  fc.getContext("2d").putImageData(fid, 0, 0);
+  const sl = document.createElement("canvas");
+  sl.width = W; sl.height = H;
+  const sc = sl.getContext("2d");
+  sc.drawImage(img.canvas, 0, 0);
+  sc.imageSmoothingEnabled = true; sc.imageSmoothingQuality = "high";
+  sc.drawImage(fc, 0, 0, W, H);
+  // Sternmaske = Original - Starless (je Kanal, nie negativ)
+  const st = document.createElement("canvas");
+  st.width = W; st.height = H;
+  const sx = st.getContext("2d");
+  const o = img.canvas.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, W, H);
+  const b = sc.getImageData(0, 0, W, H);
+  const out = sx.createImageData(W, H);
+  for (let j = 0; j < o.data.length; j += 4) {
+    out.data[j] = Math.max(0, o.data[j] - b.data[j]);
+    out.data[j + 1] = Math.max(0, o.data[j + 1] - b.data[j + 1]);
+    out.data[j + 2] = Math.max(0, o.data[j + 2] - b.data[j + 2]);
+    out.data[j + 3] = 255;
+  }
+  sx.putImageData(out, 0, 0);
+  const base = (img.name || "image").replace(/\.[^.]+$/, "");
+  return {
+    stars: found.length,
+    starless: { canvas: sl, width: W, height: H, name: base + "_starless.png", wcs: img.wcs },
+    stars_: { canvas: st, width: W, height: H, name: base + "_stars.png" },
+  };
+}
+
+/** Datei als PNG-File (fuer die Projekt-Speicherung der getrennten Bilder). */
+function canvasToFile(c, name) {
+  return new Promise((ok) => c.toBlob((blob) => ok(new File([blob], name, { type: "image/png" })), "image/png"));
+}
+
+async function loadCombined(file) {
   const status = $("loadStatus");
   status.classList.remove("error");
   status.textContent = t("loading", file.name);
   try {
     const img = await decodeFile(file);
+    const res = await separateStars(img, (m) => { status.textContent = m; });
+    status.textContent = t("sepSaving");
+    await new Promise((r) => setTimeout(r));
+    const fStarless = await canvasToFile(res.starless.canvas, res.starless.name);
+    const fStars = await canvasToFile(res.stars_.canvas, res.stars_.name);
+    await loadFile("starless", fStarless, res.starless);
+    await loadFile("stars", fStars, res.stars_);
+    $("nameCombined").removeAttribute("data-i18n");
+    $("nameCombined").textContent = `${file.name} (${img.width}×${img.height})`;
+    $("dropCombined").classList.add("loaded");
+    status.textContent = t("sepDone", res.stars) + " " + t("sepHintShort");
+  } catch (err) {
+    console.error(err);
+    status.classList.add("error");
+    status.textContent = t("loadFailed", file.name, err.message);
+  }
+}
+
+async function loadFile(which, file, preDecoded) {
+  const status = $("loadStatus");
+  status.classList.remove("error");
+  status.textContent = t("loading", file.name);
+  try {
+    const img = preDecoded || await decodeFile(file);
     if (which === "starless") {
       state.starless = img;
       state.galaxies = []; state.galSel = 0;
@@ -9389,6 +9729,7 @@ function rebuildWaypointList() {
       (i > 0 ? `<select data-k="ease"><option value="smooth">${t("wpEaseSmooth")}</option><option value="linear">${t("wpEaseLinear")}</option><option value="custom">${t("wpEaseCustom")}</option></select>` : "") +
       (i > 0 ? `<button class="wpbtn" data-a="curve" title="${t("wpCurve")}">&#8767;</button>` : "") +
       `<label class="wpchk" title="${t("wpFloatTip")}"><input type="checkbox" data-k="floatOn"${wp.floatOn ? " checked" : ""}> ${t("wpFloat")}</label>` +
+      (i > 0 ? `<label class="wpchk" title="${t("wpCutTip")}"><input type="checkbox" data-k="cut"${wp.cut ? " checked" : ""}> ${t("wpCut")}</label>` : "") +
       (i > 0 ? `<button class="wpbtn" data-a="via" title="${wp.via ? t("wpViaClear") : t("wpViaSet")}">${wp.via ? "\u222a\u2715" : "\u222a"}</button>` : "") +
       `<button class="wpbtn" data-a="center" title="${t("wpCenter")}">\u2302</button>` +
       `<button class="wpbtn" data-a="play" title="${t("wpPlayFrom")}">\u25b6</button>` +
@@ -9978,6 +10319,10 @@ $("btnDemo").addEventListener("click", async () => {
 $("fileStarless").addEventListener("change", (e) => {
   if (e.target.files[0]) loadFile("starless", e.target.files[0]);
 });
+$("fileCombined").addEventListener("change", (e) => {
+  if (e.target.files[0]) loadCombined(e.target.files[0]);
+  e.target.value = "";
+});
 $("fileStars").addEventListener("change", (e) => {
   if (e.target.files[0]) loadFile("stars", e.target.files[0]);
 });
@@ -10071,7 +10416,8 @@ function deriveExportName() {
 function exportFilename(ext) {
   const custom = $("ctlFilename").value.trim().replace(/[\\/:*?"<>|]/g, "");
   const base = custom || deriveExportName();
-  return `${base}_${state.aspectName.replace(":", "x")}_${state.duration}s.${ext}`;
+  const st = state.stereo === "sbs" ? "_SBS3D" : state.stereo === "anaglyph" ? "_anaglyph" : "";
+  return `${base}_${state.aspectName.replace(":", "x")}_${state.duration}s${st}.${ext}`;
 }
 
 /**
@@ -10124,46 +10470,91 @@ async function exportOffline(w, h, fps) {
   // herunterrechnen - glatte Sternkanten, kein Restflimmern kleiner Sterne.
   // 4K hat bereits die vierfache Pixelzahl und bleibt bei 1x (Speicher)
   const S = state.superSample && Math.min(w, h) <= 1080 ? 2 : 1;
+  const stereo = state.stereo && state.stereo !== "off" ? state.stereo : null;
+  const eye = stereo ? (state.eyeSep / 100) * 0.05 : 0;
   beginExport(w, h, S);
   state.offlineExport = true;
   const status = $("exportStatus");
   status.textContent = t("renderingOffline", w, h, state.duration);
 
+  // Side-by-Side: zwei Augen nebeneinander, doppelte Breite
+  const outW = stereo === "sbs" ? w * 2 : w;
   const muxer = container === "mp4"
     ? new Mp4Muxer.Muxer({
         target: new Mp4Muxer.ArrayBufferTarget(),
-        video: { codec: "avc", width: w, height: h },
+        video: { codec: "avc", width: outW, height: h },
         fastStart: "in-memory",
       })
     : new WebMMuxer.Muxer({
         target: new WebMMuxer.ArrayBufferTarget(),
-        video: { codec: config.codec.startsWith("vp09") ? "V_VP9" : "V_VP8", width: w, height: h, frameRate: fps },
+        video: { codec: config.codec.startsWith("vp09") ? "V_VP9" : "V_VP8", width: outW, height: h, frameRate: fps },
       });
   let encodeError = null;
   const encoder = new VideoEncoder({
     output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
     error: (e) => { encodeError = e; },
   });
+  if (stereo === "sbs") config = { ...config, width: outW };
   encoder.configure(config);
 
   const totalFrames = Math.round(state.duration * fps);
   // Overlay (Infokarte/Labels) wird über einen 2D-Zwischenpuffer eingebrannt;
   // beim Supersampling rechnet derselbe Puffer auf die Zielgroesse herunter
   const burnOverlay = overlayActive();
-  const needComp = burnOverlay || S > 1;
-  let compCanvas = null, compCtx = null;
+  const needComp = burnOverlay || S > 1 || !!stereo;
+  let compCanvas = null, compCtx = null, eyeCanvas = null, eyeCtx = null;
   if (needComp) {
     compCanvas = document.createElement("canvas");
-    compCanvas.width = w; compCanvas.height = h;
+    compCanvas.width = outW; compCanvas.height = h;
     compCtx = compCanvas.getContext("2d");
     compCtx.imageSmoothingEnabled = true;
     compCtx.imageSmoothingQuality = "high";
+    if (stereo === "anaglyph") {
+      eyeCanvas = document.createElement("canvas");
+      eyeCanvas.width = w; eyeCanvas.height = h;
+      eyeCtx = eyeCanvas.getContext("2d");
+      eyeCtx.imageSmoothingEnabled = true; eyeCtx.imageSmoothingQuality = "high";
+    }
   }
   try {
     for (let i = 0; i < totalFrames; i++) {
       const t = i / fps;
-      render(t);
       let src = canvas;
+      if (stereo) {
+        // Zwei Augen: links mit negativem, rechts mit positivem Versatz
+        const ap = animParams(t);
+        if (stereo === "sbs") {
+          for (const [sgn, x0] of [[-1, 0], [1, w]]) {
+            stereoShift = sgn * eye;
+            render(t);
+            compCtx.drawImage(canvas, x0, 0, w, h);
+            if (burnOverlay) { compCtx.save(); compCtx.translate(x0, 0); drawOverlayTo(compCtx, w, h, ap.loopT, ap.cam, ap.fade); compCtx.restore(); }
+          }
+        } else {
+          // Rot-Cyan: Rotkanal vom linken, Gruen und Blau vom rechten Auge
+          stereoShift = -eye;
+          render(t);
+          eyeCtx.globalCompositeOperation = "source-over";
+          eyeCtx.drawImage(canvas, 0, 0, w, h);
+          eyeCtx.globalCompositeOperation = "multiply";
+          eyeCtx.fillStyle = "#ff0000";
+          eyeCtx.fillRect(0, 0, w, h);
+          stereoShift = eye;
+          render(t);
+          compCtx.globalCompositeOperation = "source-over";
+          compCtx.drawImage(canvas, 0, 0, w, h);
+          compCtx.globalCompositeOperation = "multiply";
+          compCtx.fillStyle = "#00ffff";
+          compCtx.fillRect(0, 0, w, h);
+          compCtx.globalCompositeOperation = "lighter";
+          compCtx.drawImage(eyeCanvas, 0, 0);
+          compCtx.globalCompositeOperation = "source-over";
+          if (burnOverlay) drawOverlayTo(compCtx, w, h, ap.loopT, ap.cam, ap.fade);
+        }
+        stereoShift = 0;
+        src = compCanvas;
+      } else {
+      render(t);
       if (needComp) {
         // bei S = 2 ist das ein exaktes 2x2-Mittel je Zielpixel
         compCtx.drawImage(canvas, 0, 0, w, h);
@@ -10172,6 +10563,7 @@ async function exportOffline(w, h, fps) {
           drawOverlayTo(compCtx, w, h, ap.loopT, ap.cam, ap.fade);
         }
         src = compCanvas;
+      }
       }
       const vf = new VideoFrame(src, {
         timestamp: Math.round(i * 1e6 / fps),
