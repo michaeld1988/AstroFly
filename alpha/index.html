@@ -10,7 +10,7 @@
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <title>AstroFly Alpha – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-10-30-a4">
+<link rel="stylesheet" href="style.css?v=2026-10-31-a6">
 </head>
 <body>
 
@@ -167,6 +167,17 @@
           <span class="filename" id="nameStars" data-i18n="noFile">– no file –</span>
         </label>
       </div>
+      <div class="filerow">
+        <label class="filebtn" id="dropCombined">
+          <input type="file" id="fileCombined" accept=".tif,.tiff,.fits,.fit,.fts,.png,.jpg,.jpeg,image/tiff,image/png,image/jpeg">
+          <span class="filelabel" data-i18n="combinedLabel">One image with stars (auto-separate)</span>
+          <span class="filename" id="nameCombined" data-i18n="noFile">– no file –</span>
+        </label>
+      </div>
+      <p class="tip" data-i18n="sepTip">Alpha: no starless/star-mask pair at hand? Load the
+      finished image and AstroFly separates the stars itself (simple method, no neural
+      network). Good for wide fields and medium stars; big stars with wide halos leave a
+      trace. StarNet/StarXTerminator still give the cleaner result.</p>
       <p class="tip" data-i18n="jpegTip">Tip: prefer TIFF or PNG. JPEG compression creates
       artifacts in dark areas that can affect the depth map and the nebula-color masks.</p>
       <label class="check">
@@ -467,6 +478,20 @@
         layers, each on its own clean depth: a soft base glow behind, the bright structures
         on top and the dark dust lanes slightly in front. At rest the image is exactly your
         photo, in motion the layers slide over each other like real gas.</p>
+        <label class="check">
+          <input type="checkbox" id="ctlLdi">
+          <span data-i18n="ldi">Layered depth (multiplane, experimental)</span>
+          <button class="qm" data-help="hintLdi">?</button>
+        </label>
+        <p class="tip hint2" id="hintLdi" hidden data-i18n="ldiHint">Experimental. Splits the
+        image into depth layers along the depth map and fills in what each layer hides behind
+        the nearer ones; the layers then slide rigidly over each other. Works for images with
+        distinct depth planes; on smooth, brightness-based depth maps it slices the nebula into
+        visible rings – then leave it off.</p>
+        <label class="slider">
+          <span><span data-i18n="ldiLayers">Number of layers</span> <output id="outLdiLayers">5</output></span>
+          <input type="range" id="ctlLdiLayers" min="3" max="8" step="1" value="5">
+        </label>
         <label class="check">
           <input type="checkbox" id="ctlVol" checked>
           <span data-i18n="vol">Volumetric nebula (glow, structures, dust)</span>
@@ -1321,6 +1346,21 @@
           <option value="60">60 fps</option>
         </select>
       </label>
+      <label class="selfull">
+        <span data-i18n="stereo">3D / stereo</span>
+        <select id="ctlStereo">
+          <option value="off" selected data-i18n="stereoOff">Off (2D)</option>
+          <option value="sbs" data-i18n="stereoSbs">Side-by-side (VR, 3D TV)</option>
+          <option value="anaglyph" data-i18n="stereoAna">Red-cyan anaglyph (paper glasses)</option>
+        </select>
+      </label>
+      <label class="slider">
+        <span><span data-i18n="eyeSep">Eye separation</span> <button class="qm" data-help="hintStereo">?</button> <output id="outEyeSep">50</output></span>
+        <input type="range" id="ctlEyeSep" min="0" max="100" step="1" value="50">
+      </label>
+      <p class="tip hint2" id="hintStereo" hidden data-i18n="stereoHint">Renders every frame
+      twice from two eye positions. Side-by-side gives a double-width file for VR headsets and
+      3D TVs; anaglyph works with red-cyan glasses on any screen. The preview stays 2D.</p>
       <div class="exportrow">
         <select id="ctlRes">
           <option value="1080" selected>Full HD (1080)</option>
@@ -1432,8 +1472,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-10-30-a4"></script>
-<script src="objectinfo.js?v=2026-10-30-a4"></script>
-<script src="app.js?v=2026-10-30-a4"></script>
+<script src="i18n.js?v=2026-10-31-a6"></script>
+<script src="objectinfo.js?v=2026-10-31-a6"></script>
+<script src="app.js?v=2026-10-31-a6"></script>
 </body>
 </html>
