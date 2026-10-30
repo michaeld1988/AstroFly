@@ -5582,7 +5582,9 @@ function buildLdiLayers() {
   const edges = [0];
   for (let k = 1; k < K; k++) edges.push(dLo + (dHi - dLo) * k / K);
   edges.push(1.0001);
-  const feather = 0.02;
+  // Weiche Bandgrenzen: ein Viertel der Bandbreite - benachbarte Schichten
+  // blenden ueber eine Zone ineinander, statt sich an einer Linie zu stossen
+  const feather = Math.max(0.02, 0.25 * (dHi - dLo) / K);
   const sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / Math.max(1e-6, b - a))); return t * t * (3 - 2 * t); };
   const member = (k, d) => {
     const lo = k === 0 ? 1 : sm(edges[k] - feather, edges[k] + feather, d);
@@ -5598,10 +5600,18 @@ function buildLdiLayers() {
     masks.push(m);
   }
   // Je Schicht: Tiefe = mittlere Tiefe ihrer Pixel; Farbe und Deckung im
-  // verdeckten Bereich (alles Naehere) aus der eigenen Umgebung auffuellen
+  // verdeckten Bereich (alles Naehere) aus der eigenen Umgebung auffuellen.
+  // Die Deckung wird auf die Zugehoerigkeiten aller Schichten bis hierher
+  // normiert: beim Ueberblenden von hinten nach vorn ergeben die Schichten
+  // an jeder Bandgrenze zusammen genau 100 % (Gewichte = Zugehoerigkeit).
+  // Mit der rohen Zugehoerigkeit als Deckung blieb in der weichen Grenzzone
+  // ein Rest unbedeckt, und sobald die Ebenen auseinanderglitten, schien
+  // dort Schwarz durch (dunkle Ringe entlang der Tiefenstufen)
   const alpha3 = new Float32Array(n * 3);
+  const cum = new Float32Array(n);
   for (let k = 0; k < K; k++) {
     const m = masks[k];
+    for (let i = 0; i < n; i++) cum[i] += m[i];
     let sd = 0, sw = 0;
     for (let i = 0; i < n; i++) { sd += D[i] * m[i]; sw += m[i]; }
     const dk = sw > 0 ? sd / sw : (edges[k] + edges[k + 1]) / 2;
@@ -5621,7 +5631,8 @@ function buildLdiLayers() {
     for (let i = 0, j = 0; i < n; i++, j += 4) {
       const occl = near[i] >= 0.5 ? 1 : 0;
       const r = occl ? colF[i * 3] : rgb[i * 3], g = occl ? colF[i * 3 + 1] : rgb[i * 3 + 1], b = occl ? colF[i * 3 + 2] : rgb[i * 3 + 2];
-      const a = k === 0 ? 1 : (occl ? Math.max(m[i], aF[i * 3]) : m[i]);
+      const cov = k === 0 ? 1 : (occl ? Math.max(m[i], aF[i * 3]) : m[i]);
+      const a = k === 0 ? 1 : Math.min(1, cov / Math.max(1e-4, cum[i]));
       out[j] = Math.round(r * 255); out[j + 1] = Math.round(g * 255); out[j + 2] = Math.round(b * 255); out[j + 3] = Math.round(a * 255);
     }
     texLdi.push(makeTextureRaw(w, h, out));
