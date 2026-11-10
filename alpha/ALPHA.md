@@ -34,3 +34,13 @@ Zum Testen: Parallaxe und Raeumlichkeit duerfen deutlich hoeher als bisher
 Stand a9: zwei Flug-Presets, die die Engine mit einem Klick zeigen:
 "Raum-Orbit" (um den Nebel kreisen) und "Tiefenflug" (kraeftiger Anflug),
 beide mit voller Parallaxe und Raeumlichkeit.
+
+Stand a10: Export mit eigener Farbwandlung. Der Encoder bekommt fertige
+YUV-Bilder (BT.709, begrenzter Bereich 16 bis 235) statt des RGB-Canvas,
+damit die Datei nicht mehr vom Wandlungsweg des Browsers abhaengt
+(Hardware-Encoder, Grafiktreiber). Anlass: ein Export sah in der Windows
+Medienwiedergabe kontrastreicher und satter aus als die Vorschau; die
+Abweichung entsprach genau einer Dehnung von 16..235 auf 0..255.
+Zum Testen: dasselbe Projekt neu exportieren und mit der Vorschau
+vergleichen. Gegenprobe: die MP4 in einen Browser-Tab ziehen. Der
+Diagnosebericht nennt unter "Export-Farbe", welcher Weg benutzt wurde.

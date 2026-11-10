@@ -160,7 +160,15 @@ aufgebaut (vorher konnte ein Bild im Export dunkel werden).
   über `uLay`. Lehren aus der Entwicklung: Schnitte nur dort, wo kein Licht
   ist (sonst Kanten); freigelegte Füllung fällt sofort auf, deshalb
   benachbarte Wolken elastisch koppeln und Staub nur wenig verschieben;
-  weiche Überblendungen zwischen Ebenen erzeugen Doppelbilder
+  weiche Überblendungen zwischen Ebenen erzeugen Doppelbilder.
+  **Export-Farbwandlung (seit a10):** `yuvConverter` wandelt jedes
+  Exportbild in einem eigenen kleinen WebGL-Kontext selbst nach I420
+  (BT.709, begrenzter Bereich 16..235) und übergibt es mit fester
+  Farbangabe `EXPORT_CS` an den Encoder; die `colr`-Angabe der MP4 wird
+  darauf festgelegt. So hängt die Datei nicht vom RGB→YUV-Weg des Browsers
+  ab (Hardware-Encoder, Treiber). Fällt die Wandlung aus, wandelt der
+  Browser wie zuvor; der Diagnosebericht nennt den Weg („Export-Farbe“).
+  Nur ein Hilfskontext für alle Exporte (Kontextlimit der Browser)
 - `tests/run.js` – Smoke-Tests; `tools/stamp-version.sh` – Cache-Busting beim Deploy
 - `demo/` – Orion-Demobilder + `orion.wcs` (Plate-Solve-Lösung, wird vom
   Demo-Button automatisch mitgeladen); `vendor/` – UTIF, mp4-muxer u. a.

@@ -128,6 +128,45 @@ async function testChannel(browser, base, channel) {
         return { built: !!objSeg && !!texObjF, isles: objSeg ? objSeg.nIsle : 0, restDiff: d / (640 * 360 * 3), moved: mv / (640 * 360), err };
       });
       check(channel, "Alpha: Wolken-Objekte (Ruhebild = Foto, Flug rendert)", a.obj && o.built && o.err === 0 && o.restDiff < 1.5 && o.moved > 0.05, JSON.stringify(o));
+      // Export-Farbwandlung: Testfarben muessen exakt als BT.709 im begrenzten Bereich ankommen
+      // (Weiss 235, Schwarz 16), auch bei Breiten, die nicht durch 8 teilbar sind
+      const y = await page.evaluate(async () => {
+        const conv = typeof yuvConverter === "function" ? yuvConverter() : null;
+        if (!conv) return { skipped: true };
+        const cols = [[255, 255, 255], [0, 0, 0], [255, 0, 0], [0, 255, 0], [0, 0, 255], [128, 128, 128]];
+        const want = [[235, 128, 128], [16, 128, 128], [63, 102, 240], [173, 42, 26], [32, 240, 118], [126, 128, 128]];
+        let worst = 0, cs = null;
+        for (const [w, h] of [[96, 36], [90, 50]]) {
+          const c = document.createElement("canvas"); c.width = w; c.height = h;
+          const x = c.getContext("2d");
+          cols.forEach((k, i) => { x.fillStyle = `rgb(${k[0]},${k[1]},${k[2]})`; x.fillRect(i * 14, 0, i === 5 ? w : 14, h); });
+          if (!conv.resize(w, h)) return { fail: "resize " + w };
+          const vf = conv.frame(c, { timestamp: 0 });
+          if (!vf) return { fail: "frame " + w };
+          cs = vf.colorSpace.toJSON();
+          const buf = new Uint8Array(vf.allocationSize());
+          const lay = await vf.copyTo(buf);
+          vf.close();
+          cols.forEach((k, i) => {
+            const px = i * 14 + 6, py = h - 4;   // untere Zeilen: prueft zugleich die Zeilenreihenfolge nicht (einfarbig), Spalten schon
+            const got = [
+              buf[lay[0].offset + py * lay[0].stride + px],
+              buf[lay[1].offset + (py >> 1) * lay[1].stride + (px >> 1)],
+              buf[lay[2].offset + (py >> 1) * lay[2].stride + (px >> 1)],
+            ];
+            for (let j = 0; j < 3; j++) worst = Math.max(worst, Math.abs(got[j] - want[i][j]));
+          });
+          // Zeilenreihenfolge: obere Bildhaelfte weiss, untere schwarz
+          x.fillStyle = "#fff"; x.fillRect(0, 0, w, h / 2); x.fillStyle = "#000"; x.fillRect(0, h / 2, w, h / 2);
+          const v2 = conv.frame(c, { timestamp: 0 });
+          const b2 = new Uint8Array(v2.allocationSize());
+          const l2 = await v2.copyTo(b2);
+          v2.close();
+          if (b2[l2[0].offset + 2 * l2[0].stride + 5] !== 235 || b2[l2[0].offset + (h - 3) * l2[0].stride + 5] !== 16) return { fail: "Zeilen " + w };
+        }
+        return { worst, cs };
+      });
+      check(channel, "Alpha: Export-Farbwandlung (BT.709, begrenzter Bereich)", y.skipped || (!y.fail && y.worst <= 1 && y.cs && y.cs.fullRange === false && y.cs.matrix === "bt709"), JSON.stringify(y));
     }
     check(channel, "Keine JS-Fehler insgesamt", errors.length === 0, errors.slice(0, 2).join(" | "));
   } catch (e) {
