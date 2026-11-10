@@ -1,6 +1,6 @@
 // AstroFly Alpha - Service Worker: App-Huelle offline vorhalten
 // VERSION wird bei jedem Deploy zusammen mit den ?v=-Marken hochgezaehlt
-const VERSION = "2026-11-10-a9";
+const VERSION = "2026-11-10-a10";
 const SHELL = "astrofly-alpha-shell-" + VERSION;
 const LIBS = "astrofly-alpha-libs";
 const SHELL_FILES = [

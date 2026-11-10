@@ -11305,6 +11305,135 @@ const IS_SAFARI = /apple/i.test(navigator.vendor || "") &&
 const IS_INAPP = /instagram|fban|fbav|fbios|fb_iab|tiktok|musical_ly|snapchat|line\//i
   .test(navigator.userAgent);
 
+// ---------------------------------------------------------------------------
+// Export-Farbwandlung. Der Encoder bekommt fertige YUV-Bilder (I420, BT.709,
+// begrenzter Bereich 16..235) statt des RGB-Canvas. Sonst wandelt der Browser
+// selbst um, und das Ergebnis haengt vom Weg ab (Software- oder Hardware-
+// Encoder, Grafiktreiber): Videos konnten mit gedehntem Tonwertumfang
+// herauskommen (Schwarz abgesoffen, Lichter ausgefressen, kraeftigere Farben
+// als in der Vorschau). So steht auf jedem Rechner dasselbe in der Datei, und
+// zwar das, was jeder Player auch ohne Farbangaben annimmt.
+// Die Wandlung laeuft in einem eigenen kleinen WebGL-Kontext: ein Zielbild
+// haelt links die Y-Ebene (4 Werte je RGBA-Pixel) und rechts daneben die
+// U-Ebene ueber der V-Ebene, zwei readPixels liefern den I420-Puffer.
+const EXPORT_CS = { primaries: "bt709", transfer: "iec61966-2-1", matrix: "bt709", fullRange: false };
+let yuvConv = null;        // ein Hilfskontext fuer alle Exporte (Kontextlimit der Browser); false = nicht verfuegbar
+let lastExportColor = "";  // fuer den Diagnosebericht
+
+function yuvConverter() {
+  if (yuvConv !== null) return yuvConv || null;
+  yuvConv = false;
+  try {
+    if (typeof VideoFrame === "undefined") return null;
+    const cv = document.createElement("canvas");
+    const g = cv.getContext("webgl2", { alpha: false, antialias: false, depth: false, stencil: false });
+    if (!g) return null;
+    const sh = (type, src) => {
+      const o = g.createShader(type);
+      g.shaderSource(o, src); g.compileShader(o);
+      if (!g.getShaderParameter(o, g.COMPILE_STATUS)) throw new Error(g.getShaderInfoLog(o));
+      return o;
+    };
+    const prog = g.createProgram();
+    g.attachShader(prog, sh(g.VERTEX_SHADER, `#version 300 es
+void main() {
+  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`));
+    g.attachShader(prog, sh(g.FRAGMENT_SHADER, `#version 300 es
+precision highp float;
+precision highp int;
+uniform sampler2D uSrc;
+uniform ivec2 uSize;   // Bildgroesse
+uniform int uYW;       // Breite des Y-Bereichs in Zielpixeln
+out vec4 o;
+vec3 px(int x, int y) { return texelFetch(uSrc, ivec2(min(x, uSize.x - 1), min(y, uSize.y - 1)), 0).rgb; }
+float q(float v) { return floor(clamp(v, 0.0, 255.0) + 0.5) / 255.0; }
+float lum(vec3 c) { return 16.0 + 219.0 * dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+void main() {
+  ivec2 f = ivec2(gl_FragCoord.xy);
+  if (f.x < uYW) {
+    int x = f.x * 4;
+    o = vec4(q(lum(px(x, f.y))), q(lum(px(x + 1, f.y))), q(lum(px(x + 2, f.y))), q(lum(px(x + 3, f.y))));
+  } else {
+    // Farbebenen in halber Aufloesung (2x2-Mittel): oben U, darunter V
+    int ch = uSize.y / 2;
+    bool isV = f.y >= ch;
+    int cy = (isV ? f.y - ch : f.y) * 2;
+    int cx = (f.x - uYW) * 8;
+    vec3 k = isV ? vec3(0.5, -0.454153, -0.045847) : vec3(-0.114572, -0.385428, 0.5);
+    vec4 v;
+    for (int i = 0; i < 4; i++) {
+      int x = cx + i * 2;
+      vec3 c = 0.25 * (px(x, cy) + px(x + 1, cy) + px(x, cy + 1) + px(x + 1, cy + 1));
+      v[i] = q(128.0 + 224.0 * dot(c, k));
+    }
+    o = v;
+  }
+}`));
+    g.linkProgram(prog);
+    if (!g.getProgramParameter(prog, g.LINK_STATUS)) throw new Error(g.getProgramInfoLog(prog));
+    const uSize = g.getUniformLocation(prog, "uSize"), uYW = g.getUniformLocation(prog, "uYW");
+    const srcTex = g.createTexture(), dstTex = g.createTexture(), fb = g.createFramebuffer();
+    for (const tex of [srcTex, dstTex]) {
+      g.bindTexture(g.TEXTURE_2D, tex);
+      g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MIN_FILTER, g.NEAREST);
+      g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MAG_FILTER, g.NEAREST);
+      g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_S, g.CLAMP_TO_EDGE);
+      g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_T, g.CLAMP_TO_EDGE);
+    }
+    g.pixelStorei(g.UNPACK_COLORSPACE_CONVERSION_WEBGL, g.NONE);
+    g.pixelStorei(g.PACK_ALIGNMENT, 1);
+    let w = 0, h = 0, yw = 0, cw = 0, buf = null;
+    yuvConv = {
+      /** Zielgroesse setzen; false, wenn der Kontext nicht (mehr) taugt. */
+      resize(nw, nh) {
+        if (g.isContextLost() || nw < 2 || nh < 2 || (nw & 1) || (nh & 1)) return false;
+        w = nw; h = nh;
+        yw = Math.ceil(w / 4); cw = Math.ceil(w / 8);
+        if (yw + cw > g.getParameter(g.MAX_TEXTURE_SIZE) || h > g.getParameter(g.MAX_TEXTURE_SIZE)) return false;
+        g.bindTexture(g.TEXTURE_2D, dstTex);
+        g.texImage2D(g.TEXTURE_2D, 0, g.RGBA8, yw + cw, h, 0, g.RGBA, g.UNSIGNED_BYTE, null);
+        g.bindFramebuffer(g.FRAMEBUFFER, fb);
+        g.framebufferTexture2D(g.FRAMEBUFFER, g.COLOR_ATTACHMENT0, g.TEXTURE_2D, dstTex, 0);
+        if (g.checkFramebufferStatus(g.FRAMEBUFFER) !== g.FRAMEBUFFER_COMPLETE) return false;
+        buf = new Uint8Array((yw + cw) * 4 * h);
+        return true;
+      },
+      /** Canvas (w x h) in ein I420-VideoFrame wandeln; null bei Fehler. */
+      frame(src, init) {
+        if (!buf || g.isContextLost() || src.width !== w || src.height !== h) return null;
+        g.bindTexture(g.TEXTURE_2D, srcTex);
+        g.texImage2D(g.TEXTURE_2D, 0, g.RGBA, g.RGBA, g.UNSIGNED_BYTE, src);
+        g.bindFramebuffer(g.FRAMEBUFFER, fb);
+        g.viewport(0, 0, yw + cw, h);
+        g.useProgram(prog);
+        g.uniform2i(uSize, w, h);
+        g.uniform1i(uYW, yw);
+        g.drawArrays(g.TRIANGLES, 0, 3);
+        const sY = yw * 4, sC = cw * 4;
+        g.readPixels(0, 0, yw, h, g.RGBA, g.UNSIGNED_BYTE, buf, 0);
+        g.readPixels(yw, 0, cw, h, g.RGBA, g.UNSIGNED_BYTE, buf, sY * h);
+        if (g.getError() !== g.NO_ERROR) return null;
+        return new VideoFrame(buf, {
+          ...init,
+          format: "I420", codedWidth: w, codedHeight: h,
+          layout: [
+            { offset: 0, stride: sY },
+            { offset: sY * h, stride: sC },
+            { offset: sY * h + sC * (h / 2), stride: sC },
+          ],
+          colorSpace: EXPORT_CS,
+        });
+      },
+    };
+  } catch (e) {
+    console.warn("YUV-Wandlung nicht verfuegbar:", e);
+    yuvConv = false;
+  }
+  return yuvConv || null;
+}
+
 async function exportOffline(w, h, fps) {
   if (typeof VideoEncoder === "undefined" || IS_SAFARI) return false;
 
@@ -11355,9 +11484,18 @@ async function exportOffline(w, h, fps) {
         target: new WebMMuxer.ArrayBufferTarget(),
         video: { codec: config.codec.startsWith("vp09") ? "V_VP9" : "V_VP8", width: outW, height: h, frameRate: fps },
       });
+  // eigene Farbwandlung (siehe yuvConverter); null = der Browser wandelt wie bisher
+  let yuv = yuvConverter();
+  if (yuv && !yuv.resize(outW, h)) yuv = null;
   let encodeError = null;
   const encoder = new VideoEncoder({
-    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+    output: (chunk, meta) => {
+      // Farbangaben der MP4-Datei passend zu den selbst gewandelten Bildern
+      if (yuv && container === "mp4" && meta && meta.decoderConfig) {
+        meta = { ...meta, decoderConfig: { ...meta.decoderConfig, colorSpace: EXPORT_CS } };
+      }
+      muxer.addVideoChunk(chunk, meta);
+    },
     error: (e) => { encodeError = e; },
   });
   if (stereo === "sbs") config = { ...config, width: outW };
@@ -11431,10 +11569,14 @@ async function exportOffline(w, h, fps) {
         src = compCanvas;
       }
       }
-      const vf = new VideoFrame(src, {
-        timestamp: Math.round(i * 1e6 / fps),
-        duration: Math.round(1e6 / fps),
-      });
+      const frameInit = { timestamp: Math.round(i * 1e6 / fps), duration: Math.round(1e6 / fps) };
+      let vf = null;
+      if (yuv) {
+        try { vf = yuv.frame(src, frameInit); } catch (e) { console.warn("YUV-Wandlung:", e); }
+        if (!vf) yuv = null;   // ab hier wandelt der Browser
+      }
+      if (!vf) vf = new VideoFrame(src, frameInit);
+      if (i === 0) lastExportColor = (yuv ? "I420 BT.709 begrenzt (eigene Wandlung)" : "Browser-Wandlung") + ", " + config.codec;
       encoder.encode(vf, { keyFrame: i % (fps * 3) === 0 });
       vf.close();
       if (encodeError) throw encodeError;
@@ -11813,7 +11955,8 @@ function diagnosticReport() {
     "Bild: " + (state.starless ? state.starless.width + "x" + state.starless.height : "keins") + " | Sterne: " + state.maskStarCount +
       " | WCS: " + !!state.wcs + " | Gaia: " + (state.gaiaInfo ? state.gaiaInfo.matched + "/" + state.gaiaInfo.total : "nein") +
       " | Galaxien: " + (state.galaxies || []).length + " | Flugplan: " + (state.scenarioOn ? state.waypoints.length + " Wegpunkte" : "aus"),
-    "Format: " + state.aspectName + " | Dauer: " + state.duration + " s | Export: " + $("ctlRes").value + "p " + (state.exportFps || 30) + " fps",
+    "Format: " + state.aspectName + " | Dauer: " + state.duration + " s | Export: " + $("ctlRes").value + "p " + (state.exportFps || 30) + " fps" +
+      " | Export-Farbe: " + (lastExportColor || "noch kein Export"),
     "Tiefe: " + (state.obj3d ? "Wolken-Objekte" + (objSeg ? " (" + objSeg.w + "x" + objSeg.h + ", " + (objSeg.nIsle - 1) + " Inseln, " + objSeg.nBlob + " Klumpen, " + (objSeg.dust ? objSeg.dust.nDust - 1 : 0) + " Dunkelwolken)" : " (nicht aufgebaut)") + ", Trennung " + state.objSep + ", Staub " + state.objDust : (state.vol ? "volumetrisch" : "klassisch")) +
       " | Karte: " + (state.aiDepth ? "KI" : state.customDepth ? "eigene" : "automatisch"),
     "Stil: " + buildStyleCode(),
