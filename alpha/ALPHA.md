@@ -30,3 +30,7 @@ Schalter und Regler: Bild -> Tiefenkarte -> Wolken-Objekte.
 Zum Testen: Parallaxe und Raeumlichkeit duerfen deutlich hoeher als bisher
 (auch 100/100), vor allem mit Orbit- und Seitflug. Vergleich: Haken
 "Wolken-Objekte" aus = bisherige Engine.
+
+Stand a9: zwei Flug-Presets, die die Engine mit einem Klick zeigen:
+"Raum-Orbit" (um den Nebel kreisen) und "Tiefenflug" (kraeftiger Anflug),
+beide mit voller Parallaxe und Raeumlichkeit.

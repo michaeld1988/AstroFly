@@ -7770,6 +7770,11 @@ const FLIGHT_PRESETS = {
   cineGravity:     { look: "deepspace", flightMode: "lateral", ease: "settle", set: { ctlZoom: 1.3, ctlSpeed: 32, ctlEase: 85, ctlParallax: 70, ctlStarPar: 240, ctlRotation: 0.25, ctlSwayAmp: 8, ctlSwayTempo: 15, ctlSwayRandom: 40, ctlHaze: 15 } },
   // Tree of Life: kaum Flug, der Nebel selbst atmet
   cineMalick:      { look: "glow", ease: "cine", set: { ctlSpeed: 14, ctlEase: 90, ctlParallax: 45, ctlDepthBoost: 35, ctlStarPar: 150, ctlBloom: 35, ctlNebFlow: 60, ctlFade: 10, ctlHalation: 20 } },
+  // Wolken-Objekte: volle Raumtiefe, die die bisherige Engine verzogen haette.
+  // Raum-Orbit: die Kamera umkreist den Nebel, die Wolken loesen sich voneinander
+  cineDeepOrbit:   { look: "kino", flightMode: "orbit", ease: "inout", set: { ctlSpeed: 45, ctlEase: 65, ctlParallax: 100, ctlDepthBoost: 80, ctlStarPar: 220, ctlBloom: 18 }, checks: { ctlObj3d: true } },
+  // Tiefenflug: kraeftiger Anflug mit leichtem Schwenk, der Kern kommt dem Betrachter entgegen
+  cineDeepDive:    { look: "kino", ease: "inout", set: { ctlSpeed: 58, ctlEase: 70, ctlParallax: 100, ctlDepthBoost: 85, ctlStarPar: 260, ctlTiltRamp: 22, ctlTiltRampDir: 200, ctlBloom: 20, ctlFade: 10 }, checks: { ctlObj3d: true } },
 };
 
 // Effektstärke im Einfach-Modus: skaliert die Bewegungs-Parameter eines
