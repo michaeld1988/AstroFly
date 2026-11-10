@@ -123,8 +123,9 @@ const state = {
   nebFlow: 0,            // innere Stroemung des Nebels 0..100
   titleCard: false,      // Titelkarte am Anfang (Objektname wie ein Filmtitel)
   presetPlan: false,     // der aktive Flug-Preset hat den Flugplan gesetzt
-  ldi: false,            // Schichten-Tiefe: Bild in Tiefenschichten zerlegt, verdeckte Bereiche aufgefuellt
-  ldiLayers: 5,          // Anzahl der Schichten 3..8
+  obj3d: true,           // Wolken-Objekte (Tiefen-Engine v3): Objekte ueber einer Membran, Gitter-Rendering
+  objSep: 70,            // Objekt-Trennung 0..100 (0 = weiches Relief, 100 = starre Objekte)
+  objDust: 50,           // Dunkelwolken: Abstand vor dem Leuchten 0..100
   stereo: "off",         // Stereo-Export: off | sbs | anaglyph
   eyeSep: 50,            // Augenabstand 0..100
   scenarioOn: false,     // Szenario-Flug: Kamera fliegt die Wegpunkte ab
@@ -308,21 +309,9 @@ uniform vec4 uLightC[8];    // Sternfarbe
 uniform float uRelight;     // Staerke 0..1
 uniform float uFlow;        // innere Stroemung des Nebels 0..1
 uniform float uFlowT;       // Flugzeit fuer die Stroemung
-uniform int uLdiN;          // Schichten-Tiefe: Anzahl Schichten (0 = aus)
-uniform float uLdiD[8];     // Tiefe je Schicht (fern .. nah)
-uniform sampler2D uLdi0; uniform sampler2D uLdi1; uniform sampler2D uLdi2; uniform sampler2D uLdi3;
-uniform sampler2D uLdi4; uniform sampler2D uLdi5; uniform sampler2D uLdi6; uniform sampler2D uLdi7;
-// Sampler-Felder lassen sich in GLSL ES 3.0 nicht variabel indizieren
-vec4 ldiTex(int k, vec2 uv) {
-  if (k == 0) return texture(uLdi0, uv);
-  if (k == 1) return texture(uLdi1, uv);
-  if (k == 2) return texture(uLdi2, uv);
-  if (k == 3) return texture(uLdi3, uv);
-  if (k == 4) return texture(uLdi4, uv);
-  if (k == 5) return texture(uLdi5, uv);
-  if (k == 6) return texture(uLdi6, uv);
-  return texture(uLdi7, uv);
-}
+uniform sampler2D uLay;     // Wolken-Objekte: fertig zusammengesetzter Nebel (Bildschirm-UV)
+uniform sampler2D uLayF;    // Wolken-Objekte: Tiefenfeld (r)
+uniform float uLayOn;       // 1 = Wolken-Objekte aktiv
 uniform sampler2D uVolD;    // rgb = entstaubtes Leuchten (aufgefuellt), a = Staubmaske
 uniform sampler2D uVolB;    // Grund-Leuchten (glatt, geringe Aufloesung, Float)
 uniform float uVolSep;      // so weit liegt das Grund-Leuchten hinter den Strukturen
@@ -563,31 +552,10 @@ void main() {
   gDy = dFdy(imgUv(q));
 
   vec3 col;
-  float dOverride = -1.0;
-  if (uLdiN > 0) {
-    // Schichten-Tiefe (Multiplane): jede Schicht ist eine starre Ebene in
-    // ihrer Tiefe - reine Verschiebung und Skalierung, also nie Falten oder
-    // Doppelbilder innerhalb einer Schicht. Verdeckte Bereiche sind beim
-    // Aufbau aufgefuellt, deshalb reisst zwischen den Ebenen nichts auf,
-    // auch bei grossen Tiefenspruengen. Von hinten nach vorn ueberblendet
-    vec3 acc = vec3(0.0);
-    float dAcc = 0.02;
-    for (int k = 0; k < 8; k++) {
-      if (k >= uLdiN) break;
-      float d = uLdiD[k];
-      float ex = 1.0 + uParallax * (d - 0.45) * uDepthRange;
-      vec2 qk = uCenter + pr / (uCover * pow(uZoom, ex)) + uTilt * (d - 0.45);
-      vec2 uvk = vec2(qk.x / uImgAspect, qk.y) + 0.5;
-      vec4 L = ldiTex(k, uvk);
-      // vorderste Schichten enden am Bildrand (keine Spiegelkopie), die
-      // hinterste Schicht traegt den Himmel bis an den Rand
-      float inside = k == 0 ? 1.0 : step(0.0, uvk.x) * step(uvk.x, 1.0) * step(0.0, uvk.y) * step(uvk.y, 1.0);
-      float a = L.a * inside;
-      acc = mix(acc, L.rgb, a);
-      dAcc = mix(dAcc, d, a);
-    }
-    col = acc;
-    dOverride = dAcc;
+  if (uLayOn > 0.5) {
+    // Wolken-Objekte: der Nebel ist bereits aus Membran und Objekt-Gitter
+    // zusammengesetzt (eigener Pass), hier folgen nur noch Farbe und Licht
+    col = max(texture(uLay, vUv).rgb, 0.0);
   } else if (uVol > 0.5 && uObjFar < 0.5 && uMoonMode < 0.5) {
     col = volumetric(pr, uv, q);
   } else {
@@ -685,7 +653,9 @@ void main() {
   // (Dichte = Helligkeit des Starless) und nur, wenn der Stern VOR dem
   // Nebel steht. Der Lichtfleck sitzt in Nebel-Koordinaten fest (q), also
   // wandert er mit der Parallaxe korrekt gegen den Stern
-  float dScr = dOverride >= 0.0 ? dOverride : depthOf(uv, 0.0);
+  // Wolken-Objekte: Tiefe aus dem Objektfeld (am klassisch geloesten Bildpunkt -
+  // fuer Dunst und Schaerfentiefe genau genug)
+  float dScr = uLayOn > 0.5 ? texture(uLayF, uv).r : depthOf(uv, 0.0);
   if (uLightN > 0 && uRelight > 0.0) {
     float dens = smoothstep(0.02, 0.35, dot(col, vec3(0.299, 0.587, 0.114)));
     vec3 add = vec3(0.0);
@@ -701,6 +671,143 @@ void main() {
   }
   // Alphakanal = Tiefe dieses Bildschirmpunkts (fuer Dunst und Schaerfentiefe)
   outColor = vec4(col, dScr);
+}`;
+
+// --- Pass 0: Wolken-Objekte (Tiefen-Engine v3) ---
+// Membran (glatter Himmel hinter allem) als ferne, starre Ebene
+const objBgFS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D uObjBg;
+uniform sampler2D uObjF;
+uniform sampler2D uObjU;
+uniform sampler2D uColor;
+uniform float uViewAspect, uImgAspect, uZoom, uParallax, uAngle, uCover, uDepthRange, uBgDepth;
+uniform vec2 uCenter, uTilt;
+void main() {
+  vec2 p = vec2((vUv.x - 0.5) * uViewAspect, vUv.y - 0.5);
+  float c = cos(uAngle), s = sin(uAngle);
+  vec2 pr = mat2(c, -s, s, c) * p;
+  float ex = 1.0 + uParallax * (uBgDepth - 0.45) * uDepthRange;
+  vec2 q = uCenter + pr / (uCover * pow(uZoom, ex)) + uTilt * (uBgDepth - 0.45);
+  vec2 uv = vec2(q.x / uImgAspect, q.y) + 0.5;
+  vec3 B = texture(uObjBg, uv).rgb;
+  // Am Inselrand blendet der Saum das Objektlicht aus; dieser Rest gehoert
+  // zur Membran - so ergibt Membran + Objekte im Ruhebild exakt das Foto
+  float m = texture(uObjF, uv).a;
+  vec3 I = texture(uColor, uv).rgb;
+  const vec3 LW = vec3(0.299, 0.587, 0.114);
+  // Dunkelwolken herausrechnen (sie liegen als eigene Schicht darueber)
+  vec4 Uz = texture(uObjU, uv);
+  float T2 = clamp(dot(I, LW) / max(dot(Uz.rgb, LW), 1.0e-4), 0.0, 1.0);
+  I = (I - (I - Uz.rgb * T2) * Uz.a) / max(1.0 - (1.0 - T2) * Uz.a, 1.0e-3);
+  float T = clamp(dot(I, LW) / max(dot(B, LW), 1.0e-4), 0.0, 1.0);
+  vec3 E = I - B * T;
+  outColor = vec4((B * T + E * (1.0 - m)) / max(1.0 - (1.0 - T) * m, 1.0e-3), 1.0);
+}`;
+// Objekte: Gitter, jeder Knoten um seine Tiefe verschoben (Vorwaertsabbildung:
+// keine Fixpunkt-Suche, Risse und Ueberlappungen sind erlaubt)
+const objVS = `#version 300 es
+layout(location=0) in vec2 aUv;
+uniform sampler2D uObjF;
+uniform float uViewAspect, uImgAspect, uZoom, uParallax, uAngle, uCover, uDepthRange;
+uniform float uDust;        // 1 = Dunkelwolken-Pass (eigene Tiefe im Kanal g)
+uniform vec2 uCenter, uTilt;
+out vec2 vUvI;
+out float vScale;
+void main() {
+  vec4 fv = textureLod(uObjF, aUv, 0.0);
+  float d = mix(fv.r, fv.g, uDust);
+  vec2 q = vec2((aUv.x - 0.5) * uImgAspect, aUv.y - 0.5);
+  float ex = 1.0 + uParallax * (d - 0.45) * uDepthRange;
+  float scale = uCover * pow(uZoom, ex);
+  vec2 pr = (q - uCenter - uTilt * (d - 0.45)) * scale;
+  float c = cos(uAngle), s = sin(uAngle);
+  vec2 p = mat2(c, s, -s, c) * pr;
+  vUvI = aUv;
+  vScale = scale;
+  gl_Position = vec4(p.x * 2.0 / uViewAspect, p.y * 2.0, 0.0, 1.0);
+}`;
+const objFS = `#version 300 es
+precision highp float;
+in vec2 vUvI;
+in float vScale;
+out vec4 outColor;
+uniform sampler2D uColor;
+uniform sampler2D uObjBg;
+uniform sampler2D uObjF;
+uniform sampler2D uObjU;
+uniform vec2 uColorTexel;
+uniform float uBicubic, uImgAspect, uPixH, uFlow, uFlowT, uDust;
+vec2 gDx, gDy;
+vec3 sampleCol(vec2 uv) {
+  if (uBicubic > 0.5) {
+    vec2 pos = uv / uColorTexel - 0.5;
+    vec2 f = fract(pos);
+    vec2 base = (pos - f + 0.5) * uColorTexel;
+    vec2 f2 = f * f, f3 = f2 * f;
+    vec2 w0 = -0.5 * f3 + f2 - 0.5 * f;
+    vec2 w1 =  1.5 * f3 - 2.5 * f2 + 1.0;
+    vec2 w2 = -1.5 * f3 + 2.0 * f2 + 0.5 * f;
+    vec2 w3 =  0.5 * f3 - 0.5 * f2;
+    vec2 w12 = w1 + w2;
+    vec2 uv12 = base + (w2 / w12) * uColorTexel;
+    vec2 uv0 = base - uColorTexel;
+    vec2 uv3 = base + 2.0 * uColorTexel;
+    vec3 col =
+      textureGrad(uColor, vec2(uv0.x,  uv0.y), gDx, gDy).rgb  * (w0.x  * w0.y) +
+      textureGrad(uColor, vec2(uv12.x, uv0.y), gDx, gDy).rgb  * (w12.x * w0.y) +
+      textureGrad(uColor, vec2(uv3.x,  uv0.y), gDx, gDy).rgb  * (w3.x  * w0.y) +
+      textureGrad(uColor, vec2(uv0.x,  uv12.y), gDx, gDy).rgb * (w0.x  * w12.y) +
+      textureGrad(uColor, vec2(uv12.x, uv12.y), gDx, gDy).rgb * (w12.x * w12.y) +
+      textureGrad(uColor, vec2(uv3.x,  uv12.y), gDx, gDy).rgb * (w3.x  * w12.y) +
+      textureGrad(uColor, vec2(uv0.x,  uv3.y), gDx, gDy).rgb  * (w0.x  * w3.y) +
+      textureGrad(uColor, vec2(uv12.x, uv3.y), gDx, gDy).rgb  * (w12.x * w3.y) +
+      textureGrad(uColor, vec2(uv3.x,  uv3.y), gDx, gDy).rgb  * (w3.x  * w3.y);
+    return max(col, 0.0);
+  }
+  return textureGrad(uColor, uv, gDx, gDy).rgb;
+}
+vec2 flowOff(vec2 uv) {
+  if (uFlow <= 0.0) return vec2(0.0);
+  float t = uFlowT;
+  vec2 p = uv * 6.0;
+  vec2 o = vec2(sin(p.y * 1.3 + t * 0.23) + 0.5 * sin(p.y * 2.9 - t * 0.31 + 1.7),
+                sin(p.x * 1.1 - t * 0.19 + 0.6) + 0.5 * sin(p.x * 2.3 + t * 0.27 + 2.1));
+  return o * uFlow * 0.0025;
+}
+void main() {
+  gDx = dFdx(vUvI);
+  gDy = dFdy(vUvI);
+  // Umgeklappte oder entartete Dreiecke (nur an den Naehten zwischen Inseln
+  // moeglich) nicht zeichnen. Sichtbar waere dort ohnehin nichts: der Saum
+  // blendet das Objektlicht am Inselrand auf null
+  vec2 ax = vec2(gDx.x * uImgAspect, gDx.y), ay = vec2(gDy.x * uImgAspect, gDy.y);
+  float area = ax.x * ay.y - ax.y * ay.x;
+  float r = area * vScale * vScale * uPixH * uPixH;
+  float flip = smoothstep(0.0, 0.06, r);
+  vec3 I = sampleCol(vUvI + flowOff(vUvI));
+  const vec3 LW = vec3(0.299, 0.587, 0.114);
+  // Dunkelwolken: Durchlaessigkeit gegen das Leuchten dahinter, helle Saeume
+  // an ihrer Kante gehoeren dazu und wandern mit
+  vec4 Uz = texture(uObjU, vUvI);
+  float T2 = clamp(dot(I, LW) / max(dot(Uz.rgb, LW), 1.0e-4), 0.0, 1.0);
+  vec3 E2 = I - Uz.rgb * T2;
+  if (uDust > 0.5) {
+    float fd = flip * Uz.a;
+    outColor = vec4(E2 * fd, (1.0 - T2) * fd);
+    return;
+  }
+  // Objekte arbeiten auf dem entstaubten Bild
+  I = (I - E2 * Uz.a) / max(1.0 - (1.0 - T2) * Uz.a, 1.0e-3);
+  float f = flip * texture(uObjF, vUvI).a;
+  vec3 B = texture(uObjBg, vUvI).rgb;
+  // Licht ueber der Membran addiert sich; was dunkler ist als die Membran,
+  // daempft als Durchlaessigkeit, was dahinter liegt
+  float T = clamp(dot(I, LW) / max(dot(B, LW), 1.0e-4), 0.0, 1.0);
+  vec3 E = I - B * T;
+  outColor = vec4(E * f, (1.0 - T) * f);
 }`;
 
 // --- Pass 1b: Sterne (Punkt-Sprites mit individueller Tiefe) ---
@@ -764,6 +871,7 @@ uniform float uRealStars;  // 1 = hellste Sterne mit echtem Pixel-Abbild rendern
 uniform vec2 uMoonCS;      // Scheibenzentrum in Textur-UV
 uniform float uMoonRS;     // Scheibenradius als Anteil der Bildbreite
 uniform float uAnchor;     // Sterne im Nebel verankern: Stärke 0..1
+uniform float uObjStars;   // Wolken-Objekte: Sterne vor einer Dunkelwolke wandern mit ihr (Feld g, Gewicht b)
 uniform vec2 uTiltB2;      // Nebel-Kippwert der zweiten Kamera (für Anker-Streifen)
 uniform float uObjFarS;    // 1 = Objekt liegt einheitlich weit hinten
 uniform vec2 uTiltB;       // Kipp-Parallaxe des Hintergrunds (nicht der Sterne)
@@ -900,10 +1008,11 @@ void main() {
     vec2 uvA = vec2(posNow.x / uImgAspectS, posNow.y) + 0.5;
     dNA = textureLod(uDepthS, uvA, 0.0).r;
     anchorW = 1.0;
-  } else if (uAnchor > 0.0) {
+  } else if (uAnchor > 0.0 || uObjStars > 0.5) {
     vec2 uvA = vec2(aPos.x / uImgAspectS, aPos.y) + 0.5;
     if (uvA.x > 0.001 && uvA.x < 0.999 && uvA.y > 0.001 && uvA.y < 0.999) {
-      dNA = textureLod(uDepthS, uvA, 0.0).r;
+      vec4 tA = textureLod(uDepthS, uvA, 0.0);
+      dNA = tA.r;
       dNA = mix(dNA, 0.02, uObjFarS);
       vec3 cNA = textureLod(uColorS, uvA, 0.0).rgb;
       float dens = smoothstep(0.05, 0.30, dot(cNA, vec3(0.299, 0.587, 0.114)));
@@ -911,6 +1020,13 @@ void main() {
         ? 1.0 - smoothstep(0.10, 0.28, abs(clamp(aGaia, 0.02, 1.0) - dNA))
         : 1.0;
       anchorW = uAnchor * dens * agree;
+      // Ein Stern, der im Foto VOR einer Dunkelwolke steht, muss naeher sein
+      // als sie (sonst waere er nicht zu sehen): er wandert mit der Wolke,
+      // statt hinter ihr hervorzukommen
+      if (uObjStars > 0.5) {
+        dNA = mix(dNA, tA.g, tA.b);
+        anchorW = max(anchorW, tA.b);
+      }
     }
   }
 
@@ -1633,6 +1749,8 @@ void main() {
 }`;
 
 const bgProg = program(quadVS, bgFS);
+const objBgProg = program(quadVS, objBgFS);
+const objProg = program(objVS, objFS);
 const starImgProg = program(quadVS, starImgFS);
 const starProg = program(starVS, starFS);
 const brightProg = program(quadVS, brightFS);
@@ -5536,111 +5654,767 @@ function relightUniforms() {
   return relightCache;
 }
 
-// ------------------------------------------- Schichten-Tiefe (Multiplane / LDI)
-// Das Bild wird nach der Tiefenkarte in Baender zerlegt (gleich besetzte
-// Quantile). Jede Schicht: Farbe + weiche Zugehoerigkeit (Partition der
-// Eins ueber die Bandgrenzen). Was naehere Schichten verdecken, wird in der
-// Schicht aus ihrer eigenen Umgebung aufgefuellt (Push-Pull), die hinterste
-// Schicht ist ueberall gefuellt. Beim Flug gleiten die Ebenen starr
-// uebereinander; hinter einer weichenden Vordergrund-Schicht erscheint
-// aufgefuellter Hintergrund statt eines Lochs
-let texLdi = [], ldiDepths = [], ldiSig = "", ldiTimer = 0;
 let stereoShift = 0; // Augenversatz des gerade gerenderten Auges (Ebenen-Einheiten)
-function ldiSignature() {
-  return [state.ldiLayers, state.depthRaw ? state.depthRaw.w + "x" + state.depthRaw.h : 0,
-    state.smooth, state.invertDepth, !!state.customDepth, !!state.aiDepth, state.depthAiMix,
-    state.starless ? state.starless.width + "x" + state.starless.height : 0, state.flipH, state.flipV].join("|");
+// ------------------------------------------- Wolken-Objekte (Tiefen-Engine v3)
+// Warum das die Grenzen der bisherigen Tiefen-Engines aufhebt: Eine einzige
+// zusammenhaengende Bildflaeche kann sich nur so weit woelben, wie sie sich
+// dehnen laesst (Gummituch) - starke Tiefe verzerrt. Schneidet man sie nach
+// Tiefenwerten in Ebenen, laufen die Schnitte mitten durch helle Strukturen
+// (Ringe). Hier laeuft jeder Schnitt durch ein TAL:
+//  1. Wasserscheiden der geglaetteten Helligkeit zerlegen das Bild in
+//     Becken. Becken mit hohem Sattel dazwischen sind derselbe Ruecken und
+//     bilden zusammen einen "Klumpen" (eigene Tiefe, weich verbunden);
+//     Klumpen, die nur ueber eine dunkle Senke zusammenhaengen, sind
+//     getrennte "Inseln".
+//  2. Durch die Talsohlen zwischen den Inseln spannt sich eine glatte
+//     Membran - der Himmel hinter allem. Jede Insel ist das Licht UEBER der
+//     Membran und laeuft an ihrem Rand (einer Talsohle) von selbst gegen
+//     null; ein schmaler Saum blendet sie dort weich aus.
+//  3. Gerendert wird als verschobenes Gitter: Inseln duerfen gegeneinander
+//     reissen und sich ueberlappen (an der Naht ist kein Licht, es gibt
+//     nichts zu sehen; Ueberlappungen addieren sich wie durchscheinendes
+//     Gas, hinter einer weichenden Insel steht die Membran). Innerhalb einer
+//     Insel bleibt das Gitter faltenfrei, und es dehnt sich nur so weit, wie
+//     der Inhalt es vertraegt: helle, detailreiche Stellen fast gar nicht,
+//     dunkle Zwischenraeume kraeftig.
+// Im Ruhebild exakt das Foto.
+// Arbeitsaufloesung der Zerlegung (laengste Kante); auf Touch-Geraeten kleiner (Rechenzeit)
+const OBJ_RES = matchMedia("(pointer: coarse)").matches ? 768 : 1024;
+const OBJ_SCALE = 0.012;   // Glaettung fuer die Wasserscheiden (Anteil der Bildhoehe)
+const OBJ_TAU_BLOB = 0.85; // Sattel >= 85 % des kleineren Gipfels: ein Klumpen
+const OBJ_TAU_ISLE = 0.0;  // Inseln = alles, was ueber dem Himmel zusammenhaengt (Risse nur gegen den leeren Himmel)
+const OBJ_DUST_SHIFT = 0.03; // groesste Verschiebung einer Dunkelwolke gegen ihr Leuchten (Anteil der Bildhoehe, Regler 100)
+const OBJ_K_DARK = 0.85;   // erlaubte Dehnung in leeren Zonen (Faktor 1 +- k)
+const OBJ_K_LIT = 0.22;    // ... und auf hellem, detailreichem Inhalt
+const OBJ_DUST_SCALE = 0.10; // so breit darf eine Dunkelwolke sein (Anteil der Bildhoehe)
+const OBJ_SEAM = 3.5;      // so viele Texel beiderseits der Naht bleibt das Objektlicht aus (deckt eine Gitterzelle)
+let objSeg = null;         // { w, h, isle, blob, nIsle, nBlob, bg, L, mat, tex, flip }
+let texObjBg = null, texObjF = null, texObjU = null;
+let objFieldRaw = null, objFieldSig = "", objTimer = 0, objMesh = null, fbLay = null;
+
+function objSegSig() { return (state.flipH ? "h" : "") + (state.flipV ? "v" : ""); }
+function objFieldSignature() { return state.objSep + "|" + state.objDust + "|" + depthFlightSig(); }
+
+function blurRgb(rgb, w, h, r, passes) {
+  const n = w * h, a = new Float32Array(n), b = new Float32Array(n);
+  for (let c = 0; c < 3; c++) {
+    for (let i = 0; i < n; i++) a[i] = rgb[i * 3 + c];
+    for (let p = 0; p < passes; p++) { boxBlurH(a, b, w, h, r); boxBlurV(b, a, w, h, r); }
+    for (let i = 0; i < n; i++) rgb[i * 3 + c] = a[i];
+  }
+  return rgb;
 }
-function buildLdiLayers() {
-  if (!state.starless || !state.depthRaw) return;
-  for (const t of texLdi) gl.deleteTexture(t);
-  texLdi = []; ldiDepths = [];
-  const K = Math.max(3, Math.min(8, Math.round(state.ldiLayers || 5)));
-  const src = downscale(state.starless, 1280);
-  const w = src.width, h = src.height, n = w * h;
-  const px = canvasPixels(src);
-  const raw = state.depthRaw;
-  // Tiefenkarte bilinear auf die Schichtaufloesung
-  const D = new Float32Array(n);
-  {
-    const sx = raw.w / w, sy = raw.h / h;
-    for (let y = 0; y < h; y++) {
-      const fy = Math.min(raw.h - 1.001, (y + 0.5) * sy - 0.5), y0 = Math.max(0, Math.floor(fy)), ty = fy - y0;
-      for (let x = 0; x < w; x++) {
-        const fx = Math.min(raw.w - 1.001, (x + 0.5) * sx - 0.5), x0 = Math.max(0, Math.floor(fx)), tx = fx - x0;
-        const i00 = y0 * raw.w + x0;
-        D[y * w + x] = (raw.f[i00] * (1 - tx) + raw.f[i00 + 1] * tx) * (1 - ty) +
-          (raw.f[i00 + raw.w] * (1 - tx) + raw.f[i00 + raw.w + 1] * tx) * ty;
+
+// Chamfer-Distanz (3-4-Naeherung mit 1 / Wurzel 2): dist ist vorbelegt
+// (Saat = kleiner Wert, sonst sehr gross), zwei Durchlaeufe
+function objChamfer(dist, w, h) {
+  const D1 = 1, D2 = Math.SQRT2;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      let v = dist[i];
+      if (x > 0 && dist[i - 1] + D1 < v) v = dist[i - 1] + D1;
+      if (y > 0) {
+        if (dist[i - w] + D1 < v) v = dist[i - w] + D1;
+        if (x > 0 && dist[i - w - 1] + D2 < v) v = dist[i - w - 1] + D2;
+        if (x < w - 1 && dist[i - w + 1] + D2 < v) v = dist[i - w + 1] + D2;
+      }
+      dist[i] = v;
+    }
+  }
+  for (let y = h - 1; y >= 0; y--) {
+    for (let x = w - 1; x >= 0; x--) {
+      const i = y * w + x;
+      let v = dist[i];
+      if (x < w - 1 && dist[i + 1] + D1 < v) v = dist[i + 1] + D1;
+      if (y < h - 1) {
+        if (dist[i + w] + D1 < v) v = dist[i + w] + D1;
+        if (x < w - 1 && dist[i + w + 1] + D2 < v) v = dist[i + w + 1] + D2;
+        if (x > 0 && dist[i + w - 1] + D2 < v) v = dist[i + w - 1] + D2;
+      }
+      dist[i] = v;
+    }
+  }
+  return dist;
+}
+// Abstand zur naechsten Grenze einer Beschriftung (beiderseits 0,5)
+function objBorderDist(lb, dist, w, h) {
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x, l = lb[i];
+      dist[i] = ((x > 0 && lb[i - 1] !== l) || (x < w - 1 && lb[i + 1] !== l) ||
+        (y > 0 && lb[i - w] !== l) || (y < h - 1 && lb[i + w] !== l)) ? 0.5 : 1e9;
+    }
+  }
+  return objChamfer(dist, w, h);
+}
+// Laufendes Min/Max entlang aller Geraden einer Richtung (dx, dy)
+function objLineOp(src, dst, w, h, r, dx, dy, isMax) {
+  const m = w + h, buf = new Float32Array(m), out = new Float32Array(m);
+  const line = (x0, y0) => {
+    let len = 0, x = x0, y = y0;
+    while (x >= 0 && x < w && y >= 0 && y < h) { buf[len++] = src[y * w + x]; x += dx; y += dy; }
+    runMinMax(buf, out, len, 0, 1, r, isMax);
+    len = 0; x = x0; y = y0;
+    while (x >= 0 && x < w && y >= 0 && y < h) { dst[y * w + x] = out[len++]; x += dx; y += dy; }
+  };
+  if (dx === 1 && dy === 0) { for (let y = 0; y < h; y++) line(0, y); }
+  else if (dx === 0) { for (let x = 0; x < w; x++) line(x, 0); }
+  else if (dy === 1) { for (let x = 0; x < w; x++) line(x, 0); for (let y = 1; y < h; y++) line(0, y); }
+  else { for (let x = 0; x < w; x++) line(x, h - 1); for (let y = 0; y < h - 1; y++) line(0, y); }
+}
+// Membran aus wenigen Stuetzpixeln (schmale Baender an Naehten): wie
+// pushPullFill, aber mit saettigender Gueltigkeit - schon EIN gueltiges Kind
+// macht die groebere Zelle voll gueltig. So bestimmen die NAECHSTEN
+// Stuetzpixel den Wert in einem grossen Loch (pushPullFill mittelt die
+// Gueltigkeit und zoege ein grosses Loch auf das Bildmittel aller Stuetzen);
+// danach im Loch weich ausgleichen
+function objSpanFill(rgb, valid, w, h, iters, region) {
+  const lv = [{ c: rgb, v: valid, w, h }];
+  while (lv[lv.length - 1].w > 1 || lv[lv.length - 1].h > 1) {
+    const p = lv[lv.length - 1];
+    const cw = Math.max(1, Math.ceil(p.w / 2)), ch = Math.max(1, Math.ceil(p.h / 2));
+    const c = new Float32Array(cw * ch * 3), v = new Float32Array(cw * ch);
+    for (let y = 0; y < ch; y++) {
+      for (let x = 0; x < cw; x++) {
+        let r = 0, g = 0, b = 0, s = 0;
+        for (let dy = 0; dy < 2; dy++) {
+          const yy = 2 * y + dy;
+          if (yy >= p.h) continue;
+          for (let dx = 0; dx < 2; dx++) {
+            const xx = 2 * x + dx;
+            if (xx >= p.w) continue;
+            const i = yy * p.w + xx, wv = p.v[i];
+            r += p.c[i * 3] * wv; g += p.c[i * 3 + 1] * wv; b += p.c[i * 3 + 2] * wv; s += wv;
+          }
+        }
+        const o = y * cw + x;
+        if (s > 0) { c[o * 3] = r / s; c[o * 3 + 1] = g / s; c[o * 3 + 2] = b / s; }
+        v[o] = Math.min(1, s);
+      }
+    }
+    lv.push({ c, v, w: cw, h: ch });
+  }
+  const out = new Float32Array(rgb.length);
+  out.set(rgb);
+  lv[0] = { c: out, v: new Float32Array(valid), w, h };
+  for (let L = lv.length - 2; L >= 0; L--) {
+    const f = lv[L], p = lv[L + 1];
+    for (let y = 0; y < f.h; y++) {
+      const py = Math.min(p.h - 1, Math.max(0, (y + 0.5) / 2 - 0.5));
+      const y0 = Math.floor(py), y1 = Math.min(p.h - 1, y0 + 1), fy = py - y0;
+      for (let x = 0; x < f.w; x++) {
+        const i = y * f.w + x, wv = f.v[i];
+        if (wv >= 1) continue;
+        const pxx = Math.min(p.w - 1, Math.max(0, (x + 0.5) / 2 - 0.5));
+        const x0 = Math.floor(pxx), x1 = Math.min(p.w - 1, x0 + 1), fx = pxx - x0;
+        const i00 = (y0 * p.w + x0) * 3, i10 = (y0 * p.w + x1) * 3, i01 = (y1 * p.w + x0) * 3, i11 = (y1 * p.w + x1) * 3;
+        for (let ch = 0; ch < 3; ch++) {
+          const up = (p.c[i00 + ch] * (1 - fx) + p.c[i10 + ch] * fx) * (1 - fy) + (p.c[i01 + ch] * (1 - fx) + p.c[i11 + ch] * fx) * fy;
+          f.c[i * 3 + ch] = f.c[i * 3 + ch] * wv + up * (1 - wv);
+        }
+        f.v[i] = 1;
       }
     }
   }
-  // Bandgrenzen gleichmaessig ueber den genutzten Tiefenbereich (1.-99.
-  // Perzentil): Quantile klumpten im dunklen Himmel (fast alle Pixel liegen
-  // bei derselben kleinen Tiefe) und liessen dem Nebel nur eine Schicht
-  const sorted = Float32Array.from(D).sort();
-  const dLo = sorted[Math.floor(sorted.length * 0.01)], dHi = sorted[Math.floor(sorted.length * 0.99)];
-  const edges = [0];
-  for (let k = 1; k < K; k++) edges.push(dLo + (dHi - dLo) * k / K);
-  edges.push(1.0001);
-  // Weiche Bandgrenzen: ein Viertel der Bandbreite - benachbarte Schichten
-  // blenden ueber eine Zone ineinander, statt sich an einer Linie zu stossen
-  const feather = Math.max(0.02, 0.25 * (dHi - dLo) / K);
-  const sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / Math.max(1e-6, b - a))); return t * t * (3 - 2 * t); };
-  const member = (k, d) => {
-    const lo = k === 0 ? 1 : sm(edges[k] - feather, edges[k] + feather, d);
-    const hi = k === K - 1 ? 1 : 1 - sm(edges[k + 1] - feather, edges[k + 1] + feather, d);
-    return lo * hi;
+  // Ausgleich: die Stuetzpixel bleiben fest, das Loch entspannt sich
+  // (region: nur diese Pixel, sonst alle ohne Stuetze)
+  const list = [];
+  for (let i = 0; i < w * h; i++) if (region ? region[i] : valid[i] < 1) list.push(i);
+  const nxt = new Float32Array(list.length * 3);
+  for (let it = 0; it < iters; it++) {
+    for (let k = 0; k < list.length; k++) {
+      const i = list[k], x = i % w;
+      const l = x > 0 ? i - 1 : i, r = x < w - 1 ? i + 1 : i, u = i >= w ? i - w : i, d = i < w * h - w ? i + w : i;
+      for (let ch = 0; ch < 3; ch++) nxt[k * 3 + ch] = 0.25 * (out[l * 3 + ch] + out[r * 3 + ch] + out[u * 3 + ch] + out[d * 3 + ch]);
+    }
+    for (let k = 0; k < list.length; k++) { const i = list[k]; out[i * 3] = nxt[k * 3]; out[i * 3 + 1] = nxt[k * 3 + 1]; out[i * 3 + 2] = nxt[k * 3 + 2]; }
+  }
+  return out;
+}
+// Zusammenhaengende Gebiete einer Maske (4er-Nachbarschaft); 0 = ausserhalb
+function objComponents(inside, w, h, minArea) {
+  const n = w * h, lab = new Int32Array(n), queue = new Int32Array(n);
+  let cnt = 0;
+  for (let s0 = 0; s0 < n; s0++) {
+    if (!inside[s0] || lab[s0]) continue;
+    cnt++;
+    let qh = 0, qt = 0;
+    queue[qt++] = s0; lab[s0] = cnt;
+    while (qh < qt) {
+      const i = queue[qh++], x = i % w;
+      if (x > 0 && inside[i - 1] && !lab[i - 1]) { lab[i - 1] = cnt; queue[qt++] = i - 1; }
+      if (x < w - 1 && inside[i + 1] && !lab[i + 1]) { lab[i + 1] = cnt; queue[qt++] = i + 1; }
+      if (i >= w && inside[i - w] && !lab[i - w]) { lab[i - w] = cnt; queue[qt++] = i - w; }
+      if (i < n - w && inside[i + w] && !lab[i + w]) { lab[i + w] = cnt; queue[qt++] = i + w; }
+    }
+    if (qt < minArea) { for (let k = 0; k < qt; k++) { lab[queue[k]] = 0; inside[queue[k]] = 0; } cnt--; }
+  }
+  return { lab, cnt };
+}
+
+/**
+ * Dunkelwolken im Vordergrund finden: dunkle Gebiete, die in mindestens drei
+ * von vier Richtungen beiderseits von hellem Nebel eingefasst sind (z. B. der
+ * Pferdekopf, Globulen, Staubbahnen quer durch einen hellen Kern). Dunkler
+ * Himmel NEBEN einem Nebel ist nur auf einer Seite begrenzt und zaehlt nicht.
+ * Rueckgabe: zone (0/1), dlab (Objekt je Pixel), U (Leuchten hinter dem
+ * Staub, aus dem Rand der Zone aufgespannt), zm (weicher Saum 0..1)
+ */
+function objFindDust(rgb, L, w, h) {
+  const n = w * h, tmp = new Float32Array(n);
+  let Lo = openChannel(L, w, h, Math.max(2, Math.round(w * 0.004)));
+  boxBlurH(Lo, tmp, w, h, 1); boxBlurV(tmp, Lo, w, h, 1);
+  const r = Math.max(4, Math.round(h * OBJ_DUST_SCALE));
+  const cl = [];
+  for (const [dx, dy, rr] of [[1, 0, r], [0, 1, r], [1, 1, Math.round(r / Math.SQRT2)], [1, -1, Math.round(r / Math.SQRT2)]]) {
+    const a = new Float32Array(n), b = new Float32Array(n);
+    objLineOp(Lo, a, w, h, rr, dx, dy, true);
+    objLineOp(a, b, w, h, rr, dx, dy, false);
+    cl.push(b);
+  }
+  const sorted = Float32Array.from(Lo).sort();
+  const lo = sorted[Math.floor(n * 0.05)], hi = sorted[Math.floor(n * 0.995)], rg = Math.max(1e-3, hi - lo);
+  const sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  // Kern: deutlich dunkler als die Einfassung in mindestens drei Richtungen.
+  // Von dort waechst das Gebiet bis an die Silhouette (alles Angrenzende,
+  // das noch erkennbar dunkler ist als eine Einfassung in zwei Richtungen) -
+  // so gehoert die GANZE Dunkelwolke bis zu ihrer hellen Kante dazu, nicht
+  // nur ihr dunkelster Teil. In eine breite Dunkelwolke dahinter laeuft das
+  // Wachstum nicht hinein: dort fehlt die helle Einfassung
+  const inside = new Uint8Array(n), weak = new Uint8Array(n);
+  let any = 0;
+  for (let i = 0; i < n; i++) {
+    let m1 = Infinity, m2 = Infinity, m3 = Infinity;
+    for (let k = 0; k < 4; k++) {
+      const v = cl[k][i];
+      if (v < m1) { m3 = m2; m2 = m1; m1 = v; } else if (v < m2) { m3 = m2; m2 = v; } else if (v < m3) m3 = v;
+    }
+    const con = 1 - Lo[i] / Math.max(m2, 1e-4);
+    const mk = sm(0.22, 0.5, con) * sm(lo + 0.08 * rg, lo + 0.2 * rg, m2);
+    if (mk > 0.45) { inside[i] = 1; any = 1; }
+    if (1 - Lo[i] / Math.max(m3, 1e-4) > 0.14 && m3 > lo + 0.12 * rg) weak[i] = 1;
+  }
+  if (!any) return null;
+  if (objComponents(inside, w, h, n * 0.0004).cnt === 0) return null;
+  {
+    const queue = new Int32Array(n);
+    let qh = 0, qt = 0;
+    for (let i = 0; i < n; i++) if (inside[i]) queue[qt++] = i;
+    while (qh < qt) {
+      const i = queue[qh++], x = i % w;
+      if (x > 0 && weak[i - 1] && !inside[i - 1]) { inside[i - 1] = 1; queue[qt++] = i - 1; }
+      if (x < w - 1 && weak[i + 1] && !inside[i + 1]) { inside[i + 1] = 1; queue[qt++] = i + 1; }
+      if (i >= w && weak[i - w] && !inside[i - w]) { inside[i - w] = 1; queue[qt++] = i - w; }
+      if (i < n - w && weak[i + w] && !inside[i + w]) { inside[i + w] = 1; queue[qt++] = i + w; }
+    }
+  }
+  // Zu grosse Gebiete und solche, die breit am Bildrand haengen, sind keine
+  // eingefassten Wolken (dort fehlt die Einfassung nur, weil das Bild endet)
+  {
+    const cc = objComponents(inside, w, h, n * 0.0004);
+    const ar = new Float64Array(cc.cnt + 1), bd = new Float64Array(cc.cnt + 1);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const k = cc.lab[y * w + x];
+        if (!k) continue;
+        ar[k]++;
+        if (x === 0 || y === 0 || x === w - 1 || y === h - 1) bd[k]++;
+      }
+    }
+    let left = 0;
+    for (let i = 0; i < n; i++) {
+      const k = cc.lab[i];
+      if (k && (ar[k] > n * 0.06 || bd[k] > 0.5 * Math.sqrt(ar[k]))) inside[i] = 0;
+      else if (k) left++;
+    }
+    if (!left) return null;
+  }
+  // Zone = Staub plus Rand (helle Kante/Saum gehoeren zum Staub, dazu die Naht)
+  const dist = new Float32Array(n);
+  for (let i = 0; i < n; i++) dist[i] = inside[i] ? 0 : 1e9;
+  objChamfer(dist, w, h);
+  // Rand grosszuegig: der helle Saum einer Dunkelwolke (ihre angestrahlte
+  // Kante samt Schein) gehoert zu ihr und muss mitwandern - bliebe er
+  // stehen, zeichnete er die alte Lage der Wolke als Geisterkontur nach
+  const grow = Math.max(4, h * 0.018) + OBJ_SEAM;
+  const zone = new Uint8Array(n);
+  for (let i = 0; i < n; i++) zone[i] = dist[i] <= grow ? 1 : 0;
+  const comp = objComponents(zone, w, h, 0);
+  objBorderDist(zone, dist, w, h);
+  const zm = new Float32Array(n), valid = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    if (zone[i]) { const t = Math.min(1, Math.max(0, (dist[i] - OBJ_SEAM) / Math.max(4, h * 0.008))); zm[i] = t * t * (3 - 2 * t); }
+    else if (dist[i] <= 4.5) valid[i] = 1;
+  }
+  // Stuetzen ohne Sternreste und feine helle Punkte (sie wuerden als helle
+  // Flecken in die Fuellung laufen)
+  const pin = new Float32Array(n * 3);
+  {
+    const ch = new Float32Array(n), ro = Math.max(2, Math.round(w * 0.003));
+    for (let c = 0; c < 3; c++) {
+      for (let i = 0; i < n; i++) ch[i] = rgb[i * 3 + c];
+      const o = openChannel(ch, w, h, ro);
+      for (let i = 0; i < n; i++) pin[i * 3 + c] = o[i];
+    }
+    blurRgb(pin, w, h, 1, 2);
+  }
+  const U = blurRgb(objSpanFill(pin, valid, w, h, 24, zone), w, h, 2, 2);
+  // Nahe der Kante setzt sich hinter dem Staub die Umgebung fort: an der
+  // Zonengrenze gespiegelt (mit ihrer Struktur, nicht nur als glatte Flaeche).
+  // Wird die Wolke im Flug ein Stueck verschoben, erscheint dahinter also
+  // etwas, das aussieht wie der Nebel direkt daneben. Weiter innen (wird nie
+  // aufgedeckt) glatt aufgespannt
+  {
+    const sx = new Int16Array(n), sy = new Int16Array(n), d2 = new Float32Array(n).fill(1e12);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = y * w + x; if (valid[i]) { sx[i] = x; sy[i] = y; d2[i] = 0; } }
+    const tryN = (i, x, y, j) => {
+      if (d2[j] >= 1e12) return;
+      const ddx = sx[j] - x, ddy = sy[j] - y, q = ddx * ddx + ddy * ddy;
+      if (q < d2[i]) { d2[i] = q; sx[i] = sx[j]; sy[i] = sy[j]; }
+    };
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (!zone[i]) continue;
+      if (x > 0) tryN(i, x, y, i - 1);
+      if (y > 0) { tryN(i, x, y, i - w); if (x > 0) tryN(i, x, y, i - w - 1); if (x < w - 1) tryN(i, x, y, i - w + 1); }
+    }
+    for (let y = h - 1; y >= 0; y--) for (let x = w - 1; x >= 0; x--) {
+      const i = y * w + x;
+      if (!zone[i]) continue;
+      if (x < w - 1) tryN(i, x, y, i + 1);
+      if (y < h - 1) { tryN(i, x, y, i + w); if (x < w - 1) tryN(i, x, y, i + w + 1); if (x > 0) tryN(i, x, y, i + w - 1); }
+    }
+    const dA = h * 0.012, dB = h * 0.04;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (!zone[i] || d2[i] >= 1e12) continue;
+      const d = Math.sqrt(d2[i]);
+      if (d >= dB) continue;
+      const mx = 2 * sx[i] - x, my = 2 * sy[i] - y;
+      if (mx < 0 || my < 0 || mx >= w || my >= h) continue;
+      const j = my * w + mx;
+      if (zone[j]) continue;
+      const t = Math.min(1, Math.max(0, (d - dA) / (dB - dA))), k = 1 - t * t * (3 - 2 * t);
+      // Spiegelbild relativ zur glatten Fuellung an der Quelle uebertragen:
+      // die Struktur kommt mit, das Helligkeitsniveau bleibt das aufgespannte
+      for (let c = 0; c < 3; c++) U[i * 3 + c] = Math.max(0, U[i * 3 + c] + k * (pin[j * 3 + c] - U[j * 3 + c]));
+    }
+  }
+  // Wie frei sich die Wolke bewegen darf: voll an Raendern, hinter denen es
+  // deutlich heller ist als in der Wolke (echte Silhouette); gar nicht, wo
+  // sie in gleich dunkle Umgebung uebergeht (z. B. der Hals des Pferdekopfs,
+  // die offenen Enden einer Staubbahn) - dort haengt sie fest und dehnt
+  // sich, statt abzureissen und eine Fuellung aufzudecken. Dazwischen weich
+  // aufgespannt
+  const lcS = new Float64Array(comp.cnt + 1), lcN = new Float64Array(comp.cnt + 1);
+  for (let i = 0; i < n; i++) if (inside[i]) { const k = comp.lab[i]; lcS[k] += L[i]; lcN[k]++; }
+  const a3 = new Float32Array(n * 3), vB = new Float32Array(n);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (!zone[i] || dist[i] > 1.5) continue;
+      let so = 0, no = 0;
+      for (let dy = -5; dy <= 5; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= h) continue;
+        for (let dx = -5; dx <= 5; dx++) {
+          const xx = x + dx;
+          if (xx < 0 || xx >= w) continue;
+          const j = yy * w + xx;
+          if (zone[j]) continue;
+          so += 0.299 * pin[j * 3] + 0.587 * pin[j * 3 + 1] + 0.114 * pin[j * 3 + 2]; no++;
+        }
+      }
+      const k = comp.lab[i], lc = lcN[k] > 0 ? lcS[k] / lcN[k] : 0;
+      const c = no > 0 ? sm(0.2, 0.5, 1 - lc / Math.max(1e-4, so / no)) : 0;
+      a3[i * 3] = a3[i * 3 + 1] = a3[i * 3 + 2] = c;
+      vB[i] = 1;
+    }
+  }
+  const af = objSpanFill(a3, vB, w, h, 40, zone);
+  const att = new Float32Array(n);
+  for (let i = 0; i < n; i++) if (zone[i]) att[i] = af[i * 3];
+  return { zone, dlab: comp.lab, nDust: comp.cnt + 1, U, zm, att };
+}
+
+/** Zerlegung in Inseln und Klumpen + Membran (haengt nur am Bild). */
+function buildObjSeg() {
+  if (!state.starless) return;
+  const src = downscale(state.starless, OBJ_RES);
+  const w = src.width, h = src.height, n = w * h;
+  const px = canvasPixels(src);
+  const rgb = new Float32Array(n * 3), L = new Float32Array(n);
+  for (let i = 0, j = 0; i < n; i++, j += 4) {
+    rgb[i * 3] = px[j] / 255; rgb[i * 3 + 1] = px[j + 1] / 255; rgb[i * 3 + 2] = px[j + 2] / 255;
+    L[i] = (0.299 * px[j] + 0.587 * px[j + 1] + 0.114 * px[j + 2]) / 255;
+  }
+  // 0) Dunkelwolken im Vordergrund herausloesen: ab hier arbeitet die
+  // Zerlegung auf dem entstaubten Bild (hinter dem Staub steht glattes Leuchten)
+  const dust = objFindDust(rgb, L, w, h);
+  if (dust) {
+    for (let i = 0; i < n; i++) {
+      const m = dust.zm[i];
+      if (m <= 0) continue;
+      const u0 = dust.U[i * 3], u1 = dust.U[i * 3 + 1], u2 = dust.U[i * 3 + 2];
+      const T = Math.min(1, Math.max(0, L[i] / Math.max(1e-4, 0.299 * u0 + 0.587 * u1 + 0.114 * u2)));
+      const k = 1 / Math.max(1e-3, 1 - (1 - T) * m);
+      rgb[i * 3] = (rgb[i * 3] - (rgb[i * 3] - u0 * T) * m) * k;
+      rgb[i * 3 + 1] = (rgb[i * 3 + 1] - (rgb[i * 3 + 1] - u1 * T) * m) * k;
+      rgb[i * 3 + 2] = (rgb[i * 3 + 2] - (rgb[i * 3 + 2] - u2 * T) * m) * k;
+      L[i] = 0.299 * rgb[i * 3] + 0.587 * rgb[i * 3 + 1] + 0.114 * rgb[i * 3 + 2];
+    }
+  }
+  // 1) geglaettete Helligkeit: ihre Gipfel sind die Kerne der Klumpen
+  const Ls = Float32Array.from(L), tmp = new Float32Array(n);
+  const rw = Math.max(2, Math.round(h * OBJ_SCALE));
+  for (let p = 0; p < 3; p++) { boxBlurH(Ls, tmp, w, h, rw); boxBlurV(tmp, Ls, w, h, rw); }
+  const sorted = Float32Array.from(Ls).sort();
+  const floor = sorted[Math.floor(n * 0.05)], top = sorted[Math.floor(n * 0.995)];
+  // Himmel: alles knapp ueber dem Grundniveau ist eine einzige ferne Insel
+  // (sonst zerfiele glatter Himmel in tausende Zufallsbecken)
+  const skyT = floor + 0.02 * Math.max(1e-3, top - floor);
+  // 2) Wasserscheiden: jeder Pixel laeuft den steilsten Anstieg hinauf
+  const ptr = new Int32Array(n);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (Ls[i] <= skyT) { ptr[i] = -1; continue; }
+      let best = Ls[i], bi = i;
+      for (let dy = -1; dy <= 1; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= h) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx;
+          if (xx < 0 || xx >= w) continue;
+          const j = yy * w + xx;
+          if (Ls[j] > best) { best = Ls[j]; bi = j; }
+        }
+      }
+      ptr[i] = bi;
+    }
+  }
+  for (let i = 0; i < n; i++) {
+    if (ptr[i] < 0) continue;
+    let r = i;
+    while (ptr[r] !== r) r = ptr[r];
+    let c = i;
+    while (ptr[c] !== r) { const nx = ptr[c]; ptr[c] = r; c = nx; }
+  }
+  const lab = new Int32Array(n), rid = new Int32Array(n);
+  const peak = [floor];
+  let nb = 1;
+  for (let i = 0; i < n; i++) {
+    const r = ptr[i];
+    if (r < 0) continue;
+    if (!rid[r]) { rid[r] = nb++; peak.push(Ls[r]); }
+    lab[i] = rid[r];
+  }
+  // 3) Sattel zwischen Nachbarbecken, dann zweistufig verschmelzen
+  const sad = new Map(), area = new Float64Array(nb);
+  const edge = (i, j) => {
+    const a = lab[i], b = lab[j];
+    if (a === b || a === 0 || b === 0) return;
+    const v = Math.min(Ls[i], Ls[j]);
+    const key = a < b ? a * nb + b : b * nb + a;
+    const o = sad.get(key);
+    if (o === undefined || v > o) sad.set(key, v);
   };
-  const rgb = new Float32Array(n * 3);
-  for (let i = 0, j = 0; i < n; i++, j += 4) { rgb[i * 3] = px[j] / 255; rgb[i * 3 + 1] = px[j + 1] / 255; rgb[i * 3 + 2] = px[j + 2] / 255; }
-  const masks = [];
-  for (let k = 0; k < K; k++) {
-    const m = new Float32Array(n);
-    for (let i = 0; i < n; i++) m[i] = member(k, D[i]);
-    masks.push(m);
-  }
-  // Je Schicht: Tiefe = mittlere Tiefe ihrer Pixel; Farbe und Deckung im
-  // verdeckten Bereich (alles Naehere) aus der eigenen Umgebung auffuellen.
-  // Die Deckung wird auf die Zugehoerigkeiten aller Schichten bis hierher
-  // normiert: beim Ueberblenden von hinten nach vorn ergeben die Schichten
-  // an jeder Bandgrenze zusammen genau 100 % (Gewichte = Zugehoerigkeit).
-  // Mit der rohen Zugehoerigkeit als Deckung blieb in der weichen Grenzzone
-  // ein Rest unbedeckt, und sobald die Ebenen auseinanderglitten, schien
-  // dort Schwarz durch (dunkle Ringe entlang der Tiefenstufen)
-  const alpha3 = new Float32Array(n * 3);
-  const cum = new Float32Array(n);
-  for (let k = 0; k < K; k++) {
-    const m = masks[k];
-    for (let i = 0; i < n; i++) cum[i] += m[i];
-    let sd = 0, sw = 0;
-    for (let i = 0; i < n; i++) { sd += D[i] * m[i]; sw += m[i]; }
-    const dk = sw > 0 ? sd / sw : (edges[k] + edges[k + 1]) / 2;
-    const near = new Float32Array(n);
-    for (let j = k + 1; j < K; j++) { const mj = masks[j]; for (let i = 0; i < n; i++) near[i] = Math.max(near[i], mj[i]); }
-    const valid = new Float32Array(n);
-    for (let i = 0; i < n; i++) valid[i] = m[i] > 0.5 && near[i] < 0.5 ? 1 : 0;
-    const colF = pushPullFill(rgb, valid, w, h);
-    let aF = null;
-    if (k > 0) {
-      // Deckung: eigene Zugehoerigkeit, unter Naeherem aus der Umgebung fortgesetzt
-      const validA = new Float32Array(n);
-      for (let i = 0; i < n; i++) { validA[i] = near[i] < 0.5 ? 1 : 0; alpha3[i * 3] = alpha3[i * 3 + 1] = alpha3[i * 3 + 2] = m[i]; }
-      aF = pushPullFill(alpha3, validA, w, h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      area[lab[i]]++;
+      if (x + 1 < w) edge(i, i + 1);
+      if (y + 1 < h) edge(i, i + w);
     }
-    const out = new Uint8ClampedArray(n * 4);
-    for (let i = 0, j = 0; i < n; i++, j += 4) {
-      const occl = near[i] >= 0.5 ? 1 : 0;
-      const r = occl ? colF[i * 3] : rgb[i * 3], g = occl ? colF[i * 3 + 1] : rgb[i * 3 + 1], b = occl ? colF[i * 3 + 2] : rgb[i * 3 + 2];
-      const cov = k === 0 ? 1 : (occl ? Math.max(m[i], aF[i * 3]) : m[i]);
-      const a = k === 0 ? 1 : Math.min(1, cov / Math.max(1e-4, cum[i]));
-      out[j] = Math.round(r * 255); out[j + 1] = Math.round(g * 255); out[j + 2] = Math.round(b * 255); out[j + 3] = Math.round(a * 255);
-    }
-    texLdi.push(makeTextureRaw(w, h, out));
-    ldiDepths.push(dk);
   }
-  ldiSig = ldiSignature();
-  if (typeof stageToast === "function") stageToast(null);
-  requestRender();
+  const pairs = Array.from(sad.entries()).sort((p, q) => q[1] - p[1]);
+  const minArea = n * 0.0006;
+  const merge = (parent, pk, ar, tau) => {
+    const find = (x) => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+    for (let pass = 0; pass < 2; pass++) {
+      for (const [key, s] of pairs) {
+        let a = find(Math.floor(key / nb)), b = find(key % nb);
+        if (a === b) continue;
+        const pm = Math.min(pk[a], pk[b]);
+        const same = s - floor >= tau * (pm - floor);
+        const tiny = pass === 1 && (ar[a] < minArea || ar[b] < minArea);
+        if (same || tiny) {
+          if (pk[a] < pk[b]) { const t = a; a = b; b = t; }
+          parent[b] = a; ar[a] += ar[b];
+        }
+      }
+    }
+    return find;
+  };
+  const compact = (find) => {
+    const fin = new Int32Array(nb).fill(-1), out = new Int32Array(n);
+    let cnt = 1;
+    fin[0] = 0;
+    for (let i = 0; i < n; i++) {
+      const r = find(lab[i]);
+      if (fin[r] < 0) fin[r] = cnt++;
+      out[i] = fin[r];
+    }
+    return { out, cnt };
+  };
+  const parB = new Int32Array(nb);
+  for (let k = 0; k < nb; k++) parB[k] = k;
+  const findB = merge(parB, Float32Array.from(peak), Float64Array.from(area), OBJ_TAU_BLOB);
+  const B = compact(findB);
+  const parI = Int32Array.from(parB);
+  const pkI = Float32Array.from(peak), arI = new Float64Array(nb);
+  for (let k = 0; k < nb; k++) { const r = findB(k); arI[r] += area[k]; if (peak[k] > pkI[r]) pkI[r] = peak[k]; }
+  const findI = merge(parI, pkI, arI, OBJ_TAU_ISLE);
+  const I0 = compact(findI);
+  let isle = I0.out;
+  const nIsle = I0.cnt;
+  // 4) Inselgrenzen auf die feinen Talsohlen legen: vom Inselinneren aus
+  // fluten, hellste Pixel zuerst - die Fronten treffen sich in der dunkelsten
+  // Linie zwischen den Inseln (nicht in der geglaetteten Senke daneben)
+  const dist = new Float32Array(n);
+  const distToBorder = (lb) => objBorderDist(lb, dist, w, h);
+  if (nIsle > 1) {
+    distToBorder(isle);
+    const Lf = Float32Array.from(L);
+    const rfl = Math.max(1, Math.round(h * 0.004));
+    for (let p = 0; p < 2; p++) { boxBlurH(Lf, tmp, w, h, rfl); boxBlurV(tmp, Lf, w, h, rfl); }
+    const NQ = 1024, band = 1.5 * rw;
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < n; i++) { if (Lf[i] < lo) lo = Lf[i]; if (Lf[i] > hi) hi = Lf[i]; }
+    const qs = (NQ - 1) / Math.max(1e-6, hi - lo);
+    const out = new Int32Array(n).fill(-1);
+    const buckets = [];
+    for (let q = 0; q < NQ; q++) buckets.push([]);
+    for (let i = 0; i < n; i++) if (dist[i] > band) out[i] = isle[i];
+    const push = (j, lbl, cur) => {
+      out[j] = lbl;
+      const q = Math.min(cur, Math.round((Lf[j] - lo) * qs));
+      buckets[q].push(j);
+      return q;
+    };
+    let top2 = 0;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if (out[i] >= 0 || dist[i] > band + 2) continue;
+        // unmarkiert, grenzt an eine Marke? dann als Startpunkt einreihen
+        let lbl = -1;
+        if (x > 0 && dist[i - 1] > band) lbl = isle[i - 1];
+        else if (x < w - 1 && dist[i + 1] > band) lbl = isle[i + 1];
+        else if (y > 0 && dist[i - w] > band) lbl = isle[i - w];
+        else if (y < h - 1 && dist[i + w] > band) lbl = isle[i + w];
+        if (lbl >= 0) { const q = push(i, lbl, NQ - 1); if (q > top2) top2 = q; }
+      }
+    }
+    for (let q = top2; q >= 0; q--) {
+      const bk = buckets[q];
+      for (let k = 0; k < bk.length; k++) {
+        const i = bk[k], x = i % w, y = (i - x) / w, lbl = out[i];
+        if (x > 0 && out[i - 1] < 0) push(i - 1, lbl, q);
+        if (x < w - 1 && out[i + 1] < 0) push(i + 1, lbl, q);
+        if (y > 0 && out[i - w] < 0) push(i - w, lbl, q);
+        if (y < h - 1 && out[i + w] < 0) push(i + w, lbl, q);
+      }
+    }
+    for (let i = 0; i < n; i++) if (out[i] < 0) out[i] = isle[i];
+    isle = out;
+  }
+  // 5) Membran durch die Talsohlen zwischen den Inseln, Saum am Inselrand
+  distToBorder(isle);
+  const valid = new Float32Array(n);
+  let nv = 0;
+  for (let i = 0; i < n; i++) if (dist[i] < OBJ_SEAM + 1) { valid[i] = 1; nv++; }
+  const pin = blurRgb(Float32Array.from(rgb), w, h, 1, 2);
+  let bg;
+  if (nv > 0) bg = blurRgb(objSpanFill(pin, valid, w, h, 0), w, h, 2, 2);
+  else bg = new Float32Array(n * 3);
+  const mat = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const t = Math.min(1, Math.max(0, (dist[i] - OBJ_SEAM) / 2.5));
+    mat[i] = t * t * (3 - 2 * t);
+  }
+  objSeg = { w, h, isle, blob: B.out, nIsle, nBlob: B.cnt, bg, L, mat, dust, tex: texColor, flip: objSegSig() };
+  const f4 = new Float32Array(n * 4);
+  for (let i = 0, j = 0; i < n; i++, j += 4) { f4[j] = bg[i * 3]; f4[j + 1] = bg[i * 3 + 1]; f4[j + 2] = bg[i * 3 + 2]; f4[j + 3] = 1; }
+  if (texObjBg) gl.deleteTexture(texObjBg);
+  texObjBg = makeTextureFloat(w, h, f4);
+  // Leuchten hinter dem Staub (rgb) + Saum der Staubzone (a); ohne Staub leer
+  const u4 = new Float32Array(n * 4);
+  if (dust) for (let i = 0, j = 0; i < n; i++, j += 4) { u4[j] = dust.U[i * 3]; u4[j + 1] = dust.U[i * 3 + 1]; u4[j + 2] = dust.U[i * 3 + 2]; u4[j + 3] = dust.zm[i]; }
+  if (texObjU) gl.deleteTexture(texObjU);
+  texObjU = makeTextureFloat(w, h, u4);
+  objFieldRaw = null;
+}
+
+// Untere Huelle mit oertlich verschiedener Steilheitsgrenze, nur innerhalb
+// einer Insel (ueber Inselgrenzen wird nichts weitergereicht - dort darf
+// die Tiefe springen). sl: erlaubter Anstieg je Pixel
+function objEnvelope(a, sl, lab, w, h) {
+  const R2 = Math.SQRT2;
+  for (let it = 0; it < 3; it++) {
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x, l = lab[i], s = sl[i];
+        let v = a[i], c;
+        if (x > 0 && lab[i - 1] === l) { c = a[i - 1] - 0.5 * (s + sl[i - 1]); if (c > v) v = c; }
+        if (y > 0) {
+          const u = i - w;
+          if (lab[u] === l) { c = a[u] - 0.5 * (s + sl[u]); if (c > v) v = c; }
+          if (x > 0 && lab[u - 1] === l) { c = a[u - 1] - 0.5 * R2 * (s + sl[u - 1]); if (c > v) v = c; }
+          if (x < w - 1 && lab[u + 1] === l) { c = a[u + 1] - 0.5 * R2 * (s + sl[u + 1]); if (c > v) v = c; }
+        }
+        a[i] = v;
+      }
+    }
+    for (let y = h - 1; y >= 0; y--) {
+      for (let x = w - 1; x >= 0; x--) {
+        const i = y * w + x, l = lab[i], s = sl[i];
+        let v = a[i], c;
+        if (x < w - 1 && lab[i + 1] === l) { c = a[i + 1] - 0.5 * (s + sl[i + 1]); if (c > v) v = c; }
+        if (y < h - 1) {
+          const u = i + w;
+          if (lab[u] === l) { c = a[u] - 0.5 * (s + sl[u]); if (c > v) v = c; }
+          if (x < w - 1 && lab[u + 1] === l) { c = a[u + 1] - 0.5 * R2 * (s + sl[u + 1]); if (c > v) v = c; }
+          if (x > 0 && lab[u - 1] === l) { c = a[u - 1] - 0.5 * R2 * (s + sl[u - 1]); if (c > v) v = c; }
+        }
+        a[i] = v;
+      }
+    }
+  }
+  return a;
+}
+
+/** Tiefenfeld (haengt an Tiefenkarte, Trennung und Flug): je Klumpen eine
+ *  eigene Tiefe (Mittel und Gipfel der Tiefenkarte ueber seinem Licht), dazu
+ *  ein Rest des weichen Reliefs; innerhalb einer Insel inhaltsabhaengig
+ *  steilheitsbegrenzt, zwischen Inseln frei. */
+function buildObjField() {
+  if (!objSeg || !state.depthRaw) return;
+  const { w, h, isle, blob, nBlob, bg, L, mat, dust } = objSeg, n = w * h;
+  const raw = state.depthRaw;
+  const D = new Float32Array(n);
+  const sx = raw.w / w, sy = raw.h / h;
+  for (let y = 0; y < h; y++) {
+    const fy = Math.min(raw.h - 1.001, Math.max(0, (y + 0.5) * sy - 0.5)), y0 = Math.floor(fy), ty = fy - y0;
+    for (let x = 0; x < w; x++) {
+      const fx = Math.min(raw.w - 1.001, Math.max(0, (x + 0.5) * sx - 0.5)), x0 = Math.floor(fx), tx = fx - x0;
+      const i00 = y0 * raw.w + x0;
+      D[y * w + x] = (raw.f[i00] * (1 - tx) + raw.f[i00 + 1] * tx) * (1 - ty) +
+        (raw.f[i00 + raw.w] * (1 - tx) + raw.f[i00 + raw.w + 1] * tx) * ty;
+    }
+  }
+  const sw = new Float64Array(nBlob), sd = new Float64Array(nBlob), pk = new Float32Array(nBlob);
+  const cont = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const k = blob[i];
+    const lb = 0.299 * bg[i * 3] + 0.587 * bg[i * 3 + 1] + 0.114 * bg[i * 3 + 2];
+    const c = Math.max(0, L[i] - lb);
+    cont[i] = c;
+    sw[k] += c + 1e-3; sd[k] += (c + 1e-3) * D[i];
+    if (D[i] > pk[k]) pk[k] = D[i];
+  }
+  const P = new Float32Array(nBlob);
+  for (let k = 0; k < nBlob; k++) P[k] = 0.5 * (sd[k] / Math.max(1e-9, sw[k])) + 0.5 * pk[k];
+  const rho = Math.min(1, Math.max(0, state.objSep / 100));
+  const F = new Float32Array(n);
+  for (let i = 0; i < n; i++) F[i] = rho * P[blob[i]] + (1 - rho) * D[i];
+  // Dehnungsgrenze: |dq/dd| ueber den Flug (wie bei der Tiefenkarte), aber
+  // je nach Inhalt - Leere darf sich kraeftig dehnen, helles Detail kaum
+  const G = depthFlightGain();
+  let gMax = 0;
+  for (let k = 0; k <= DEPTH_GAIN_N; k++) gMax = Math.max(gMax, G[k]);
+  if (gMax > 1e-5) {
+    const tmp = new Float32Array(n);
+    const rc = Math.max(1, Math.round(h * 0.004));
+    boxBlurH(cont, tmp, w, h, rc); boxBlurV(tmp, cont, w, h, rc);
+    const sl = new Float32Array(n), base = 1 / (gMax * DEPTH_SAFETY * h);
+    for (let i = 0; i < n; i++) {
+      const t = Math.min(1, Math.max(0, (cont[i] - 0.02) / 0.22));
+      sl[i] = base * (OBJ_K_DARK + (OBJ_K_LIT - OBJ_K_DARK) * t * t * (3 - 2 * t));
+    }
+    objEnvelope(F, sl, isle, w, h);
+  }
+  // Dunkelwolken: VOR dem Leuchten, das sie verdecken (Objektfeld darunter
+  // plus Abstand, gewichtet mit ihrer Bewegungsfreiheit). Der Abstand ist an
+  // den Flug gebunden: hinter der wandernden Wolke wird aufgefuelltes
+  // Leuchten sichtbar, und das traegt nur einen schmalen Streifen
+  let F2 = F;
+  if (dust) {
+    const pop = (state.objDust / 100) * Math.min(0.5, OBJ_DUST_SHIFT / Math.max(1e-4, gMax));
+    F2 = new Float32Array(n);
+    for (let i = 0; i < n; i++) F2[i] = F[i] + pop * dust.att[i];
+  }
+  const f4 = new Float32Array(n * 4);
+  for (let i = 0, j = 0; i < n; i++, j += 4) { f4[j] = F[i]; f4[j + 1] = F2[i]; f4[j + 2] = dust ? dust.zm[i] : 0; f4[j + 3] = mat[i]; }
+  if (texObjF) gl.deleteTexture(texObjF);
+  texObjF = makeTextureFloat(w, h, f4);
+  objSeg.F = F;
+  objFieldRaw = raw; objFieldSig = objFieldSignature();
+}
+
+/** Gitter ueber dem Bild (mit Rand: jenseits der Bildkante gespiegelt),
+ *  Knoten auf Texelmitten des Tiefenfelds. */
+function buildObjMesh(w, h) {
+  const step = matchMedia("(pointer: coarse)").matches ? 3 : 2;
+  if (objMesh && objMesh.w === w && objMesh.h === h && objMesh.step === step) return;
+  if (objMesh) { gl.deleteVertexArray(objMesh.vao); gl.deleteBuffer(objMesh.vb); gl.deleteBuffer(objMesh.ib); }
+  // Innen fein (jeder step-te Texel), im Rand jenseits der Bildkante grob:
+  // der Rand wird nur bei starker seitlicher Verschiebung sichtbar
+  const axis = (len) => {
+    const m = Math.ceil(0.4 * len), cs = step * 4, out = [];
+    for (let v = -Math.ceil(m / cs) * cs; v < 0; v += cs) out.push(v);
+    for (let v = 0; v < len; v += step) out.push(v);
+    for (let v = len; v <= len + m; v += cs) out.push(v);
+    return out;
+  };
+  const xs = axis(w), ys = axis(h);
+  const nx = xs.length, ny = ys.length;
+  const pos = new Float32Array(nx * ny * 2);
+  for (let j = 0, o = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) { pos[o++] = (xs[i] + 0.5) / w; pos[o++] = (ys[j] + 0.5) / h; }
+  }
+  const idx = new Uint32Array((nx - 1) * (ny - 1) * 6);
+  for (let j = 0, o = 0; j < ny - 1; j++) {
+    for (let i = 0; i < nx - 1; i++) {
+      const a = j * nx + i, b = a + 1, c = a + nx, d = c + 1;
+      idx[o++] = a; idx[o++] = b; idx[o++] = c; idx[o++] = b; idx[o++] = d; idx[o++] = c;
+    }
+  }
+  const vao = gl.createVertexArray(), vb = gl.createBuffer(), ib = gl.createBuffer();
+  gl.bindVertexArray(vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, vb);
+  gl.bufferData(gl.ARRAY_BUFFER, pos, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+  objMesh = { vao, vb, ib, count: idx.length, w, h, step };
+}
+
+/** Alles Noetige fuer die Wolken-Objekte bereitstellen; true = einsatzbereit. */
+function ensureObjLayers() {
+  const segOk = () => !!(objSeg && objSeg.tex === texColor && objSeg.flip === objSegSig() && texObjBg && texObjU);
+  const fieldOk = () => !!(texObjF && objFieldRaw === state.depthRaw && objFieldSig === objFieldSignature());
+  if (segOk() && fieldOk()) { buildObjMesh(objSeg.w, objSeg.h); return true; }
+  const run = () => {
+    objTimer = 0;
+    if (!state.starless || !state.depthRaw) return;
+    if (!segOk()) buildObjSeg();
+    buildObjField();
+    if (typeof stageToast === "function") stageToast(null);
+    requestRender();
+  };
+  if (state.exporting) { clearTimeout(objTimer); run(); if (objSeg) buildObjMesh(objSeg.w, objSeg.h); return segOk() && fieldOk(); }
+  if (!objTimer) {
+    // Das Tiefenfeld allein (Flug oder Trennung geaendert) ist schnell: kein Hinweis
+    if (!segOk() && typeof stageToast === "function") stageToast(window.t("objBuilding"));
+    objTimer = setTimeout(run, segOk() ? 120 : 60);
+  }
+  // waehrend des Neuaufbaus das bisherige Feld weiter zeigen, wenn es zum Bild passt
+  if (segOk() && texObjF) { buildObjMesh(objSeg.w, objSeg.h); return true; }
+  return false;
 }
 
 function render(forcedT) {
@@ -5699,14 +6473,12 @@ function render(forcedT) {
   galSyncFromState();
   const galShow = (state.spinShow || state.spinPick) && !state.exporting;
   const galOn = state.spinSpeed !== 0 || galShow || state.galaxies.some((g) => g.auto);
-  // Schichten-Tiefe: nicht zusammen mit drehenden Galaxien oder Mond (dort
-  // fuehrt die starre Drehung bzw. die Kugel); Aufbau entprellt, im Export sofort
-  const ldiWanted = state.ldi && state.starless && state.depthRaw && !galOn && !state.moonMode && !state.objFar;
-  if (ldiWanted && (ldiSig !== ldiSignature() || texLdi.length === 0)) {
-    if (state.exporting) { clearTimeout(ldiTimer); ldiTimer = 0; buildLdiLayers(); }
-    else if (!ldiTimer) { if (typeof stageToast === "function") stageToast(window.t("ldiBuilding")); ldiTimer = setTimeout(() => { ldiTimer = 0; buildLdiLayers(); }, 150); }
-  }
-  const ldiOn = ldiWanted && texLdi.length > 0 && ldiSig === ldiSignature();
+  // Wolken-Objekte: nicht zusammen mit drehenden Galaxien oder Mond (dort
+  // fuehrt die starre Drehung bzw. die Kugel)
+  // (ohne Float-Puffer faellt die Engine auf die bisherige zurueck: das Objektlicht
+  // rechnet mit Vorzeichen und braucht mehr als 8 Bit)
+  const objWanted = state.obj3d && HDR_OK && state.starless && state.depthRaw && !galOn && !state.moonMode && !state.objFar;
+  const objOn = objWanted && ensureObjLayers();
   if (galOn && state.starless && (galBkTex !== texColor || galBkSig !== galGeomSig())) {
     if (state.exporting || !texGalBk) { clearTimeout(galBkTimer); galBkTimer = 0; buildGalaxyBg(); }
     else if (!galBkTimer) galBkTimer = setTimeout(() => { galBkTimer = 0; buildGalaxyBg(); }, 250);
@@ -5714,6 +6486,79 @@ function render(forcedT) {
   if (state.starless && (galStarSig() !== galStarsKey || galStarsTex !== texColor) && !galStarTimer) {
     if (state.exporting) uploadStars();
     else galStarTimer = setTimeout(() => { galStarTimer = 0; uploadStars(); }, 200);
+  }
+  // ---- Pass 0: Wolken-Objekte in eine eigene Ebene (Membran + Gitter) ----
+  if (objOn) {
+    if (!fbLay || fbLay.w !== fbScene.w || fbLay.h !== fbScene.h) {
+      if (fbLay) { gl.deleteFramebuffer(fbLay.fb); gl.deleteTexture(fbLay.tex); }
+      fbLay = makeFbo(fbScene.w, fbScene.h);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbLay.fb);
+    gl.viewport(0, 0, fbLay.w, fbLay.h);
+    gl.disable(gl.BLEND);
+    const texH0 = state.texColorH || 2048;
+    const setCam = (pr) => {
+      u1f(pr, "uViewAspect", viewAspect);
+      u1f(pr, "uImgAspect", imgAspect);
+      u1f(pr, "uZoom", cam.zoom);
+      u1f(pr, "uParallax", parallax);
+      u1f(pr, "uAngle", cam.angle);
+      u1f(pr, "uCover", cover);
+      u2f(pr, "uCenter", cam.cx, cam.cy);
+      u2f(pr, "uTilt", bgTiltX, bgTiltY);
+      u1f(pr, "uDepthRange", depthRange);
+    };
+    gl.useProgram(objBgProg);
+    gl.bindVertexArray(quadVao);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texObjBg);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, texObjF);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, texColor);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, texObjU);
+    gl.activeTexture(gl.TEXTURE0);
+    u1i(objBgProg, "uObjBg", 0);
+    u1i(objBgProg, "uObjF", 1);
+    u1i(objBgProg, "uColor", 2);
+    u1i(objBgProg, "uObjU", 3);
+    setCam(objBgProg);
+    u1f(objBgProg, "uBgDepth", state.objBgDepth === undefined ? 0.05 : state.objBgDepth);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.useProgram(objProg);
+    gl.bindVertexArray(objMesh.vao);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texColor);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, texObjF);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, texObjBg);
+    gl.activeTexture(gl.TEXTURE0);
+    u1i(objProg, "uColor", 0);
+    u1i(objProg, "uObjF", 1);
+    u1i(objProg, "uObjBg", 2);
+    setCam(objProg);
+    u2f(objProg, "uColorTexel", 1 / (state.texColorW || 2048), 1 / texH0);
+    u1f(objProg, "uBicubic", (cover * cam.zoom * fbLay.h) / texH0 > 1.05 ? 1 : 0);
+    u1f(objProg, "uPixH", fbLay.h);
+    u1f(objProg, "uFlow", state.nebFlow / 100);
+    u1f(objProg, "uFlowT", cam.te);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, texObjU);
+    gl.activeTexture(gl.TEXTURE0);
+    u1i(objProg, "uObjU", 3);
+    u1f(objProg, "uDust", 0);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.drawElements(gl.TRIANGLES, objMesh.count, gl.UNSIGNED_INT, 0);
+    // Dunkelwolken als eigene Schicht davor (nur wenn welche gefunden wurden)
+    if (objSeg.dust) {
+      u1f(objProg, "uDust", 1);
+      gl.drawElements(gl.TRIANGLES, objMesh.count, gl.UNSIGNED_INT, 0);
+    }
+    gl.disable(gl.BLEND);
   }
   gl.bindFramebuffer(gl.FRAMEBUFFER, fbScene.fb);
   gl.viewport(0, 0, fbScene.w, fbScene.h);
@@ -5780,7 +6625,7 @@ function render(forcedT) {
   u1f(bgProg, "uBandOn",
     bandSat.some((v) => v !== 1) || bandHue.some((v) => v !== 0) || bandShow ? 1 : 0);
   // Volumetrischer Nebel v2: entstaubtes Leuchten + Grund-Leuchten (3, 4)
-  const volOn = state.vol && texVolL.length === 2 && volBuiltN > 0 && !ldiOn;
+  const volOn = state.vol && texVolL.length === 2 && volBuiltN > 0 && !objOn;
   for (let k = 0; k < 2; k++) {
     gl.activeTexture(gl.TEXTURE3 + k);
     gl.bindTexture(gl.TEXTURE_2D, texVolL[k] || texBlack);
@@ -5799,19 +6644,16 @@ function render(forcedT) {
   u1f(bgProg, "uRelight", (state.relight / 100) * 1.2);
   u1f(bgProg, "uFlow", state.nebFlow / 100);
   u1f(bgProg, "uFlowT", cam.te);
-  // Schichten-Tiefe: Texturen auf den Einheiten 6..13
-  u1i(bgProg, "uLdiN", ldiOn ? texLdi.length : 0);
-  if (ldiOn) {
-    for (let k = 0; k < 8; k++) {
-      gl.activeTexture(gl.TEXTURE6 + k);
-      gl.bindTexture(gl.TEXTURE_2D, texLdi[k] || texClear);
-      u1i(bgProg, "uLdi" + k, 6 + k);
-    }
-    gl.activeTexture(gl.TEXTURE0);
-    const dArr = new Float32Array(8);
-    for (let k = 0; k < ldiDepths.length; k++) dArr[k] = ldiDepths[k];
-    gl.uniform1fv(loc(bgProg, "uLdiD"), dArr);
-  }
+  // Wolken-Objekte: zusammengesetzter Nebel auf Einheit 6
+  gl.activeTexture(gl.TEXTURE6);
+  gl.bindTexture(gl.TEXTURE_2D, objOn ? fbLay.tex : texBlack);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.activeTexture(gl.TEXTURE7);
+  gl.bindTexture(gl.TEXTURE_2D, objOn ? texObjF : texBlack);
+  gl.activeTexture(gl.TEXTURE0);
+  u1i(bgProg, "uLay", 6);
+  u1i(bgProg, "uLayF", 7);
+  u1f(bgProg, "uLayOn", objOn ? 1 : 0);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
   // Bewegungsgrößen numerisch aus der Kamerakurve ableiten (für die
@@ -5936,11 +6778,12 @@ function render(forcedT) {
     u2f(starProg, "uMoonCS", mdS ? mdS.cx : 0, mdS ? 1 - mdS.cy : 0);
     u1f(starProg, "uMoonRS", mdS ? mdS.r : 1);
     u1f(starProg, "uAnchor", state.anchorStars / 100);
+    u1f(starProg, "uObjStars", objOn && objSeg.dust ? 1 : 0);
     u2f(starProg, "uTiltB2", tilt2X + cam2.driftTX * drK, tilt2Y + cam2.driftTY * drK);
     u1f(starProg, "uObjFarS", state.objFar ? 1 : 0);
     u2f(starProg, "uTiltB", bgTiltX, bgTiltY);
     gl.activeTexture(gl.TEXTURE6);
-    gl.bindTexture(gl.TEXTURE_2D, texDepth);
+    gl.bindTexture(gl.TEXTURE_2D, objOn ? texObjF : texDepth);
     gl.activeTexture(gl.TEXTURE7);
     gl.bindTexture(gl.TEXTURE_2D, texColor);
     if (texStarAtlas) {
@@ -6417,8 +7260,9 @@ $("ctlFps").addEventListener("change", () => { state.exportFps = parseInt($("ctl
 bindSlider("ctlCamMass", "outCamMass", "camMass", asInt);
 bindSlider("ctlNebFlow", "outNebFlow", "nebFlow", asInt);
 $("ctlTitleCard").addEventListener("change", () => { state.titleCard = $("ctlTitleCard").checked; });
-$("ctlLdi").addEventListener("change", () => { state.ldi = $("ctlLdi").checked; requestRender(); });
-bindSlider("ctlLdiLayers", "outLdiLayers", "ldiLayers", asInt);
+$("ctlObj3d").addEventListener("change", () => { state.obj3d = $("ctlObj3d").checked; requestRender(); });
+bindSlider("ctlObjSep", "outObjSep", "objSep", asInt);
+bindSlider("ctlObjDust", "outObjDust", "objDust", asInt);
 $("ctlStereo").addEventListener("change", () => { state.stereo = $("ctlStereo").value; });
 bindSlider("ctlEyeSep", "outEyeSep", "eyeSep", asInt);
 bindSlider("ctlExposure", "outExposure", "exposure", asInt);
@@ -7581,7 +8425,13 @@ const STATUS_CHIPS = [
   },
   {
     tab: "tiefe",
-    on: () => state.vol,
+    on: () => state.obj3d,
+    label: () => t("chipObj"),
+    off: () => setCheck("ctlObj3d", false),
+  },
+  {
+    tab: "tiefe",
+    on: () => state.vol && !state.obj3d,
     label: () => t("chipVol"),
     off: () => setCheck("ctlVol", false),
   },
@@ -9038,7 +9888,7 @@ async function loadFile(which, file, preDecoded) {
 const USER_PRESET_GROUPS = {
   camera: ["ctlFlightMode", "ctlDriftDir", "ctlZoom", "ctlSpeed", "ctlEase",
     "ctlEaseMode", "ctlParallax", "ctlDepthBoost", "ctlVol", "ctlVolSpread",
-    "ctlVolDust", "ctlRotation", "ctlOrient",
+    "ctlVolDust", "ctlObj3d", "ctlObjSep", "ctlObjDust", "ctlRotation", "ctlOrient",
     "ctlFrameX", "ctlFrameY", "ctlTiltX", "ctlTiltY", "ctlSwayAmp",
     "ctlSwayTempo", "ctlSwayDir", "ctlSwayRandom", "ctlTiltRamp",
     "ctlTiltRampDir", "ctlFade", "ctlDuration", "ctlLoop", "ctlReverse", "ctlDolly", "ctlZoomDrift", "ctlSpinSpeed",
@@ -10959,6 +11809,8 @@ function diagnosticReport() {
       " | WCS: " + !!state.wcs + " | Gaia: " + (state.gaiaInfo ? state.gaiaInfo.matched + "/" + state.gaiaInfo.total : "nein") +
       " | Galaxien: " + (state.galaxies || []).length + " | Flugplan: " + (state.scenarioOn ? state.waypoints.length + " Wegpunkte" : "aus"),
     "Format: " + state.aspectName + " | Dauer: " + state.duration + " s | Export: " + $("ctlRes").value + "p " + (state.exportFps || 30) + " fps",
+    "Tiefe: " + (state.obj3d ? "Wolken-Objekte" + (objSeg ? " (" + objSeg.w + "x" + objSeg.h + ", " + (objSeg.nIsle - 1) + " Inseln, " + objSeg.nBlob + " Klumpen, " + (objSeg.dust ? objSeg.dust.nDust - 1 : 0) + " Dunkelwolken)" : " (nicht aufgebaut)") + ", Trennung " + state.objSep + ", Staub " + state.objDust : (state.vol ? "volumetrisch" : "klassisch")) +
+      " | Karte: " + (state.aiDepth ? "KI" : state.customDepth ? "eigene" : "automatisch"),
     "Stil: " + buildStyleCode(),
     "Letzter Fehler: " + (lastAppError || "keiner"),
   ];

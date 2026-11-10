@@ -11,7 +11,9 @@ on:
 
 jobs:
   smoke:
-    runs-on: ubuntu-latest
+    # Fest auf 24.04: ubuntu-latest zeigt inzwischen auf 26.04, dafuer liefert
+    # die hier festgeschriebene Playwright-Version keinen Chromium
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout

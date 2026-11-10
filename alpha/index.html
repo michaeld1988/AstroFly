@@ -10,7 +10,7 @@
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <title>AstroFly Alpha – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-10-31-a7">
+<link rel="stylesheet" href="style.css?v=2026-11-10-a8">
 </head>
 <body>
 
@@ -473,25 +473,37 @@
       <p class="tip" id="depthCustomStatus" hidden></p>
       <button id="btnDepthClear" class="secondary" hidden data-i18n="depthClear">Remove custom depth map</button>
       <details class="adv" open>
+        <summary><span data-i18n="advObj">Cloud objects</span><span class="grow"></span><span class="badge" data-i18n="newBadge">New</span></summary>
+        <p class="tip" data-i18n="objTip">The nebula no longer bends like one rubber sheet: its
+        clouds keep their shape and move against each other, only the dark space between them
+        stretches. Dark clouds in front of bright nebula become objects of their own and slide
+        across the glow behind them. At rest the image is exactly your photo.</p>
+        <label class="check">
+          <input type="checkbox" id="ctlObj3d" checked>
+          <span data-i18n="obj3d">Cloud objects (3D engine v3)</span>
+          <button class="qm" data-help="hintObj3d">?</button>
+        </label>
+        <p class="tip hint2" id="hintObj3d" hidden data-i18n="obj3dHint">Splits the nebula into
+        clouds. Each cloud gets its own depth and stays nearly rigid.</p>
+        <label class="slider">
+          <span><span data-i18n="objSep">Object separation</span> <button class="qm" data-help="hintObjSep">?</button> <output id="outObjSep">70</output></span>
+          <input type="range" id="ctlObjSep" min="0" max="100" step="1" value="70">
+        </label>
+        <p class="tip hint2" id="hintObjSep" hidden data-i18n="objSepHint">How strictly each cloud
+        keeps one depth of its own.</p>
+        <label class="slider">
+          <span><span data-i18n="objDust">Dark clouds in front</span> <button class="qm" data-help="hintObjDust">?</button> <output id="outObjDust">50</output></span>
+          <input type="range" id="ctlObjDust" min="0" max="100" step="1" value="50">
+        </label>
+        <p class="tip hint2" id="hintObjDust" hidden data-i18n="objDustHint">How far dark clouds
+        float in front of the glow they cover.</p>
+      </details>
+      <details class="adv" open>
         <summary><span data-i18n="advVol">Volumetric nebula</span><span class="grow"></span><span class="badge" data-i18n="expBadge">Experimental</span></summary>
         <p class="tip" data-i18n="volTip">The nebula flies as three see-through
         layers, each on its own clean depth: a soft base glow behind, the bright structures
         on top and the dark dust lanes slightly in front. At rest the image is exactly your
         photo, in motion the layers slide over each other like real gas.</p>
-        <label class="check">
-          <input type="checkbox" id="ctlLdi">
-          <span data-i18n="ldi">Layered depth (multiplane, experimental)</span>
-          <button class="qm" data-help="hintLdi">?</button>
-        </label>
-        <p class="tip hint2" id="hintLdi" hidden data-i18n="ldiHint">Experimental. Splits the
-        image into depth layers along the depth map and fills in what each layer hides behind
-        the nearer ones; the layers then slide rigidly over each other. Works for images with
-        distinct depth planes; on smooth, brightness-based depth maps it slices the nebula into
-        visible rings – then leave it off.</p>
-        <label class="slider">
-          <span><span data-i18n="ldiLayers">Number of layers</span> <output id="outLdiLayers">5</output></span>
-          <input type="range" id="ctlLdiLayers" min="3" max="8" step="1" value="5">
-        </label>
         <label class="check">
           <input type="checkbox" id="ctlVol" checked>
           <span data-i18n="vol">Volumetric nebula (glow, structures, dust)</span>
@@ -1472,8 +1484,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-10-31-a7"></script>
-<script src="objectinfo.js?v=2026-10-31-a7"></script>
-<script src="app.js?v=2026-10-31-a7"></script>
+<script src="i18n.js?v=2026-11-10-a8"></script>
+<script src="objectinfo.js?v=2026-11-10-a8"></script>
+<script src="app.js?v=2026-11-10-a8"></script>
 </body>
 </html>
