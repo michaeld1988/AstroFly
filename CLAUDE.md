@@ -147,7 +147,20 @@ aufgebaut (vorher konnte ein Bild im Export dunkel werden).
   (`scenarioSmoothTable`), Ease „cine“/„settle“, Presets Dreiakter/Contact/
   Gravity/Tree of Life (`plan:`-Funktionen), Titelkarte, Diagnosebericht.
   Technik: `bgFS` schreibt die Tiefe in den Alphakanal der Szene (`dScr`),
-  `compFS` nutzt sie für Dunst und Schärfentiefe
+  `compFS` nutzt sie für Dunst und Schärfentiefe.
+  **Wolken-Objekte (Tiefen-Engine v3, seit a8, ersetzt die Schichten-Tiefe):**
+  `buildObjSeg` zerlegt das Starless in Klumpen/Inseln (Wasserscheiden der
+  geglätteten Helligkeit, Inseln = alles über dem Himmel Zusammenhängende)
+  und spannt eine Membran durch die Nähte; `objFindDust` findet Dunkelwolken
+  (in ≥ 3 von 4 Richtungen von Hellem eingefasst) samt gespiegelter Füllung;
+  `buildObjField` baut das Tiefenfeld (Klumpen-Tiefen, inhaltsabhängige
+  Steilheitsgrenze `objEnvelope`, Staub-Abstand an den Flug gebunden).
+  Gerendert wird als verschobenes Gitter (`objVS`/`objFS`, Pass 0 in
+  `fbLay`): Membran, Objekte, Dunkelwolken; `bgFS` übernimmt das Ergebnis
+  über `uLay`. Lehren aus der Entwicklung: Schnitte nur dort, wo kein Licht
+  ist (sonst Kanten); freigelegte Füllung fällt sofort auf, deshalb
+  benachbarte Wolken elastisch koppeln und Staub nur wenig verschieben;
+  weiche Überblendungen zwischen Ebenen erzeugen Doppelbilder
 - `tests/run.js` – Smoke-Tests; `tools/stamp-version.sh` – Cache-Busting beim Deploy
 - `demo/` – Orion-Demobilder + `orion.wcs` (Plate-Solve-Lösung, wird vom
   Demo-Button automatisch mitgeladen); `vendor/` – UTIF, mp4-muxer u. a.

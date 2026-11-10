@@ -108,8 +108,26 @@ async function testChannel(browser, base, channel) {
         film: !!document.getElementById("ctlHalation") && !!document.getElementById("ctlDof"),
         sw: !!(await navigator.serviceWorker.getRegistration()),
         canvasLabel: document.getElementById("glcanvas").getAttribute("aria-label"),
+        obj: typeof objSeg !== "undefined" && !!objSeg && !!texObjF && state.obj3d === true,
       }));
       check(channel, "Alpha: Film-Panel, Service Worker, Canvas-Name", a.film && a.sw && !!a.canvasLabel, JSON.stringify(a));
+      // Wolken-Objekte: aufgebaut, Ruhebild = Foto (gegen die klassische Engine), Flugbild ohne GL-Fehler
+      const o = await page.evaluate(async () => {
+        const grab = () => { const px = new Uint8Array(640 * 360 * 4); gl.readPixels(0, 0, 640, 360, gl.RGBA, gl.UNSIGNED_BYTE, px); return px; };
+        const set = (on) => { const el = document.getElementById("ctlObj3d"); el.checked = on; el.dispatchEvent(new Event("change", { bubbles: true })); };
+        canvas.width = 640; canvas.height = 360;
+        applyFlightPreset("nebGentle");
+        const sc = state.starCount;
+        state.starCount = 0;
+        set(true); render(0); gl.finish(); const a = grab();
+        render(state.duration / 4); gl.finish(); const err = gl.getError(); const m = grab();
+        set(false); state.vol = false; render(0); gl.finish(); const b = grab();
+        set(true); state.vol = true; state.starCount = sc;
+        let d = 0, mv = 0;
+        for (let i = 0; i < a.length; i += 4) { d += Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]); mv += Math.abs(a[i] - m[i]); }
+        return { built: !!objSeg && !!texObjF, isles: objSeg ? objSeg.nIsle : 0, restDiff: d / (640 * 360 * 3), moved: mv / (640 * 360), err };
+      });
+      check(channel, "Alpha: Wolken-Objekte (Ruhebild = Foto, Flug rendert)", a.obj && o.built && o.err === 0 && o.restDiff < 1.5 && o.moved > 0.05, JSON.stringify(o));
     }
     check(channel, "Keine JS-Fehler insgesamt", errors.length === 0, errors.slice(0, 2).join(" | "));
   } catch (e) {
