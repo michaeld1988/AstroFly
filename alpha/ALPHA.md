@@ -75,3 +75,19 @@ Ebenfalls a13, alle Kanaele: Der Gaia-Abgleich wertet einen
 Datenbankfehler des VizieR-Spiegels nicht mehr als "keine Sterne". Der
 Harvard-Spiegel meldet solche Fehler zeitweise als gueltige leere Antwort;
 die Abfrage geht dann an den naechsten Server.
+
+Stand a14: Look-Regler wie in Lightroom gruppiert. Die Bereiche "Effects"
+und "Film" sind zu einem Bereich "Bearbeiten" zusammengelegt, mit den
+Gruppen und der Reihenfolge des Bearbeiten-Panels von Lightroom:
+- Licht: Belichtung, Kontrast, Filmische Kurve, Schwaerzen anheben
+- Farbe: Temperatur, Toenung, Saettigung, Split-Tone
+- Effekte: Struktur, Klarheit, Tiefendunst, Dunstfarbe, Vignette, Filmkorn,
+  Bloom, Halation
+- Details: Schaerfe
+- Optik: Anamorphe Flares, Warp, Bewegungsunschaerfe, Kinobalken
+- Nebel & Sternlicht (gibt es in Lightroom nicht): Nebel-Stroemung, Roetung
+  hinter Staub, Sternlicht auf dem Nebel
+Der Look-Preset steht oben. Kein Regler ist entfallen oder umbenannt,
+Projekte, Presets und Stil-Codes passen weiter. Auf- und zugeklappte
+Gruppen werden gemerkt. Eigene Presets speichern in der Gruppe "Look" jetzt
+auch die frueheren Film-Regler mit.

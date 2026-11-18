@@ -284,6 +284,32 @@ async function testChannel(browser, base, channel) {
       check(channel, "Alpha: Titelkarte bleibt im Hochformat im Bild", f.mid > 150 && f.edge < 60, JSON.stringify({ rand: f.edge, mitte: f.mid }));
       check(channel, "Alpha: alte Projekte und Stil-Codes mit entfernten Reglern laden", f.oldOk && f.tempSet === "12" && f.scSet === "ctlTemp" && f.scTemp === "15",
         JSON.stringify({ ok: f.oldOk, temp: f.tempSet, set: f.scSet, stil: f.scTemp }));
+      // Look -> Bearbeiten (a14): Gruppen und Reihenfolge wie in Lightroom, kein Regler verloren,
+      // der alte Tab "film" fuehrt hierher, auf- und zugeklappte Gruppen werden gemerkt
+      const lk = await page.evaluate(async () => {
+        const sec = document.querySelector('section[data-tab="look"]');
+        const dets = [...sec.querySelectorAll(":scope > details.adv")];
+        const panels = dets.map((d) => [d.querySelector("summary").dataset.i18n, [...d.querySelectorAll("input,select")].map((e) => e.id).join(",")]);
+        const subs = TAB_GROUPS.find((g) => g.id === "look").subs.map((x) => x[0]).join(",");
+        const det = dets[3];
+        det.open = false; await new Promise((r) => setTimeout(r, 80));
+        const closed = (JSON.parse(localStorage.getItem("astrofly-panels") || "{}")).panDetail;
+        det.open = true; await new Promise((r) => setTimeout(r, 80));
+        const reopened = (JSON.parse(localStorage.getItem("astrofly-panels") || "{}")).panDetail;
+        return { panels, subs, film: !!document.querySelector('section[data-tab="film"]'), alias: TAB_ALIAS.film, closed, reopened };
+      });
+      const wantPanels = [
+        ["panLight", "ctlExposure,ctlContrast,ctlFilmic,ctlLift"],
+        ["panColor", "ctlTemp,ctlTint,ctlSaturation,ctlSplitTone"],
+        ["panEffects", "ctlStructure,ctlClarity,ctlHaze,ctlHazeTint,ctlVignette,ctlGrain,ctlBloom,ctlHalation"],
+        ["panDetail", "ctlSharpen"],
+        ["panOptics", "ctlAnamorph,ctlWarp,ctlMblur,ctlMblurStars,ctlLetterbox"],
+        ["panScene", "ctlNebFlow,ctlExtinct,ctlRelight"],
+      ];
+      check(channel, "Alpha: Look-Regler in Lightroom-Gruppen (Licht, Farbe, Effekte, Details, Optik)",
+        JSON.stringify(lk.panels) === JSON.stringify(wantPanels) && lk.subs === "sterne,look,nebel,presets" && !lk.film && lk.alias === "look" &&
+        lk.closed === false && lk.reopened === true,
+        JSON.stringify({ gruppen: lk.panels.map((x) => x[0]), subs: lk.subs, film: lk.film, alias: lk.alias, zu: lk.closed, auf: lk.reopened }));
     }
     check(channel, "Keine JS-Fehler insgesamt", errors.length === 0, errors.slice(0, 2).join(" | "));
   } catch (e) {
