@@ -48,3 +48,21 @@ Diagnosebericht nennt unter "Export-Farbe", welcher Weg benutzt wurde.
 Stand a11: Objekt-Erkennung und Gaia-Sterndaten weichen automatisch auf die
 Spiegelserver des CDS aus (Harvard, IDIA), wenn Strassburg nicht antwortet.
 Gilt fuer alle drei Kanaele.
+
+Stand a12: Film-Panel aufgeraeumt und Flares neu gebaut.
+- Entfernt, weil ungenutzt: Korngroesse, Kornfarbe, Bildstand, Flimmern,
+  Verschluss, Schaerfentiefe (samt Fokus am Anfang und am Ende und
+  anamorphem Bokeh). Das Korn hat jetzt feste Werte, die
+  Bewegungsunschaerfe laeuft wieder allein ueber ihren Regler. Alte
+  Projekte, Presets und Stil-Codes laden weiter.
+- Anamorphe Flares neu gebaut. Bisher bekam jeder mittelhelle Stern
+  denselben duennen blauen Strich. Jetzt bekommen nur die hellsten Sterne
+  einen Streifen, und je heller der Stern, desto laenger. Der Streifen ist
+  an der Quelle dicker, laeuft spitz aus, hat nahe am Stern dessen Farbe
+  und wird zum Ende hin blau. Er kommt vor der Filmkurve dazu und bekommt
+  Korn und Vignette wie der Rest. Vorschau und Export zeigen denselben
+  Streifen, mit Foto-Abbildern, prozeduralen Sternen und im Kino-Modus.
+- Farben: neue Regler Temperatur und Toenung (Look -> Farbe und Detail).
+- Titelkarte: passt sich der Bildbreite an (Hochformat), lange Namen
+  brechen auf zwei Zeilen um.
+- Die Statuszeile unter der Objektliste wechselt beim Sprachwechsel mit.

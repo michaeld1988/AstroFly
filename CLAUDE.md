@@ -141,13 +141,32 @@ aufgebaut (vorher konnte ein Bild im Export dunkel werden).
 - `beta/` – vollständige Kopie der App für den Beta-Kanal
 - `alpha/` – privater Teststand (Kopie der Beta plus Alpha-Features):
   PWA (`manifest.webmanifest`, `sw.js`, `icons/`), Untertab Look → Film
-  (Halation, Korn v2, Schwärzen, Split-Tone, Bildstand, Flimmern,
-  Verschluss; Tiefendunst, Schärfentiefe mit Fokusfahrt, anamorphe Optik,
-  Kinobalken, Nebel-Strömung; Extinktion, Sternlicht), Kamera-Trägheit
+  (Halation, Schwärzen, Split-Tone; Tiefendunst, anamorphe Flares,
+  Kinobalken, Nebel-Strömung; Extinktion, Sternlicht), Temperatur und
+  Tönung bei den Farbreglern (`wbGains`, wirkt vor der Filmkurve),
+  Kamera-Trägheit
   (`scenarioSmoothTable`), Ease „cine“/„settle“, Presets Dreiakter/Contact/
   Gravity/Tree of Life (`plan:`-Funktionen), Titelkarte, Diagnosebericht.
   Technik: `bgFS` schreibt die Tiefe in den Alphakanal der Szene (`dScr`),
-  `compFS` nutzt sie für Dunst und Schärfentiefe.
+  `compFS` nutzt sie für den Dunst.
+  **Anamorphe Flares (seit a12)** sind ein Bild-Effekt statt eines Strichs
+  im Stern-Sprite: eine Quell-Ebene auf grobem Raster, dann eine
+  Oktavkette, die nur waagerecht halbiert und weichzeichnet (`flareBlurFS`,
+  `flareAddFS`); `compFS` addiert das Ergebnis vor der Filmkurve. Quelle
+  bei Stern-Partikeln: `starProg` zeichnet mit `uFlareSrc` weiche Punkte,
+  gewichtet nach Helligkeitsrang (`aBright`). Quelle im Kino-Modus
+  (Sternmaske als Bild): `flareDownFS` mittelt die Sternebene,
+  `flareBrightFS` setzt die Schwelle auf den geglätteten Wert. Stellwerte
+  in `FLARE`. Alle Maße hängen an `sqrt(w*h)/1440`, damit Vorschau und
+  Export denselben Streifen zeigen (gemessen 540p bis 4K). Lehren: (1)
+  Eine Schwelle auf Pixelwerte ist auflösungsabhängig, weil kleine Sterne
+  in 4K voll aufgelöst sind und in der Vorschau nicht. (2) Eine Schwelle
+  auf das gerenderte Sternbild hängt am Sternmodus: prozedurale Sterne
+  sind viel heller als Foto-Abbilder und zogen breite, ausgebrannte
+  Balken. Der Helligkeitsrang ist davon unabhängig. Entfernt in a12, weil
+  ungenutzt: Korngröße, Kornfarbe, Bildstand, Flimmern, Verschluss,
+  Schärfentiefe mit Fokusfahrt und Bokeh. Alte Projekte, Presets und
+  Stil-Codes laden weiter, ihre Werte für diese Regler werden übergangen.
   **Wolken-Objekte (Tiefen-Engine v3, seit a8, ersetzt die Schichten-Tiefe):**
   `buildObjSeg` zerlegt das Starless in Klumpen/Inseln (Wasserscheiden der
   geglätteten Helligkeit, Inseln = alles über dem Himmel Zusammenhängende)
