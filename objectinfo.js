@@ -179,6 +179,45 @@ async function fetchTapCsv(url, timeoutMs = 45000, tries = 3) {
   throw lastErr;
 }
 
+// CDS-Dienste mit ihren offiziellen Spiegelservern (Harvard, IDIA Suedafrika).
+// Faellt Strassburg aus - HTTP-Fehler, keine Verbindung oder eine HTML-Seite
+// statt Daten -, geht dieselbe Abfrage an den naechsten Spiegel. Der Server,
+// der zuletzt geantwortet hat, wird fuer die Sitzung gemerkt, damit nicht
+// jede Abfrage erneut am ausgefallenen Server wartet.
+// (Anlass: Sicherheitsvorfall beim CDS im November 2026, SIMBAD und VizieR
+// antworteten tagelang nur mit "404 Page unavailable" ohne CORS-Header.)
+const CDS_MIRRORS = {
+  simbad: ["https://simbad.cds.unistra.fr", "https://simbad.cfa.harvard.edu", "https://simbad.idia.ac.za"],
+  vizier: ["https://vizier.cds.unistra.fr", "https://vizier.cfa.harvard.edu", "https://vizier.idia.ac.za"],
+};
+const cdsHost = { simbad: 0, vizier: 0 }; // Index des zuletzt erreichbaren Servers
+
+/** Abfrage an einen CDS-Dienst (path beginnt mit "/"), mit Wechsel auf die Spiegel. */
+async function fetchCds(service, path, timeoutMs = 45000) {
+  const hosts = CDS_MIRRORS[service];
+  let lastErr;
+  // zwei Runden ueber alle Server: die zweite faengt kurze Aussetzer ab
+  for (let round = 0; round < 2; round++) {
+    if (round) await new Promise((r) => setTimeout(r, 1500));
+    const first = cdsHost[service];
+    for (let k = 0; k < hosts.length; k++) {
+      const idx = (first + k) % hosts.length;
+      try {
+        const txt = await fetchTapCsv(hosts[idx] + path, timeoutMs, 1);
+        // Fehlerseiten kommen als HTML, Daten nie
+        if (/^\s*<(!doctype|html)/i.test(txt)) throw Object.assign(new Error("HTML statt Daten"), { server: true, status: 502 });
+        cdsHost[service] = idx;
+        return txt;
+      } catch (e) {
+        // Zeitlimit auch beim letzten Server: nicht noch eine Runde warten
+        if (e.timeout && k === hosts.length - 1) throw e;
+        lastErr = e;
+      }
+    }
+  }
+  throw lastErr;
+}
+
 function normObjId(id) {
   return id.replace(/\s+/g, "").toUpperCase();
 }
@@ -268,7 +307,7 @@ function simbadConeUrl(fields, ra, dec, radiusDeg, extra, top) {
     `WHERE 1=CONTAINS(POINT('ICRS',b.ra,b.dec),` +
     `CIRCLE('ICRS',${ra.toFixed(6)},${dec.toFixed(6)},${radiusDeg.toFixed(4)})) ` +
     extra + ` ORDER BY majaxis DESC`;
-  return "https://simbad.cds.unistra.fr/simbad/sim-tap/sync?REQUEST=doQuery&LANG=ADQL&FORMAT=csv&QUERY=" +
+  return "/simbad/sim-tap/sync?REQUEST=doQuery&LANG=ADQL&FORMAT=csv&QUERY=" +
     encodeURIComponent(adql);
 }
 
@@ -291,7 +330,7 @@ async function querySimbad(ra, dec, radiusDeg) {
     simbadConeUrl(fields, ra, dec, radiusDeg, namedFilter, 20),
   ];
   const parts = await Promise.all(urls.map((u) =>
-    fetchTapCsv(u).then((r) => r, () => "")));
+    fetchCds("simbad", u).then((r) => r, () => "")));
   const CAT_RANK = { M: 0, NGC: 1, IC: 2, "SH2-": 3 };
   const byMain = new Map(); // main_id -> Objekt mit bestem Katalog-Alias
   for (const part of parts) {
@@ -333,9 +372,9 @@ async function querySimbadStars(ra, dec, radiusDeg) {
     `CIRCLE('ICRS',${ra.toFixed(6)},${dec.toFixed(6)},${radiusDeg.toFixed(4)})) ` +
     `AND ((b.otype_txt = 'WR*' AND i.id LIKE 'WR %') ` +
     `OR (i.id LIKE 'NAME %' AND f.V <= 4.0)) ORDER BY vmag`;
-  const url = "https://simbad.cds.unistra.fr/simbad/sim-tap/sync?REQUEST=doQuery&LANG=ADQL&FORMAT=csv&QUERY=" +
+  const url = "/simbad/sim-tap/sync?REQUEST=doQuery&LANG=ADQL&FORMAT=csv&QUERY=" +
     encodeURIComponent(adql);
-  const lines = (await fetchTapCsv(url)).trim().split("\n");
+  const lines = (await fetchCds("simbad", url)).trim().split("\n");
   const byMain = new Map();
   for (let i = 1; i < lines.length; i++) {
     const f = csvFields(lines[i]);
@@ -370,11 +409,11 @@ async function queryStarParams(stars) {
     while (next < stars.length) {
       const s = stars[next++];
       const coord = `${s.ra.toFixed(6)} ${s.dec >= 0 ? "+" : ""}${s.dec.toFixed(6)}`;
-      const url = "https://vizier.cds.unistra.fr/viz-bin/asu-tsv?-source=I/355/paramp" +
+      const url = "/viz-bin/asu-tsv?-source=I/355/paramp" +
         `&-c=${encodeURIComponent(coord)}&-c.rd=0.0015&-out.max=4` +
         "&-out=RA_ICRS,DE_ICRS,Teff,Dist,Rad,Mass-Flame,Age-Flame";
       try {
-        const txt = await fetchTapCsv(url, 20000, 2);
+        const txt = await fetchCds("vizier", url, 20000);
         for (const l of txt.split("\n")) if (l && l[0] !== "#") rows.push(l.split("\t").map((x) => x.trim()));
       } catch { /* optional: dieser Stern bleibt ohne Zusatzinfos */ }
     }

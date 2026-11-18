@@ -3187,9 +3187,9 @@ async function queryGaia(wcs, nax1, nax2, maxStars, onProgress) {
     bprp: bprp(p), pmra: p[5].trim() === "" ? NaN : +p[5], pmde: p[6].trim() === "" ? NaN : +p[6] });
   const viaVizier = async (tl) => {
     const coord = `${tl.ra.toFixed(6)} ${tl.dec >= 0 ? "+" : ""}${tl.dec.toFixed(6)}`;
-    const txt = await fetchTapCsv("https://vizier.cds.unistra.fr/viz-bin/asu-tsv?-source=I/355/gaiadr3" +
+    const txt = await fetchCds("vizier", "/viz-bin/asu-tsv?-source=I/355/gaiadr3" +
       `&-c=${encodeURIComponent(coord)}&-c.bd=${tl.w.toFixed(4)}x${tl.h.toFixed(4)}` +
-      `&-out=RA_ICRS,DE_ICRS,Gmag,Plx,BP-RP,pmRA,pmDE&-sort=Gmag&-out.max=${perTile}&Plx=%3E0.05`, 75000, 2);
+      `&-out=RA_ICRS,DE_ICRS,Gmag,Plx,BP-RP,pmRA,pmDE&-sort=Gmag&-out.max=${perTile}&Plx=%3E0.05`, 75000);
     // Auch eine leere Kachel trägt den Tabellenkopf - ohne ihn ging etwas schief
     if (!/^#RESOURCE=/m.test(txt)) throw Object.assign(new Error("ASU-Fehler"), { server: true, status: 500 });
     return txt.split("\n").filter((l) => l && l[0] !== "#").map((l) => l.split("\t"))
@@ -3212,7 +3212,7 @@ async function queryGaia(wcs, nax1, nax2, maxStars, onProgress) {
   // Höchstens 6 Abfragen gleichzeitig (so viele Verbindungen öffnet der
   // Browser ohnehin pro Server)
   const seen = new Set(), out = [];
-  let done = 0, okTiles = 0, err = null, next = 0, vizierOk = false, vizierDown = false;
+  let done = 0, okTiles = 0, err = null, next = 0, vizierOk = false, vizierDown = false, vizierFails = 0;
   const worker = async () => {
     while (next < tiles.length) {
       const tl = tiles[next++];
@@ -3221,7 +3221,11 @@ async function queryGaia(wcs, nax1, nax2, maxStars, onProgress) {
       // übrigen Kacheln gleich nach Heidelberg, statt jede für sich zu warten.
       // Hat CDS schon geliefert, war es nur eine besonders dichte Kachel.
       if (!vizierDown) {
-        try { rows = await viaVizier(tl); vizierOk = true; } catch (e) { err = e; if (e.timeout && !vizierOk) vizierDown = true; }
+        try { rows = await viaVizier(tl); vizierOk = true; } catch (e) {
+          err = e;
+          // auch ohne Zeitlimit: antwortet VizieR samt Spiegeln zweimal nicht, direkt nach Heidelberg
+          if (!vizierOk && (e.timeout || ++vizierFails >= 2)) vizierDown = true;
+        }
       }
       if (!rows) try { rows = await viaGavo(tl); } catch (e) { if (!err || e.server || e.timeout) err = e; }
       if (rows) {

@@ -92,6 +92,14 @@ async function testChannel(browser, base, channel) {
       // Last ist (Ausweichserver braucht laenger) - ein echter Defekt liegt
       // deutlich darunter (vor dem CORS-Fix: 0 %)
       check(channel, "Gaia-Abgleich >= 50 % (echter Server)", ratio >= 0.5, g.info ? `${g.info.matched}/${g.info.total} (${Math.round(ratio * 100)} %)` : g.status);
+      // Objekt-Erkennung gegen den echten Server: SIMBAD in Strassburg oder,
+      // wenn der ausfaellt, einer der Spiegel (Harvard, IDIA)
+      await page.evaluate(() => document.getElementById("btnObjects").click());
+      await page.waitForFunction(() => !document.getElementById("btnObjects").disabled, null, { timeout: 180000 });
+      const ob = await page.evaluate(() => ({ ids: (state.objChoices || []).map((o) => o.id),
+        status: document.getElementById("objStatus").textContent, host: typeof cdsHost !== "undefined" ? cdsHost : null }));
+      check(channel, "Objekt-Erkennung findet M 42 (SIMBAD oder Spiegel)", ob.ids.includes("M 42"),
+        `${ob.ids.slice(0, 6).join(", ")} | ${ob.status} | Server ${JSON.stringify(ob.host)}`);
     }
 
     // Offline-Export (2 s, klein): liefert eine Datei
