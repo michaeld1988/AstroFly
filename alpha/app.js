@@ -8381,12 +8381,13 @@ const TAB_GROUPS = [
   { id: "projekte", subs: [["projekte", "subProjekte"]] },
   { id: "bild", subs: [["bilder", "subLaden"], ["tiefe", "subTiefe"], ["spiegel", "subSpiegel"]] },
   { id: "kamera", subs: [["kamera", "subFlug"], ["szenario", "subFlugplan"], ["galaxie", "subGalaxie"]] },
-  { id: "look", subs: [["sterne", "subSterne"], ["look", "subEffekte"], ["film", "subFilm"], ["nebel", "subNebel"], ["presets", "subStile"]] },
+  { id: "look", subs: [["sterne", "subSterne"], ["look", "subEdit"], ["nebel", "subNebel"], ["presets", "subStile"]] },
   { id: "daten", subs: [["gaia", "subGaia"], ["objekte", "subObjekte"]] },
   { id: "export", subs: [["export", "subExport"]] },
 ];
-// Alte gespeicherte Tab-Namen (vor dem Gruppen-Umbau) auf die neuen abbilden
-const TAB_ALIAS = { sci: "gaia" };
+// Alte gespeicherte Tab-Namen auf die neuen abbilden ("film" ging in a14 im
+// Bearbeiten-Bereich auf)
+const TAB_ALIAS = { sci: "gaia", film: "look" };
 
 function groupOfTab(tab) {
   for (const g of TAB_GROUPS) {
@@ -8680,6 +8681,25 @@ function setupCtlHierarchy() {
   refreshChangeMarks();
 }
 setupCtlHierarchy();
+
+// Auf- und zugeklappte Gruppen merken, wie die Bedienfelder in Lightroom:
+// Wer eine Gruppe nicht braucht, klappt sie einmal zu, und sie bleibt zu
+{
+  const KEY = "astrofly-panels";
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY)) || {}; } catch { saved = {}; }
+  for (const det of document.querySelectorAll("#panelbody details.adv")) {
+    const sum = det.querySelector(":scope > summary");
+    const inner = sum && !sum.dataset.i18n ? sum.querySelector("[data-i18n]") : null;
+    const id = sum && (sum.dataset.i18n || (inner && inner.dataset.i18n));
+    if (!id) continue;
+    if (typeof saved[id] === "boolean") det.open = saved[id];
+    det.addEventListener("toggle", () => {
+      saved[id] = det.open;
+      try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch { /* privates Fenster */ }
+    });
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Statusband ueber der Vorschau: zeigt, welche Zustaende gerade auf das Bild
@@ -10193,7 +10213,10 @@ const USER_PRESET_GROUPS = {
     "ctlSpikes", "ctlSpikeArms", "ctlSpikeRot", "ctlOrganic"],
   look: ["ctlBloom", "ctlMblur", "ctlMblurStars", "ctlWarp", "ctlVignette", "ctlGrain", "ctlFilmic",
     "ctlExposure", "ctlContrast", "ctlSaturation", "ctlTemp", "ctlTint", "ctlClarity",
-    "ctlStructure", "ctlSharpen", "ctlH2Det", "ctlH2Width", "ctlH2Sat",
+    "ctlStructure", "ctlSharpen",
+    // seit a14 im selben Bearbeiten-Bereich: gehoeren zum Look dazu
+    "ctlLift", "ctlSplitTone", "ctlHaze", "ctlHazeTint", "ctlHalation", "ctlAnamorph",
+    "ctlLetterbox", "ctlNebFlow", "ctlExtinct", "ctlRelight", "ctlH2Det", "ctlH2Width", "ctlH2Sat",
     "ctlH2Hue", "ctlO3Det", "ctlO3Width", "ctlO3Sat", "ctlO3Hue", "ctlS2Det",
     "ctlS2Width", "ctlS2Sat", "ctlS2Hue", "ctlBandFeather", "ctlLabelStyle"],
   format: ["ctlRes"],

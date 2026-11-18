@@ -140,11 +140,14 @@ aufgebaut (vorher konnte ein Bild im Export dunkel werden).
   Akzent #8fb0ff, zweiter Akzent #b07aff)
 - `beta/` – vollständige Kopie der App für den Beta-Kanal
 - `alpha/` – privater Teststand (Kopie der Beta plus Alpha-Features):
-  PWA (`manifest.webmanifest`, `sw.js`, `icons/`), Untertab Look → Film
-  (Halation, Schwärzen, Split-Tone; Tiefendunst, anamorphe Flares,
-  Kinobalken, Nebel-Strömung; Extinktion, Sternlicht), Temperatur und
-  Tönung bei den Farbreglern (`wbGains`, wirkt vor der Filmkurve),
-  Kamera-Trägheit
+  PWA (`manifest.webmanifest`, `sw.js`, `icons/`), Untertab Look →
+  Bearbeiten (seit a14, `data-tab="look"`, ersetzt „Effects" und „Film")
+  mit den Klappgruppen des Lightroom-Bearbeiten-Panels in dessen
+  Reihenfolge: Licht, Farbe, Effekte, Details, Optik, dazu am Ende „Nebel &
+  Sternlicht" für alles ohne Lightroom-Entsprechung. Neue Look-Regler dort
+  einsortieren, wo Lightroom sie hätte. Klappzustände merkt
+  `localStorage["astrofly-panels"]`. Temperatur und Tönung: `wbGains`,
+  wirkt vor der Filmkurve. Kamera-Trägheit
   (`scenarioSmoothTable`), Ease „cine“/„settle“, Presets Dreiakter/Contact/
   Gravity/Tree of Life (`plan:`-Funktionen), Titelkarte, Diagnosebericht.
   Technik: `bgFS` schreibt die Tiefe in den Alphakanal der Szene (`dScr`),
