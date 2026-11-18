@@ -182,6 +182,11 @@ aufgebaut (vorher konnte ein Bild im Export dunkel werden).
 - SIMBAD-TAP-Eigenheiten: `ORDER BY` ohne Tabellenpräfix (Spalten-Alias
   nutzen), `galdim_majaxis` darf NULL sein, Idents haben doppelte
   Leerzeichen („NGC  6960")
+- CDS-Dienste (SIMBAD, VizieR) nie direkt mit festem Host abfragen, sondern
+  über `fetchCds(service, pfad)` in `objectinfo.js`: fällt Straßburg aus,
+  geht dieselbe Abfrage an die offiziellen Spiegel (Harvard, IDIA) und der
+  erreichbare Server wird für die Sitzung gemerkt. Im Browser sieht ein
+  CDS-Ausfall wie ein Netzwerkfehler aus (Fehlerseite ohne CORS-Header)
 - Katalogserver im Browser (Stand Oktober 2026): ESA-Gaia-TAP sendet keinen
   CORS-Header, TAPVizieR sendet ihn doppelt (`*, *`) – beides blockt der
   Browser. Funktionieren: VizieR-ASU (`vizier.cds.unistra.fr/viz-bin/asu-tsv`),

@@ -44,3 +44,7 @@ Abweichung entsprach genau einer Dehnung von 16..235 auf 0..255.
 Zum Testen: dasselbe Projekt neu exportieren und mit der Vorschau
 vergleichen. Gegenprobe: die MP4 in einen Browser-Tab ziehen. Der
 Diagnosebericht nennt unter "Export-Farbe", welcher Weg benutzt wurde.
+
+Stand a11: Objekt-Erkennung und Gaia-Sterndaten weichen automatisch auf die
+Spiegelserver des CDS aus (Harvard, IDIA), wenn Strassburg nicht antwortet.
+Gilt fuer alle drei Kanaele.
