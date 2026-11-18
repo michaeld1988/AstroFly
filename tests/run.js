@@ -81,17 +81,46 @@ async function testChannel(browser, base, channel) {
     check(channel, `Alle ${Object.keys(presets).length} Flug-Presets rendern`, bad.length === 0, bad.map(([n, r]) => `${n}: glErr=${r.glErr} mean=${r.mean.toFixed(1)}`).join("; "));
     check(channel, "Presets ohne JS-Fehler", errors.length === 0, errors[0]);
 
+    // Spiegelserver: VizieR meldet Datenbankfehler als "gueltige" leere Antwort (HTTP 200).
+    // Das darf nicht als "keine Sterne" durchgehen, sondern muss zum naechsten Server fuehren
+    const mir = await page.evaluate(async () => {
+      if (typeof fetchCds !== "function") return { skipped: true };
+      const orig = window.fetchTapCsv, keep = { ...cdsHost }, calls = [];
+      const dbErr = "#\n#   VizieR Astronomical Server\n# Report from: stdb_pg_conn,     Status: STDB_ERR\n#Couldn't connect with server\n#\n\n#RESOURCE=\n#Name:\n#Title:\n";
+      const empty = "#\n#RESOURCE=yCat_1355\n#Name: I/355\n#Table\tI_355_gaiadr3:\n#Name: I/355/gaiadr3\n";
+      window.fetchTapCsv = async (url) => { calls.push(new URL(url).host); return calls.length === 1 ? dbErr : empty; };
+      let txt = "", err = null;
+      try { txt = await fetchCds("vizier", "/viz-bin/asu-tsv?test"); } catch (e) { err = e.message; }
+      window.fetchTapCsv = orig; Object.assign(cdsHost, keep);
+      return { calls, switched: calls.length === 2 && calls[0] !== calls[1], gotEmpty: /yCat_1355/.test(txt), err };
+    });
+    check(channel, "Spiegelserver: Datenbankfehler von VizieR gilt nicht als leeres Ergebnis", mir.skipped || (mir.switched && mir.gotEmpty && !mir.err), JSON.stringify(mir));
+
     // Gaia-Abgleich gegen den echten Server
     if (NETWORK) {
-      await page.evaluate(() => { applyFlightPreset("cineKubrick"); document.getElementById("btnGaia").click(); });
-      await page.waitForFunction(() => !document.getElementById("btnGaia").disabled &&
-        !/Gaia-Katalog ab|Querying/.test(document.getElementById("gaiaStatus").textContent), null, { timeout: 300000 });
-      const g = await page.evaluate(() => ({ info: state.gaiaInfo, status: document.getElementById("gaiaStatus").textContent }));
-      const ratio = g.info ? g.info.matched / Math.max(1, g.info.total) : 0;
+      const gaiaRun = async () => {
+        await page.evaluate(() => { applyFlightPreset("cineKubrick"); document.getElementById("btnGaia").click(); });
+        await page.waitForFunction(() => !document.getElementById("btnGaia").disabled &&
+          !/Gaia-Katalog ab|Querying/.test(document.getElementById("gaiaStatus").textContent), null, { timeout: 300000 });
+        const g = await page.evaluate(() => ({ info: state.gaiaInfo, status: document.getElementById("gaiaStatus").textContent }));
+        return { g, ratio: g.info ? g.info.matched / Math.max(1, g.info.total) : 0 };
+      };
+      // Der Katalogserver gehoert nicht zur App und antwortet unter Last
+      // zeitweise lueckenhaft (derselbe Lauf: ein Kanal 99 %, der naechste
+      // fast nichts). Ein einzelner Aussetzer ist kein Befund: einmal
+      // wiederholen, erst zwei Fehlschlaege zaehlen
+      let { g, ratio } = await gaiaRun();
+      let tries = 1;
+      if (ratio < 0.5) {
+        await page.waitForTimeout(10000);
+        ({ g, ratio } = await gaiaRun());
+        tries = 2;
+      }
       // Schwelle bewusst niedrig: einzelne Kacheln scheitern, wenn CDS unter
       // Last ist (Ausweichserver braucht laenger) - ein echter Defekt liegt
       // deutlich darunter (vor dem CORS-Fix: 0 %)
-      check(channel, "Gaia-Abgleich >= 50 % (echter Server)", ratio >= 0.5, g.info ? `${g.info.matched}/${g.info.total} (${Math.round(ratio * 100)} %)` : g.status);
+      check(channel, "Gaia-Abgleich >= 50 % (echter Server)", ratio >= 0.5,
+        (g.info ? `${g.info.matched}/${g.info.total} (${Math.round(ratio * 100)} %)` : g.status) + (tries > 1 ? " | 2. Versuch" : ""));
       // Objekt-Erkennung gegen den echten Server: SIMBAD in Strassburg oder,
       // wenn der ausfaellt, einer der Spiegel (Harvard, IDIA)
       await page.evaluate(() => document.getElementById("btnObjects").click());
@@ -110,6 +139,33 @@ async function testChannel(browser, base, channel) {
       return { ok, size: window.__savedBlob, status: document.getElementById("exportStatus").textContent };
     });
     check(channel, "Offline-Export liefert Datei", exp.ok === false || (exp.size > 2000), exp.ok === false ? "kein WebCodecs (uebersprungen)" : `${exp.size} Bytes`);
+
+    // Exportgroessen: 21:9 in 4K waere 5040 x 2160 - so breit kodiert H.264 nicht, der Export
+    // fiel still auf WebM zurueck. Die laengere Kante bleibt deshalb bei 3840 px
+    const dm = await page.evaluate(async () => {
+      const res = document.getElementById("ctlRes"), keepRes = res.value;
+      const keepBtn = document.querySelector("#aspectBtns button.active");
+      const pick = (asp, r) => {
+        document.querySelector(`#aspectBtns button[data-aspect="${asp}"]`).click();
+        res.value = r; res.dispatchEvent(new Event("change", { bubbles: true }));
+        return exportDims();
+      };
+      const dims = {};
+      for (const [asp, r] of [["21:9", "2160"], ["21:9", "1080"], ["16:9", "2160"], ["9:16", "2160"], ["1:1", "2160"]]) dims[asp + "@" + r] = pick(asp, r).join("x");
+      const [w, h] = pick("21:9", "2160");
+      let h264 = null;
+      if (typeof VideoEncoder !== "undefined") {
+        const ok = async (cw, ch) => { try { return (await VideoEncoder.isConfigSupported({ codec: "avc1.640033", width: cw, height: ch, framerate: 30, bitrate: 30e6 })).supported; } catch { return false; } };
+        h264 = { uhd: await ok(3840, 2160), wide: await ok(w, h), alt: await ok(5040, 2160) };
+      }
+      res.value = keepRes; res.dispatchEvent(new Event("change", { bubbles: true }));
+      if (keepBtn) keepBtn.click();
+      return { dims, h264 };
+    });
+    check(channel, "Export 21:9 in 4K passt in H.264 (MP4 statt WebM)",
+      dm.dims["21:9@2160"] === "3840x1646" && dm.dims["21:9@1080"] === "2520x1080" && dm.dims["16:9@2160"] === "3840x2160" &&
+      dm.dims["9:16@2160"] === "2160x3840" && dm.dims["1:1@2160"] === "2160x2160" && (!dm.h264 || !dm.h264.uhd || dm.h264.wide),
+      JSON.stringify(dm));
 
     if (channel === "alpha") {
       const a = await page.evaluate(async () => ({

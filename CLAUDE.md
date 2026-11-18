@@ -201,11 +201,22 @@ aufgebaut (vorher konnte ein Bild im Export dunkel werden).
 - SIMBAD-TAP-Eigenheiten: `ORDER BY` ohne Tabellenpräfix (Spalten-Alias
   nutzen), `galdim_majaxis` darf NULL sein, Idents haben doppelte
   Leerzeichen („NGC  6960")
+- Exportgröße: `exportDims()` begrenzt die längere Kante auf 3840 px. H.264
+  kodiert nicht breiter als 4096; 21:9 in 4K ergab 5040 x 2160 und fiel
+  still auf VP9/WebM zurück (Instagram und Schnitt-Apps nehmen kein WebM).
+  Neue Formate oder Auflösungen immer gegen diese Grenze prüfen. Die
+  Funktion läuft schon beim Laden (`refreshRenderFoot`): keine später im
+  Skript deklarierten `const` darin verwenden
 - CDS-Dienste (SIMBAD, VizieR) nie direkt mit festem Host abfragen, sondern
   über `fetchCds(service, pfad)` in `objectinfo.js`: fällt Straßburg aus,
   geht dieselbe Abfrage an die offiziellen Spiegel (Harvard, IDIA) und der
   erreichbare Server wird für die Sitzung gemerkt. Im Browser sieht ein
-  CDS-Ausfall wie ein Netzwerkfehler aus (Fehlerseite ohne CORS-Header)
+  CDS-Ausfall wie ein Netzwerkfehler aus (Fehlerseite ohne CORS-Header).
+  VizieR-Spiegel melden Datenbankfehler dagegen als gültige Antwort
+  (HTTP 200, „Status: STDB_ERR", leeres „#RESOURCE="): `fetchCds` wertet
+  das als Fehler und geht zum nächsten Server. Eine echte leere
+  Trefferliste nennt Katalog und Tabelle. Antworten also nie nur am
+  HTTP-Status oder am Vorhandensein des Kopfs messen
 - Katalogserver im Browser (Stand Oktober 2026): ESA-Gaia-TAP sendet keinen
   CORS-Header, TAPVizieR sendet ihn doppelt (`*, *`) – beides blockt der
   Browser. Funktionieren: VizieR-ASU (`vizier.cds.unistra.fr/viz-bin/asu-tsv`),

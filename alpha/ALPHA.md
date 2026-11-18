@@ -66,3 +66,12 @@ Stand a12: Film-Panel aufgeraeumt und Flares neu gebaut.
 - Titelkarte: passt sich der Bildbreite an (Hochformat), lange Namen
   brechen auf zwei Zeilen um.
 - Die Statuszeile unter der Objektliste wechselt beim Sprachwechsel mit.
+
+Stand a13: 21:9 in 4K exportiert wieder als MP4. Bisher ergab das 5040 x 2160
+Pixel; so breit kodiert H.264 nicht, der Export wich still auf WebM aus.
+Die laengere Kante bleibt jetzt bei 3840 Pixeln (3840 x 1646). Gilt fuer alle
+drei Kanaele, alle anderen Formate und Aufloesungen sind unveraendert.
+Ebenfalls a13, alle Kanaele: Der Gaia-Abgleich wertet einen
+Datenbankfehler des VizieR-Spiegels nicht mehr als "keine Sterne". Der
+Harvard-Spiegel meldet solche Fehler zeitweise als gueltige leere Antwort;
+die Abfrage geht dann an den naechsten Server.
