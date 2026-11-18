@@ -10,7 +10,7 @@
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <title>AstroFly Alpha – 3D flight through astrophotos</title>
-<link rel="stylesheet" href="style.css?v=2026-11-18-a11">
+<link rel="stylesheet" href="style.css?v=2026-11-18-a12">
 </head>
 <body>
 
@@ -988,6 +988,14 @@
           <input type="range" id="ctlSaturation" min="-100" max="100" step="1" value="0">
         </label>
         <label class="slider">
+          <span><span data-i18n="colorTemp">Temperature (cool … warm)</span> <output id="outTemp">0</output></span>
+          <input type="range" id="ctlTemp" min="-100" max="100" step="1" value="0">
+        </label>
+        <label class="slider">
+          <span><span data-i18n="colorTint">Tint (green … magenta)</span> <output id="outTint">0</output></span>
+          <input type="range" id="ctlTint" min="-100" max="100" step="1" value="0">
+        </label>
+        <label class="slider">
           <span><span data-i18n="clarity">Clarity</span> <output id="outClarity">0</output></span>
           <input type="range" id="ctlClarity" min="-100" max="100" step="1" value="0">
         </label>
@@ -1007,8 +1015,8 @@
     <section data-tab="film">
       <h2><span data-i18n="secFilm">Film &amp; lens</span> <button class="qm" data-help="hintFilm">?</button></h2>
       <p class="tip hint2" id="hintFilm" hidden data-i18n="filmHint">What separates a render from
-      a film: how the emulsion responds to light, how a lens draws depth, and a camera with
-      a real shutter. Everything here is off by default; the look preset "Film (35 mm)" in
+      a film: how the emulsion responds to light and how a lens draws depth. Everything here
+      is off by default; the look preset "Film (35 mm)" in
       Effects switches on a balanced set.</p>
 
       <details class="adv" open>
@@ -1028,34 +1036,6 @@
           <span><span data-i18n="splitTone">Split tone (cool shadows, warm lights)</span> <output id="outSplitTone">0</output></span>
           <input type="range" id="ctlSplitTone" min="0" max="100" step="1" value="0">
         </label>
-        <label class="slider">
-          <span><span data-i18n="grainSize">Grain size</span> <output id="outGrainSize">1 px</output></span>
-          <input type="range" id="ctlGrainSize" min="1" max="4" step="1" value="1">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="grainChroma">Grain color</span> <output id="outGrainChroma">30</output></span>
-          <input type="range" id="ctlGrainChroma" min="0" max="100" step="1" value="30">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="weave">Gate weave (projector jitter)</span> <output id="outWeave">0</output></span>
-          <input type="range" id="ctlWeave" min="0" max="100" step="1" value="0">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="flicker">Flicker</span> <output id="outFlicker">0</output></span>
-          <input type="range" id="ctlFlicker" min="0" max="100" step="1" value="0">
-        </label>
-        <label class="selfull">
-          <span data-i18n="shutter">Shutter</span>
-          <select id="ctlShutter">
-            <option value="off" selected data-i18n="shutterOff">Off (motion blur slider)</option>
-            <option value="180" data-i18n="shutter180">180° – film standard</option>
-            <option value="90" data-i18n="shutter90">90° – crisp (action)</option>
-            <option value="360" data-i18n="shutter360">360° – soft</option>
-          </select>
-        </label>
-        <p class="tip hint2" id="hintShutter" hidden data-i18n="shutterHint">Physical motion
-        blur from the export frame rate: 180° at 24 fps is what cinema looks like – nearly
-        invisible, but it is what separates film from video.</p>
       </details>
 
       <details class="adv" open>
@@ -1073,28 +1053,13 @@
           <input type="range" id="ctlHazeTint" min="-100" max="100" step="1" value="0">
         </label>
         <label class="slider">
-          <span><span data-i18n="dof">Depth of field</span> <button class="qm" data-help="hintDof">?</button> <output id="outDof">0</output></span>
-          <input type="range" id="ctlDof" min="0" max="100" step="1" value="0">
-        </label>
-        <p class="tip hint2" id="hintDof" hidden data-i18n="dofHint">Blur by distance from the
-        focus plane: nebula layers soften, stars turn into bokeh discs. With different start
-        and end focus the focus travels during the flight (rack focus).</p>
-        <label class="slider">
-          <span><span data-i18n="focusA">Focus at start (far … near)</span> <output id="outFocusA">55</output></span>
-          <input type="range" id="ctlFocusA" min="0" max="100" step="1" value="55">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="focusB">Focus at end</span> <output id="outFocusB">55</output></span>
-          <input type="range" id="ctlFocusB" min="0" max="100" step="1" value="55">
-        </label>
-        <label class="slider">
-          <span><span data-i18n="anamorph">Anamorphic flares</span> <output id="outAnamorph">0</output></span>
+          <span><span data-i18n="anamorph">Anamorphic flares</span> <button class="qm" data-help="hintAnamorph">?</button> <output id="outAnamorph">0</output></span>
           <input type="range" id="ctlAnamorph" min="0" max="100" step="1" value="0">
         </label>
-        <label class="check">
-          <input type="checkbox" id="ctlAnamBokeh">
-          <span data-i18n="anamBokeh">Anamorphic bokeh (oval discs)</span>
-        </label>
+        <p class="tip hint2" id="hintAnamorph" hidden data-i18n="anamorphHint">The horizontal
+        streaks of an anamorphic cinema lens. Only the brightest stars get one: the brighter
+        the star, the longer its streak. It takes the color of its star and turns blue towards
+        the ends.</p>
         <label class="selfull">
           <span data-i18n="letterbox">Letterbox</span>
           <select id="ctlLetterbox">
@@ -1488,8 +1453,8 @@
 <script src="vendor/mp4-muxer.js"></script>
 <script src="vendor/webm-muxer.js"></script>
 <script src="vendor/UTIF.js"></script>
-<script src="i18n.js?v=2026-11-18-a11"></script>
-<script src="objectinfo.js?v=2026-11-18-a11"></script>
-<script src="app.js?v=2026-11-18-a11"></script>
+<script src="i18n.js?v=2026-11-18-a12"></script>
+<script src="objectinfo.js?v=2026-11-18-a12"></script>
+<script src="app.js?v=2026-11-18-a12"></script>
 </body>
 </html>

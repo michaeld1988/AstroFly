@@ -113,7 +113,7 @@ async function testChannel(browser, base, channel) {
 
     if (channel === "alpha") {
       const a = await page.evaluate(async () => ({
-        film: !!document.getElementById("ctlHalation") && !!document.getElementById("ctlDof"),
+        film: !!document.getElementById("ctlHalation") && !!document.getElementById("ctlAnamorph") && !document.getElementById("ctlDof"),
         sw: !!(await navigator.serviceWorker.getRegistration()),
         canvasLabel: document.getElementById("glcanvas").getAttribute("aria-label"),
         obj: typeof objSeg !== "undefined" && !!objSeg && !!texObjF && state.obj3d === true,
@@ -175,6 +175,59 @@ async function testChannel(browser, base, channel) {
         return { worst, cs };
       });
       check(channel, "Alpha: Export-Farbwandlung (BT.709, begrenzter Bereich)", y.skipped || (!y.fail && y.worst <= 1 && y.cs && y.cs.fullRange === false && y.cs.matrix === "bt709"), JSON.stringify(y));
+      // Film & Farbe (a12): Flares aus dem Bild, Weissabgleich, Titelkarte im Hochformat,
+      // und alte Werte entfernter Regler duerfen nichts brechen
+      const f = await page.evaluate(async () => {
+        const grab = (w, h) => { const px = new Uint8Array(w * h * 4); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px); return px; };
+        const mean = (px) => { const m = [0, 0, 0]; for (let i = 0; i < px.length; i += 4) { m[0] += px[i]; m[1] += px[i + 1]; m[2] += px[i + 2]; } return m.map((v) => v / (px.length / 4)); };
+        canvas.width = 640; canvas.height = 360;
+        applyFlightPreset("nebGentle");
+        const shot = () => { render(1); gl.finish(); return grab(640, 360); };
+        setCtl("ctlAnamorph", 0); const a0 = shot();
+        setCtl("ctlAnamorph", 100); const a1 = shot(); const errFlare = gl.getError();
+        let add = 0, less = 0;
+        for (let i = 0; i < a0.length; i += 4) { const d = (a1[i] + a1[i + 1] + a1[i + 2]) - (a0[i] + a0[i + 1] + a0[i + 2]); if (d > 0) add += d; else less -= d; }
+        setCtl("ctlAnamorph", 0);
+        const neutral = wbGains();
+        setCtl("ctlTemp", 60); const warm = mean(shot());
+        setCtl("ctlTemp", -60); const cool = mean(shot());
+        setCtl("ctlTemp", 0); setCtl("ctlTint", 60); const mag = mean(shot());
+        setCtl("ctlTint", 0); const base = mean(shot());
+        // Titelkarte 9:16 mit langem Namen: am linken und rechten Rand darf keine Schrift stehen
+        // (Marker und Infokarte aus, sie duerfen bis an den Rand reichen)
+        const keep = { tc: state.titleCard, cc: state.cardCustom, oi: state.objInfo, sl: state.showLabels, si: state.showInfo };
+        state.titleCard = true; state.cardCustom = { name: "California Nebula" }; state.objInfo = null;
+        state.showLabels = false; state.showInfo = false;
+        const W = 360, H = 640, c = document.createElement("canvas"); c.width = W; c.height = H;
+        const x = c.getContext("2d"); x.fillStyle = "#000"; x.fillRect(0, 0, W, H);
+        drawOverlayTo(x, W, H, 2.4, camAt(2.4), 1);
+        const im = x.getImageData(0, 0, W, H).data;
+        let edge = 0, mid = 0;
+        for (let yy = 0; yy < H; yy++) for (let xx = 0; xx < W; xx++) {
+          const v = im[(yy * W + xx) * 4];
+          if (xx < W * 0.04 || xx >= W * 0.96) edge = Math.max(edge, v); else mid = Math.max(mid, v);
+        }
+        state.titleCard = keep.tc; state.cardCustom = keep.cc; state.objInfo = keep.oi; state.showLabels = keep.sl; state.showInfo = keep.si;
+        // Alt-Daten: Projekt-Regler und Stil-Code mit entfernten Reglern
+        let oldOk = true;
+        try { applyControls({ ctlDof: 40, ctlFocusA: 20, ctlGrainSize: 3, ctlWeave: 50, ctlShutter: "180", ctlAnamBokeh: true, ctlTemp: 12 }); } catch (e) { oldOk = false; }
+        const tempSet = document.getElementById("ctlTemp").value;
+        const sc = parseStyleCode('alt: { look: "film", set: { ctlDof: 30, ctlGrainSize: 2, ctlTemp: 15 }, checks: { ctlAnamBokeh: true } },');
+        try { applyStyleCode(sc); } catch (e) { oldOk = false; }
+        const scTemp = document.getElementById("ctlTemp").value;
+        setCtl("ctlTemp", 0);
+        return { errFlare, add: Math.round(add / 1000), less: Math.round(less / 1000), neutral,
+          warmRB: +(warm[0] / warm[2]).toFixed(3), coolRB: +(cool[0] / cool[2]).toFixed(3), baseRB: +(base[0] / base[2]).toFixed(3),
+          magG: +(mag[1] / (mag[0] + mag[2])).toFixed(3), baseG: +(base[1] / (base[0] + base[2])).toFixed(3),
+          edge, mid, oldOk, tempSet, scSet: Object.keys(sc.set).join(","), scTemp };
+      });
+      check(channel, "Alpha: Flares kommen als Licht dazu (kein GL-Fehler)", f.errFlare === 0 && f.add > 20 && f.less < f.add * 0.05, JSON.stringify({ err: f.errFlare, add: f.add, less: f.less }));
+      check(channel, "Alpha: Temperatur und Toenung (neutral = 1/1/1, Richtung stimmt)",
+        f.neutral.every((v) => Math.abs(v - 1) < 1e-9) && f.warmRB > f.baseRB * 1.1 && f.coolRB < f.baseRB * 0.9 && f.magG < f.baseG * 0.95,
+        JSON.stringify({ warm: f.warmRB, base: f.baseRB, cool: f.coolRB, magG: f.magG, baseG: f.baseG }));
+      check(channel, "Alpha: Titelkarte bleibt im Hochformat im Bild", f.mid > 150 && f.edge < 60, JSON.stringify({ rand: f.edge, mitte: f.mid }));
+      check(channel, "Alpha: alte Projekte und Stil-Codes mit entfernten Reglern laden", f.oldOk && f.tempSet === "12" && f.scSet === "ctlTemp" && f.scTemp === "15",
+        JSON.stringify({ ok: f.oldOk, temp: f.tempSet, set: f.scSet, stil: f.scTemp }));
     }
     check(channel, "Keine JS-Fehler insgesamt", errors.length === 0, errors.slice(0, 2).join(" | "));
   } catch (e) {
