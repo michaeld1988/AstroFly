@@ -111,6 +111,33 @@ async function testChannel(browser, base, channel) {
     });
     check(channel, "Offline-Export liefert Datei", exp.ok === false || (exp.size > 2000), exp.ok === false ? "kein WebCodecs (uebersprungen)" : `${exp.size} Bytes`);
 
+    // Exportgroessen: 21:9 in 4K waere 5040 x 2160 - so breit kodiert H.264 nicht, der Export
+    // fiel still auf WebM zurueck. Die laengere Kante bleibt deshalb bei 3840 px
+    const dm = await page.evaluate(async () => {
+      const res = document.getElementById("ctlRes"), keepRes = res.value;
+      const keepBtn = document.querySelector("#aspectBtns button.active");
+      const pick = (asp, r) => {
+        document.querySelector(`#aspectBtns button[data-aspect="${asp}"]`).click();
+        res.value = r; res.dispatchEvent(new Event("change", { bubbles: true }));
+        return exportDims();
+      };
+      const dims = {};
+      for (const [asp, r] of [["21:9", "2160"], ["21:9", "1080"], ["16:9", "2160"], ["9:16", "2160"], ["1:1", "2160"]]) dims[asp + "@" + r] = pick(asp, r).join("x");
+      const [w, h] = pick("21:9", "2160");
+      let h264 = null;
+      if (typeof VideoEncoder !== "undefined") {
+        const ok = async (cw, ch) => { try { return (await VideoEncoder.isConfigSupported({ codec: "avc1.640033", width: cw, height: ch, framerate: 30, bitrate: 30e6 })).supported; } catch { return false; } };
+        h264 = { uhd: await ok(3840, 2160), wide: await ok(w, h), alt: await ok(5040, 2160) };
+      }
+      res.value = keepRes; res.dispatchEvent(new Event("change", { bubbles: true }));
+      if (keepBtn) keepBtn.click();
+      return { dims, h264 };
+    });
+    check(channel, "Export 21:9 in 4K passt in H.264 (MP4 statt WebM)",
+      dm.dims["21:9@2160"] === "3840x1646" && dm.dims["21:9@1080"] === "2520x1080" && dm.dims["16:9@2160"] === "3840x2160" &&
+      dm.dims["9:16@2160"] === "2160x3840" && dm.dims["1:1@2160"] === "2160x2160" && (!dm.h264 || !dm.h264.uhd || dm.h264.wide),
+      JSON.stringify(dm));
+
     if (channel === "alpha") {
       const a = await page.evaluate(async () => ({
         film: !!document.getElementById("ctlHalation") && !!document.getElementById("ctlAnamorph") && !document.getElementById("ctlDof"),

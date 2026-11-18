@@ -11504,11 +11504,22 @@ stage.addEventListener("drop", (e) => {
 // ---------------------------------------------------------------- Export
 
 function exportDims() {
+  // Laengste Kante eines Exports. H.264 kodiert hoechstens 4096 px Kante;
+  // 3840 (UHD-Breite) spielt und verarbeitet jedes Geraet, auch die
+  // Video-Apps auf dem Telefon. (Bewusst hier drin: die Funktion laeuft
+  // schon beim Laden, vor jeder spaeter im Skript stehenden Konstante)
+  const EXPORT_MAX_EDGE = 3840;
   const base = parseInt($("ctlRes").value, 10); // kurze Kante
   let w, h;
-  if (state.aspect >= 1) { h = base; w = Math.round(base * state.aspect); }
-  else { w = base; h = Math.round(base / state.aspect); }
-  return [w & ~1, h & ~1];
+  if (state.aspect >= 1) { h = base; w = base * state.aspect; }
+  else { w = base; h = base / state.aspect; }
+  // Breitformat in 4K: 21:9 ergaebe 5040 x 2160. Das kann kein H.264-
+  // Encoder, der Export wich deshalb still auf WebM aus - und WebM nehmen
+  // Instagram und die Schnitt-Apps auf dem Telefon nicht an. Darum gilt
+  // die Aufloesung als Rahmen: die laengere Kante bleibt bei 3840 px,
+  // 21:9 in 4K wird 3840 x 1646. Alle anderen Formate bleiben, wie sie sind
+  const k = Math.min(1, EXPORT_MAX_EDGE / Math.max(w, h));
+  return [Math.round(w * k) & ~1, Math.round(h * k) & ~1];
 }
 
 function pickMime() {

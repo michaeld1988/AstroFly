@@ -201,6 +201,12 @@ aufgebaut (vorher konnte ein Bild im Export dunkel werden).
 - SIMBAD-TAP-Eigenheiten: `ORDER BY` ohne Tabellenpräfix (Spalten-Alias
   nutzen), `galdim_majaxis` darf NULL sein, Idents haben doppelte
   Leerzeichen („NGC  6960")
+- Exportgröße: `exportDims()` begrenzt die längere Kante auf 3840 px. H.264
+  kodiert nicht breiter als 4096; 21:9 in 4K ergab 5040 x 2160 und fiel
+  still auf VP9/WebM zurück (Instagram und Schnitt-Apps nehmen kein WebM).
+  Neue Formate oder Auflösungen immer gegen diese Grenze prüfen. Die
+  Funktion läuft schon beim Laden (`refreshRenderFoot`): keine später im
+  Skript deklarierten `const` darin verwenden
 - CDS-Dienste (SIMBAD, VizieR) nie direkt mit festem Host abfragen, sondern
   über `fetchCds(service, pfad)` in `objectinfo.js`: fällt Straßburg aus,
   geht dieselbe Abfrage an die offiziellen Spiegel (Harvard, IDIA) und der
