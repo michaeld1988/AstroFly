@@ -211,7 +211,12 @@ aufgebaut (vorher konnte ein Bild im Export dunkel werden).
   über `fetchCds(service, pfad)` in `objectinfo.js`: fällt Straßburg aus,
   geht dieselbe Abfrage an die offiziellen Spiegel (Harvard, IDIA) und der
   erreichbare Server wird für die Sitzung gemerkt. Im Browser sieht ein
-  CDS-Ausfall wie ein Netzwerkfehler aus (Fehlerseite ohne CORS-Header)
+  CDS-Ausfall wie ein Netzwerkfehler aus (Fehlerseite ohne CORS-Header).
+  VizieR-Spiegel melden Datenbankfehler dagegen als gültige Antwort
+  (HTTP 200, „Status: STDB_ERR", leeres „#RESOURCE="): `fetchCds` wertet
+  das als Fehler und geht zum nächsten Server. Eine echte leere
+  Trefferliste nennt Katalog und Tabelle. Antworten also nie nur am
+  HTTP-Status oder am Vorhandensein des Kopfs messen
 - Katalogserver im Browser (Stand Oktober 2026): ESA-Gaia-TAP sendet keinen
   CORS-Header, TAPVizieR sendet ihn doppelt (`*, *`) – beides blockt der
   Browser. Funktionieren: VizieR-ASU (`vizier.cds.unistra.fr/viz-bin/asu-tsv`),

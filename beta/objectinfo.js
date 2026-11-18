@@ -206,6 +206,14 @@ async function fetchCds(service, path, timeoutMs = 45000) {
         const txt = await fetchTapCsv(hosts[idx] + path, timeoutMs, 1);
         // Fehlerseiten kommen als HTML, Daten nie
         if (/^\s*<(!doctype|html)/i.test(txt)) throw Object.assign(new Error("HTML statt Daten"), { server: true, status: 502 });
+        // VizieR meldet einen Datenbankfehler als gueltige Antwort: HTTP 200,
+        // Kommentarkopf mit "Status: STDB_ERR ... Couldn't connect with
+        // server" und ein leerer Tabellenkopf ("#RESOURCE=" ohne Katalog).
+        // Das ist KEINE leere Trefferliste (die nennt Katalog und Tabelle) -
+        // sonst gaelte ein Aussetzer des Spiegels als "hier sind keine Sterne"
+        if (service === "vizier" && /Status:\s*STDB_ERR|^#RESOURCE=\s*$/m.test(txt)) {
+          throw Object.assign(new Error("VizieR-Datenbankfehler"), { server: true, status: 503 });
+        }
         cdsHost[service] = idx;
         return txt;
       } catch (e) {

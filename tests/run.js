@@ -81,17 +81,46 @@ async function testChannel(browser, base, channel) {
     check(channel, `Alle ${Object.keys(presets).length} Flug-Presets rendern`, bad.length === 0, bad.map(([n, r]) => `${n}: glErr=${r.glErr} mean=${r.mean.toFixed(1)}`).join("; "));
     check(channel, "Presets ohne JS-Fehler", errors.length === 0, errors[0]);
 
+    // Spiegelserver: VizieR meldet Datenbankfehler als "gueltige" leere Antwort (HTTP 200).
+    // Das darf nicht als "keine Sterne" durchgehen, sondern muss zum naechsten Server fuehren
+    const mir = await page.evaluate(async () => {
+      if (typeof fetchCds !== "function") return { skipped: true };
+      const orig = window.fetchTapCsv, keep = { ...cdsHost }, calls = [];
+      const dbErr = "#\n#   VizieR Astronomical Server\n# Report from: stdb_pg_conn,     Status: STDB_ERR\n#Couldn't connect with server\n#\n\n#RESOURCE=\n#Name:\n#Title:\n";
+      const empty = "#\n#RESOURCE=yCat_1355\n#Name: I/355\n#Table\tI_355_gaiadr3:\n#Name: I/355/gaiadr3\n";
+      window.fetchTapCsv = async (url) => { calls.push(new URL(url).host); return calls.length === 1 ? dbErr : empty; };
+      let txt = "", err = null;
+      try { txt = await fetchCds("vizier", "/viz-bin/asu-tsv?test"); } catch (e) { err = e.message; }
+      window.fetchTapCsv = orig; Object.assign(cdsHost, keep);
+      return { calls, switched: calls.length === 2 && calls[0] !== calls[1], gotEmpty: /yCat_1355/.test(txt), err };
+    });
+    check(channel, "Spiegelserver: Datenbankfehler von VizieR gilt nicht als leeres Ergebnis", mir.skipped || (mir.switched && mir.gotEmpty && !mir.err), JSON.stringify(mir));
+
     // Gaia-Abgleich gegen den echten Server
     if (NETWORK) {
-      await page.evaluate(() => { applyFlightPreset("cineKubrick"); document.getElementById("btnGaia").click(); });
-      await page.waitForFunction(() => !document.getElementById("btnGaia").disabled &&
-        !/Gaia-Katalog ab|Querying/.test(document.getElementById("gaiaStatus").textContent), null, { timeout: 300000 });
-      const g = await page.evaluate(() => ({ info: state.gaiaInfo, status: document.getElementById("gaiaStatus").textContent }));
-      const ratio = g.info ? g.info.matched / Math.max(1, g.info.total) : 0;
+      const gaiaRun = async () => {
+        await page.evaluate(() => { applyFlightPreset("cineKubrick"); document.getElementById("btnGaia").click(); });
+        await page.waitForFunction(() => !document.getElementById("btnGaia").disabled &&
+          !/Gaia-Katalog ab|Querying/.test(document.getElementById("gaiaStatus").textContent), null, { timeout: 300000 });
+        const g = await page.evaluate(() => ({ info: state.gaiaInfo, status: document.getElementById("gaiaStatus").textContent }));
+        return { g, ratio: g.info ? g.info.matched / Math.max(1, g.info.total) : 0 };
+      };
+      // Der Katalogserver gehoert nicht zur App und antwortet unter Last
+      // zeitweise lueckenhaft (derselbe Lauf: ein Kanal 99 %, der naechste
+      // fast nichts). Ein einzelner Aussetzer ist kein Befund: einmal
+      // wiederholen, erst zwei Fehlschlaege zaehlen
+      let { g, ratio } = await gaiaRun();
+      let tries = 1;
+      if (ratio < 0.5) {
+        await page.waitForTimeout(10000);
+        ({ g, ratio } = await gaiaRun());
+        tries = 2;
+      }
       // Schwelle bewusst niedrig: einzelne Kacheln scheitern, wenn CDS unter
       // Last ist (Ausweichserver braucht laenger) - ein echter Defekt liegt
       // deutlich darunter (vor dem CORS-Fix: 0 %)
-      check(channel, "Gaia-Abgleich >= 50 % (echter Server)", ratio >= 0.5, g.info ? `${g.info.matched}/${g.info.total} (${Math.round(ratio * 100)} %)` : g.status);
+      check(channel, "Gaia-Abgleich >= 50 % (echter Server)", ratio >= 0.5,
+        (g.info ? `${g.info.matched}/${g.info.total} (${Math.round(ratio * 100)} %)` : g.status) + (tries > 1 ? " | 2. Versuch" : ""));
       // Objekt-Erkennung gegen den echten Server: SIMBAD in Strassburg oder,
       // wenn der ausfaellt, einer der Spiegel (Harvard, IDIA)
       await page.evaluate(() => document.getElementById("btnObjects").click());
