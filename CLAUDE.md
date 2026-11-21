@@ -138,7 +138,14 @@ aufgebaut (vorher konnte ein Bild im Export dunkel werden).
   Statusband `#stageChips`, Zeitachse `#timeline`, Fußleiste `#panelFoot`,
   Symbolsammlung als SVG-Sprite (`#i-*`), Instrumenten-Look (monochrom,
   Akzent #8fb0ff, zweiter Akzent #b07aff)
-- `beta/` – vollständige Kopie der App für den Beta-Kanal
+- `beta/` – vollständige Kopie der App für den Beta-Kanal. Stand b1
+  (21.11.2026) = Alpha a14. Übertragen wird mit
+  `python3 tools/alpha-to-beta.py <marke>`: kopiert `alpha/` und stellt die
+  kanal-eigenen Stellen um (Titel und Name ohne „Alpha", kein
+  Alpha-Abzeichen, kein `noindex`, Cache-Namen im Service Worker,
+  Manifest). `app.js`, `objectinfo.js`, `style.css` sind danach
+  byteidentisch mit der Alpha. Kommt eine neue kanal-eigene Stelle dazu,
+  gehört sie in das Skript (es bricht ab, wenn eine Ersetzung nicht passt)
 - `alpha/` – privater Teststand (Kopie der Beta plus Alpha-Features):
   PWA (`manifest.webmanifest`, `sw.js`, `icons/`), Untertab Look →
   Bearbeiten (seit a14, `data-tab="look"`, ersetzt „Effects" und „Film")
