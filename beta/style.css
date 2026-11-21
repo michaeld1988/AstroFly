@@ -8,12 +8,29 @@
   --border: #232938;
   --border2: #2e3547;
   --text: #d7dce8;
-  --muted: #7d8598;
-  --faint: #565e72;
+  --muted: #8a91a4;
+  --faint: #7b8398;
   --accent: #8fb0ff;
   --accent2: #b07aff;
   --accent-dim: #5d7dc4;
   --glow: rgba(143, 176, 255, 0.25);
+}
+
+/* Tastaturfokus sichtbar (nur bei Tastaturbedienung, nicht beim Klicken) */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+:focus:not(:focus-visible) { outline: none; }
+input[type=range]:focus-visible { outline-offset: 4px; }
+
+/* Weniger Bewegung, wenn das System es wuenscht */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
+}
+
+/* Kanal-Kennzeichnung (Alpha/Beta) neben dem Logo */
+.chbadge {
+  font-size: 9.5px; font-weight: 700; letter-spacing: 1.4px; text-transform: uppercase;
+  color: var(--accent2); border: 1px solid var(--accent2); border-radius: 4px;
+  padding: 2px 6px; margin-left: 8px; line-height: 1; align-self: center; opacity: 0.85;
 }
 
 html, body { height: 100%; }
@@ -96,7 +113,7 @@ svg.ic.big { width: 52px; height: 52px; stroke-width: 1; opacity: 0.6; }
   padding: 9px 0 8px; border-radius: 9px;
   display: flex; flex-direction: column; align-items: center; gap: 5px;
 }
-#proRail button small { font-size: 9px; letter-spacing: 1.1px; text-transform: uppercase; font-weight: 600; }
+#proRail button small { font-size: 10px; letter-spacing: 1.1px; text-transform: uppercase; font-weight: 600; }
 #proRail button:hover { color: var(--muted); }
 #proRail button.active { background: #151c2c; box-shadow: inset 0 0 0 1px var(--accent-dim); color: var(--accent); }
 #proRail button.active small { color: var(--text); }
@@ -115,7 +132,7 @@ svg.ic.big { width: 52px; height: 52px; stroke-width: 1; opacity: 0.6; }
   background: #151c2c; border-color: var(--accent-dim); color: var(--accent); font-weight: 600;
 }
 #subTabs .subcount {
-  font-size: 9px; font-weight: 600; color: var(--accent);
+  font-size: 10px; font-weight: 600; color: var(--accent);
   border: 1px solid var(--accent-dim); border-radius: 20px; padding: 0 5px;
 }
 #subTabs .subcount[hidden] { display: none; }
@@ -199,7 +216,7 @@ details.adv > *:not(summary) { margin-left: 2px; }
 .chgdot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex: none; }
 .chgdot.countonly {
   width: auto; height: auto; border-radius: 0; background: none;
-  color: var(--faint); font-size: 10px;
+  color: var(--faint); font-size: 11px;
 }
 .chgreset {
   background: transparent; border: 0; color: var(--accent-dim);
@@ -264,7 +281,6 @@ input[type=range] {
   appearance: none; -webkit-appearance: none;
   height: 4px; border-radius: 2px;
   background: var(--border2);
-  outline: none;
 }
 input[type=range]::-webkit-slider-thumb {
   -webkit-appearance: none; appearance: none;
@@ -354,7 +370,7 @@ input[type=range]::-moz-range-thumb {
   padding: 8px 9px; resize: vertical;
   font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 11px; line-height: 1.5;
 }
-#styleCode:focus { outline: none; border-color: var(--accent-dim); }
+#styleCode:focus { border-color: var(--accent-dim); }
 
 /* tips & buttons */
 .tip { font-size: 11.5px; color: var(--muted); line-height: 1.5; margin-top: 4px; }
@@ -812,7 +828,7 @@ button.primary:not(:disabled):hover { border-color: var(--accent); }
   background: var(--panel2); color: var(--text);
   border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 12.5px;
 }
-.objedit input[type=text]:focus { outline: none; border-color: var(--accent-dim); }
+.objedit input[type=text]:focus { border-color: var(--accent-dim); }
 .objedit .tip { flex: 1 1 100%; margin: 2px 0 0; }
 .objedit button.secondary { flex: 1 1 100%; }
 #btnObjAdd.active { border-color: var(--accent-dim); color: var(--text); }

@@ -167,14 +167,15 @@ async function testChannel(browser, base, channel) {
       dm.dims["9:16@2160"] === "2160x3840" && dm.dims["1:1@2160"] === "2160x2160" && (!dm.h264 || !dm.h264.uhd || dm.h264.wide),
       JSON.stringify(dm));
 
-    if (channel === "alpha") {
+    // Funktionen, die Alpha und Beta der Live-Version voraushaben
+    if (channel !== "root") {
       const a = await page.evaluate(async () => ({
         film: !!document.getElementById("ctlHalation") && !!document.getElementById("ctlAnamorph") && !document.getElementById("ctlDof"),
         sw: !!(await navigator.serviceWorker.getRegistration()),
         canvasLabel: document.getElementById("glcanvas").getAttribute("aria-label"),
         obj: typeof objSeg !== "undefined" && !!objSeg && !!texObjF && state.obj3d === true,
       }));
-      check(channel, "Alpha: Film-Panel, Service Worker, Canvas-Name", a.film && a.sw && !!a.canvasLabel, JSON.stringify(a));
+      check(channel, "Film-Regler, Service Worker, Canvas-Name", a.film && a.sw && !!a.canvasLabel, JSON.stringify(a));
       // Wolken-Objekte: aufgebaut, Ruhebild = Foto (gegen die klassische Engine), Flugbild ohne GL-Fehler
       const o = await page.evaluate(async () => {
         const grab = () => { const px = new Uint8Array(640 * 360 * 4); gl.readPixels(0, 0, 640, 360, gl.RGBA, gl.UNSIGNED_BYTE, px); return px; };
@@ -191,7 +192,7 @@ async function testChannel(browser, base, channel) {
         for (let i = 0; i < a.length; i += 4) { d += Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]); mv += Math.abs(a[i] - m[i]); }
         return { built: !!objSeg && !!texObjF, isles: objSeg ? objSeg.nIsle : 0, restDiff: d / (640 * 360 * 3), moved: mv / (640 * 360), err };
       });
-      check(channel, "Alpha: Wolken-Objekte (Ruhebild = Foto, Flug rendert)", a.obj && o.built && o.err === 0 && o.restDiff < 1.5 && o.moved > 0.05, JSON.stringify(o));
+      check(channel, "Wolken-Objekte (Ruhebild = Foto, Flug rendert)", a.obj && o.built && o.err === 0 && o.restDiff < 1.5 && o.moved > 0.05, JSON.stringify(o));
       // Export-Farbwandlung: Testfarben muessen exakt als BT.709 im begrenzten Bereich ankommen
       // (Weiss 235, Schwarz 16), auch bei Breiten, die nicht durch 8 teilbar sind
       const y = await page.evaluate(async () => {
@@ -230,7 +231,7 @@ async function testChannel(browser, base, channel) {
         }
         return { worst, cs };
       });
-      check(channel, "Alpha: Export-Farbwandlung (BT.709, begrenzter Bereich)", y.skipped || (!y.fail && y.worst <= 1 && y.cs && y.cs.fullRange === false && y.cs.matrix === "bt709"), JSON.stringify(y));
+      check(channel, "Export-Farbwandlung (BT.709, begrenzter Bereich)", y.skipped || (!y.fail && y.worst <= 1 && y.cs && y.cs.fullRange === false && y.cs.matrix === "bt709"), JSON.stringify(y));
       // Film & Farbe (a12): Flares aus dem Bild, Weissabgleich, Titelkarte im Hochformat,
       // und alte Werte entfernter Regler duerfen nichts brechen
       const f = await page.evaluate(async () => {
@@ -277,12 +278,12 @@ async function testChannel(browser, base, channel) {
           magG: +(mag[1] / (mag[0] + mag[2])).toFixed(3), baseG: +(base[1] / (base[0] + base[2])).toFixed(3),
           edge, mid, oldOk, tempSet, scSet: Object.keys(sc.set).join(","), scTemp };
       });
-      check(channel, "Alpha: Flares kommen als Licht dazu (kein GL-Fehler)", f.errFlare === 0 && f.add > 20 && f.less < f.add * 0.05, JSON.stringify({ err: f.errFlare, add: f.add, less: f.less }));
-      check(channel, "Alpha: Temperatur und Toenung (neutral = 1/1/1, Richtung stimmt)",
+      check(channel, "Flares kommen als Licht dazu (kein GL-Fehler)", f.errFlare === 0 && f.add > 20 && f.less < f.add * 0.05, JSON.stringify({ err: f.errFlare, add: f.add, less: f.less }));
+      check(channel, "Temperatur und Toenung (neutral = 1/1/1, Richtung stimmt)",
         f.neutral.every((v) => Math.abs(v - 1) < 1e-9) && f.warmRB > f.baseRB * 1.1 && f.coolRB < f.baseRB * 0.9 && f.magG < f.baseG * 0.95,
         JSON.stringify({ warm: f.warmRB, base: f.baseRB, cool: f.coolRB, magG: f.magG, baseG: f.baseG }));
-      check(channel, "Alpha: Titelkarte bleibt im Hochformat im Bild", f.mid > 150 && f.edge < 60, JSON.stringify({ rand: f.edge, mitte: f.mid }));
-      check(channel, "Alpha: alte Projekte und Stil-Codes mit entfernten Reglern laden", f.oldOk && f.tempSet === "12" && f.scSet === "ctlTemp" && f.scTemp === "15",
+      check(channel, "Titelkarte bleibt im Hochformat im Bild", f.mid > 150 && f.edge < 60, JSON.stringify({ rand: f.edge, mitte: f.mid }));
+      check(channel, "alte Projekte und Stil-Codes mit entfernten Reglern laden", f.oldOk && f.tempSet === "12" && f.scSet === "ctlTemp" && f.scTemp === "15",
         JSON.stringify({ ok: f.oldOk, temp: f.tempSet, set: f.scSet, stil: f.scTemp }));
       // Look -> Bearbeiten (a14): Gruppen und Reihenfolge wie in Lightroom, kein Regler verloren,
       // der alte Tab "film" fuehrt hierher, auf- und zugeklappte Gruppen werden gemerkt
@@ -306,7 +307,7 @@ async function testChannel(browser, base, channel) {
         ["panOptics", "ctlAnamorph,ctlWarp,ctlMblur,ctlMblurStars,ctlLetterbox"],
         ["panScene", "ctlNebFlow,ctlExtinct,ctlRelight"],
       ];
-      check(channel, "Alpha: Look-Regler in Lightroom-Gruppen (Licht, Farbe, Effekte, Details, Optik)",
+      check(channel, "Look-Regler in Lightroom-Gruppen (Licht, Farbe, Effekte, Details, Optik)",
         JSON.stringify(lk.panels) === JSON.stringify(wantPanels) && lk.subs === "sterne,look,nebel,presets" && !lk.film && lk.alias === "look" &&
         lk.closed === false && lk.reopened === true,
         JSON.stringify({ gruppen: lk.panels.map((x) => x[0]), subs: lk.subs, film: lk.film, alias: lk.alias, zu: lk.closed, auf: lk.reopened }));
